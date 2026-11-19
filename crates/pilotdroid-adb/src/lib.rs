@@ -80,14 +80,19 @@ pub trait AdbTransport {
     fn pull(&mut self, serial: &str, remote: &str, local: &Path) -> Result<()>;
 
     /// `adb forward <local> <remote>` — e.g. `tcp:0` to
-    /// `localabstract:pilotdroid`. The agent channel (docs/01-architecture.md)
-    /// depends on this.
+    /// `localabstract:pilotdroid_agent`. The agent channel
+    /// (docs/01-architecture.md) depends on this.
     fn forward(&mut self, serial: &str, local: &str, remote: &str) -> Result<()>;
+
+    /// `adb forward --remove <local>` — e.g. `tcp:17932`. Implementations
+    /// must remove only that one rule (never killforward-all).
+    fn forward_remove(&mut self, serial: &str, local: &str) -> Result<()>;
 }
 
 /// Default backend: the `adb_client` crate against the local adb server.
 pub struct AdbClient {
     server: ADBServer,
+    port: u16,
 }
 
 impl AdbClient {
@@ -101,6 +106,7 @@ impl AdbClient {
         let addr = SocketAddrV4::new(Ipv4Addr::LOCALHOST, port);
         Ok(Self {
             server: ADBServer::new(addr),
+            port,
         })
     }
 
@@ -170,6 +176,47 @@ impl AdbTransport for AdbClient {
         device
             .forward(remote.to_string(), local.to_string())
             .map_err(AdbError::backend)
+    }
+
+    fn forward_remove(&mut self, serial: &str, local: &str) -> Result<()> {
+        // adb_client 2.1.19 only exposes killforward-all, which would nuke
+        // other tools' forwards. Per-forward removal is a small raw
+        // smartsocket request — the documented self-hosted fallback
+        // (adr/001), contained inside this crate.
+        let mut stream =
+            std::net::TcpStream::connect(SocketAddrV4::new(Ipv4Addr::LOCALHOST, self.port))?;
+        smartsocket(&mut stream, &format!("host:transport:{serial}"))?;
+        smartsocket(&mut stream, &format!("host:killforward:{local}"))
+    }
+}
+
+/// One adb smartsocket request: 4-hex-length + payload, then read the
+/// 4-byte OKAY/FAIL status (and FAIL's length-prefixed message).
+fn smartsocket(stream: &mut std::net::TcpStream, req: &str) -> Result<()> {
+    write!(stream, "{:04x}", req.len())?;
+    stream.write_all(req.as_bytes())?;
+    let mut status = [0u8; 4];
+    stream.read_exact(&mut status)?;
+    match &status {
+        b"OKAY" => Ok(()),
+        b"FAIL" => {
+            let mut lenb = [0u8; 4];
+            stream.read_exact(&mut lenb)?;
+            let n = std::str::from_utf8(&lenb)
+                .ok()
+                .and_then(|s| usize::from_str_radix(s, 16).ok())
+                .unwrap_or(0)
+                .min(4096);
+            let mut msg = vec![0u8; n];
+            stream.read_exact(&mut msg)?;
+            Err(AdbError::Backend(format!(
+                "adb server FAIL: {}",
+                String::from_utf8_lossy(&msg)
+            )))
+        }
+        _ => Err(AdbError::Protocol(format!(
+            "bad smartsocket status {status:02x?}"
+        ))),
     }
 }
 

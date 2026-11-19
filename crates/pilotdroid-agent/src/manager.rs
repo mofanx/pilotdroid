@@ -16,7 +16,7 @@ pub const AGENT_JAR_REMOTE: &str = "/data/local/tmp/pilotdroid/agent.jar";
 /// Entry class inside the dex jar (`pilotdroid.Agent` — must match agent/).
 pub const AGENT_MAIN_CLASS: &str = "pilotdroid.Agent";
 /// The localabstract socket name the agent listens on.
-pub const AGENT_SOCKET: &str = "pilotdroid";
+pub const AGENT_SOCKET: &str = "pilotdroid_agent";
 
 const AGENT_LOG: &str = "/data/local/tmp/pilotdroid/agent.log";
 
@@ -50,8 +50,10 @@ impl<'a, T: AdbTransport> AgentManager<'a, T> {
 
     /// `agent stop`: kill by process name. Polite AGENT_STOP RPC is preferred
     /// when a client is connected; this is the unconditional fallback.
+    /// The `[p]` glob avoids pkill matching this very `sh -c` cmdline
+    /// (t4 review: plain `-f pilotdroid.Agent` self-kills → exit 143).
     pub fn stop(&mut self, serial: &str) -> Result<()> {
-        self.run_shell(serial, &format!("pkill -f {AGENT_MAIN_CLASS} || true"))
+        self.run_shell(serial, "pkill -f '[p]ilotdroid.Agent' || true")
     }
 
     /// forward `tcp:{port}` → `localabstract:{AGENT_SOCKET}` for `serial`,
@@ -78,8 +80,24 @@ impl<'a, T: AdbTransport> AgentManager<'a, T> {
             &format!("tcp:{port}"),
             &format!("localabstract:{socket}"),
         )?;
-        let client = AgentClient::connect_timeout(agent_addr(port), DEFAULT_TIMEOUT)?;
+        // Dial failure must not leak the forward rule — remove it on the
+        // error path (the rule outlives the failed socket otherwise).
+        let client = match AgentClient::connect_timeout(agent_addr(port), DEFAULT_TIMEOUT) {
+            Ok(c) => c,
+            Err(e) => {
+                let _ = self.adb.forward_remove(serial, &format!("tcp:{port}"));
+                return Err(e);
+            }
+        };
         Ok((client, port))
+    }
+
+    /// Remove the `tcp:{port}` forward created by
+    /// [`connect`](Self::connect). Callers must pair every successful
+    /// connect with a disconnect — adb-server forward rules outlive the
+    /// client socket (t4 review found ~95 leaked rules after a bench run).
+    pub fn disconnect(&mut self, serial: &str, port: u16) -> Result<()> {
+        Ok(self.adb.forward_remove(serial, &format!("tcp:{port}"))?)
     }
 
     fn run_shell(&mut self, serial: &str, cmd: &str) -> Result<()> {
