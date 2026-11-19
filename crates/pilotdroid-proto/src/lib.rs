@@ -367,8 +367,23 @@ pub mod payload {
     #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
     pub struct InjectReq {
         pub kind: InjectKind,
+        /// MotionEvent sequence (down/move/up + t_ms offsets). Omitted on
+        /// the wire for `kind=Key` requests (§4.7).
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
         pub points: Vec<MotionPoint>,
+        #[serde(default)]
         pub wait_finish: bool,
+        /// `android.view.KeyEvent.KEYCODE_*` — only for `kind=Key`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub keycode: Option<u32>,
+        /// KeyEvent metaState (§4.7); absent = 0.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub meta: Option<u32>,
+        /// Force injection backend: `"im"` or `"uia"` (§4.7). Absent =
+        /// agent probe fallback chain (IM→UIA). A forced-but-unavailable
+        /// backend must fail with `ERR_BACKEND`, not silently degrade.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub backend: Option<String>,
     }
 
     #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

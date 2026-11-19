@@ -79,8 +79,9 @@ struct ConnectOpts {
     /// Agent's localabstract socket name.
     #[arg(long, default_value = AGENT_SOCKET)]
     socket: String,
-    /// Watchdog: if connect/HELLO fails, reinstall this agent.jar, relaunch
-    /// the daemon and retry once (M2 recovery).
+    /// Force reflash: during watchdog recovery, reinstall this agent.jar
+    /// instead of relying on the on-device copy (M3 graded recovery —
+    /// without it, a dead daemon is revived by zero-copy restart only).
     #[arg(long)]
     jar: Option<PathBuf>,
 }
@@ -178,17 +179,15 @@ fn resolve_serial(cli: &Cli, adb: &mut impl AdbTransport) -> Result<String> {
     }
 }
 
-/// Connect through `ConnectOpts` — plain forward+HELLO, or the watchdog
-/// path when --jar is given.
+/// Connect through `ConnectOpts` — always the graded watchdog path: a dead
+/// daemon is revived by zero-copy restart; `--jar` forces a reflash and is
+/// required only when the remote jar itself is gone.
 fn connect_opts(
     adb: &mut impl AdbTransport,
     serial: &str,
     conn: &ConnectOpts,
 ) -> Result<(pilotdroid_agent::AgentClient, u16)> {
-    match &conn.jar {
-        Some(jar) => agent::connect_or_recover(adb, serial, conn.port, &conn.socket, jar),
-        None => agent::connect(adb, serial, conn.port, &conn.socket),
-    }
+    agent::connect_or_recover(adb, serial, conn.port, &conn.socket, conn.jar.as_deref())
 }
 
 /// POSIX single-quote an argument for remote `sh -c` parsing. Without this,

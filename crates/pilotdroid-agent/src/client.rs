@@ -15,6 +15,7 @@ pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(5);
 // MotionEvent.ACTION_* (android.view.MotionEvent) — stable across API levels.
 const ACTION_DOWN: u8 = 0;
 const ACTION_UP: u8 = 1;
+const ACTION_MOVE: u8 = 2;
 /// Gap between DOWN and UP for a synthesized tap.
 const TAP_DURATION_MS: u64 = 60;
 
@@ -94,6 +95,9 @@ impl AgentClient {
                 },
             ],
             wait_finish,
+            keycode: None,
+            meta: None,
+            backend: None,
         })
     }
 
@@ -116,6 +120,68 @@ impl AgentClient {
                 },
             ],
             wait_finish: false,
+            keycode: None,
+            meta: None,
+            backend: None,
+        })
+    }
+
+    /// Convenience: KEY — KeyEvent down+up through the same
+    /// `injectInputEvent` channel (docs/02 §4.7). `keycode` is an
+    /// `android.view.KeyEvent.KEYCODE_*` value (back=4, home=3,
+    /// recent=187); `meta` is the metaState, `None` = 0.
+    pub fn press(&mut self, keycode: u32, meta: Option<u32>) -> Result<InjectAck> {
+        self.inject(InjectReq {
+            kind: InjectKind::Key,
+            points: vec![],
+            wait_finish: false,
+            keycode: Some(keycode),
+            meta,
+            backend: None,
+        })
+    }
+
+    /// Convenience: swipe — interpolates a straight DOWN→MOVE…→UP event
+    /// sequence (docs/02 §4.7). `steps` MOVE points are placed ~10ms apart;
+    /// `duration_ms` is the total gesture time.
+    pub fn swipe(
+        &mut self,
+        x1: f32,
+        y1: f32,
+        x2: f32,
+        y2: f32,
+        duration_ms: u64,
+    ) -> Result<InjectAck> {
+        let steps = ((duration_ms / 10) as usize).clamp(1, 60);
+        let mut points = Vec::with_capacity(steps + 2);
+        points.push(MotionPoint {
+            action: ACTION_DOWN,
+            x: x1,
+            y: y1,
+            t_ms: 0,
+        });
+        for i in 1..=steps {
+            let t = i as f32 / (steps + 1) as f32;
+            points.push(MotionPoint {
+                action: ACTION_MOVE,
+                x: x1 + (x2 - x1) * t,
+                y: y1 + (y2 - y1) * t,
+                t_ms: (duration_ms as f32 * t) as u64,
+            });
+        }
+        points.push(MotionPoint {
+            action: ACTION_UP,
+            x: x2,
+            y: y2,
+            t_ms: duration_ms,
+        });
+        self.inject(InjectReq {
+            kind: InjectKind::Swipe,
+            points,
+            wait_finish: true,
+            keycode: None,
+            meta: None,
+            backend: None,
         })
     }
 
