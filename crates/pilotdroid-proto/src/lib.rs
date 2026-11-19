@@ -90,11 +90,14 @@ impl TryFrom<u16> for OpCode {
     }
 }
 
-/// Flag bits on the frame header (docs/02-protocol.md §2).
+/// Flag bits on the frame header (docs/02-protocol.md §2, §4.5).
 pub mod flags {
     pub const RESPONSE: u16 = 1 << 0;
+    /// Reserved for the M3 media stream — unused on the control channel.
     pub const STREAM_MORE: u16 = 1 << 1;
     pub const ERROR: u16 = 1 << 2;
+    /// Fire-and-forget: agent must not send a response frame (§4.5).
+    pub const NOACK: u16 = 1 << 3;
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -371,12 +374,147 @@ pub mod payload {
     pub struct ShotReq {
         pub format: String,
         pub quality: u8,
+        /// (0,1] downscale factor (§4.4); omitted on the wire when unset so
+        /// M1 agents still decode the two-field shape.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub scale: Option<f32>,
     }
 
     #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
     pub struct ShotAck {
         pub format: String,
         pub data: ByteBuf,
+    }
+
+    // ---- M2 payloads (docs/02-protocol.md §4) -------------------------------
+
+    fn default_wait_timeout_ms() -> u64 {
+        5000
+    }
+
+    /// Device-side predicate selector — `{text?, id?, desc?, index?}` with AND
+    /// semantics (§4.3). `id` matches `pkg:id/name` exactly or a bare `name`
+    /// by `:id/` suffix; `index` picks the Nth hit (default 0) and is also
+    /// existential (Nth hit missing → no match).
+    #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+    pub struct Selector {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub text: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub id: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub desc: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub index: Option<u32>,
+    }
+
+    /// `wait_until` op — device-side poll on the resident UiAutomation tree
+    /// (§4.3, ADR-004). Timeout is an op result (`code:"TIMEOUT"`), not a
+    /// frame error.
+    #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+    pub struct WaitUntilReq {
+        pub selector: Selector,
+        #[serde(default = "default_wait_timeout_ms")]
+        pub timeout_ms: u64,
+        /// Poll interval; absent → BATCH.poll_ms → agent default 20ms.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub poll_ms: Option<u64>,
+    }
+
+    #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+    pub struct QueryReq {
+        pub selector: Selector,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub attrs: Option<Vec<String>>,
+    }
+
+    /// One UI node as returned by QUERY / wait_until `data.node` (§4.4).
+    #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+    pub struct NodeInfo {
+        pub text: String,
+        pub id: String,
+        pub desc: String,
+        /// `[left, top, right, bottom]` in device px.
+        pub bounds: [i32; 4],
+        pub class: String,
+        pub clickable: bool,
+        pub enabled: bool,
+    }
+
+    #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+    pub struct QueryAck {
+        pub found: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub node: Option<NodeInfo>,
+    }
+
+    /// `TEXT` op — `ACTION_SET_TEXT` on the focused node (§4.4). Failure when
+    /// nothing is focused surfaces as `code:"NO_FOCUS"`.
+    #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+    pub struct TextReq {
+        pub text: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub clear: Option<bool>,
+    }
+
+    #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+    pub struct TextAck {
+        pub ok: bool,
+        pub cost_ns: u64,
+    }
+
+    /// BATCH-level failure policy (§4.1).
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+    #[serde(rename_all = "snake_case")]
+    pub enum FailPolicy {
+        #[default]
+        Stop,
+        Continue,
+    }
+
+    /// One op inside a BATCH request. Serde's external tagging produces
+    /// exactly the spec'd single-key map: `{"inject": InjectReq}` etc.
+    #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+    #[serde(rename_all = "snake_case")]
+    pub enum BatchOp {
+        Inject(InjectReq),
+        WaitUntil(WaitUntilReq),
+        Query(QueryReq),
+        Dump(DumpReq),
+        Screenshot(ShotReq),
+        Text(TextReq),
+    }
+
+    #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+    pub struct BatchReq {
+        pub ops: Vec<BatchOp>,
+        #[serde(default)]
+        pub fail_policy: FailPolicy,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub deadline_ms: Option<u64>,
+        /// Default `poll_ms` for the batch's wait_until ops (§4.1).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub poll_ms: Option<u64>,
+    }
+
+    /// Per-op result inside BATCH_RESULT (§4.2). Every op gets an entry —
+    /// `ABORTED` after a fail-fast, `DEADLINE` after batch deadline.
+    #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+    pub struct OpResult {
+        pub index: u32,
+        pub code: String,
+        pub message: String,
+        /// Device-internal op cost.
+        pub cost_ns: u64,
+        /// Op-specific payload (dump xml / shot data / query node).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub data: Option<rmpv::Value>,
+    }
+
+    #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+    pub struct BatchAck {
+        pub results: Vec<OpResult>,
+        pub total_ns: u64,
     }
 
     /// ERROR-flagged response payload.

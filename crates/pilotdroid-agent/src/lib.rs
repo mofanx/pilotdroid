@@ -36,6 +36,9 @@ pub enum AgentError {
     /// A device-side shell command (mkdir/pkill/launch) exited non-zero.
     #[error("remote shell failed (exit {code:?}): {stderr}")]
     Shell { code: Option<i32>, stderr: String },
+    /// Watchdog recovery could not restore the agent (docs/02 §4.6).
+    #[error("watchdog recovery failed at {stage}: {detail}")]
+    Recover { stage: &'static str, detail: String },
     #[error("unimplemented: {0}")]
     Unimplemented(&'static str),
 }

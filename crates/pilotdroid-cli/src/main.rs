@@ -6,9 +6,9 @@ mod agent_smoke;
 use std::path::PathBuf;
 
 use anyhow::{bail, Context, Result};
-use clap::{Parser, Subcommand};
+use clap::{Args, Parser, Subcommand, ValueEnum};
 use pilotdroid_adb::{AdbClient, AdbTransport};
-use pilotdroid_agent::AgentManager;
+use pilotdroid_agent::{AgentManager, AGENT_SOCKET};
 
 /// pilotdroid — independent Android automation (docs/ for design).
 #[derive(Parser)]
@@ -70,6 +70,21 @@ enum Cmd {
     },
 }
 
+/// Shared connect knobs for agent ops — single source for --port/--socket.
+#[derive(Args)]
+struct ConnectOpts {
+    /// Local tcp port for the forward (default: auto-pick a free one).
+    #[arg(long)]
+    port: Option<u16>,
+    /// Agent's localabstract socket name.
+    #[arg(long, default_value = AGENT_SOCKET)]
+    socket: String,
+    /// Watchdog: if connect/HELLO fails, reinstall this agent.jar, relaunch
+    /// the daemon and retry once (M2 recovery).
+    #[arg(long)]
+    jar: Option<PathBuf>,
+}
+
 #[derive(Subcommand)]
 enum AgentCmd {
     /// Push the agent jar to the device (/data/local/tmp/pilotdroid/agent.jar).
@@ -88,21 +103,13 @@ enum AgentCmd {
         /// Don't wait for the inject to finish on the device (async).
         #[arg(long)]
         nowait: bool,
-        /// Local tcp port for the forward (default: auto-pick a free one).
-        #[arg(long)]
-        port: Option<u16>,
-        /// Agent's localabstract socket name.
-        #[arg(long, default_value = "pilotdroid_agent")]
-        socket: String,
+        #[command(flatten)]
+        conn: ConnectOpts,
     },
     /// Dump the UI hierarchy XML through the agent.
     Dump {
-        /// Local tcp port for the forward (default: auto-pick).
-        #[arg(long)]
-        port: Option<u16>,
-        /// Agent's localabstract socket name.
-        #[arg(long, default_value = "pilotdroid_agent")]
-        socket: String,
+        #[command(flatten)]
+        conn: ConnectOpts,
     },
     /// Take a screenshot through the agent and save it.
     Shot {
@@ -112,13 +119,39 @@ enum AgentCmd {
         /// JPEG quality 1-100.
         #[arg(long, default_value_t = 80)]
         quality: u8,
-        /// Local tcp port for the forward (default: auto-pick).
+        /// Downscale factor (0,1] applied on-device before encoding.
         #[arg(long)]
-        port: Option<u16>,
-        /// Agent's localabstract socket name.
-        #[arg(long, default_value = "pilotdroid_agent")]
-        socket: String,
+        scale: Option<f32>,
+        #[command(flatten)]
+        conn: ConnectOpts,
     },
+    /// Session-mode bench: N iterations of one op over a single persistent
+    /// connection — measures amortized latency (docs/02 §4.6 口径).
+    Bench {
+        /// Iterations.
+        n: u32,
+        /// Op to measure.
+        #[arg(long, default_value = "tap")]
+        op: BenchOp,
+        /// Tap coordinates.
+        #[arg(long, default_value_t = 700.0)]
+        x: f32,
+        #[arg(long, default_value_t = 1600.0)]
+        y: f32,
+        /// Fire-and-forget injects (NOACK flag, no response frame).
+        #[arg(long)]
+        noack: bool,
+        #[command(flatten)]
+        conn: ConnectOpts,
+    },
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum BenchOp {
+    Ping,
+    Tap,
+    Dump,
+    Shot,
 }
 
 /// Resolve `--device`, falling back to the sole ready device.
@@ -142,6 +175,19 @@ fn resolve_serial(cli: &Cli, adb: &mut impl AdbTransport) -> Result<String> {
                 .collect::<Vec<_>>()
                 .join(", ")
         ),
+    }
+}
+
+/// Connect through `ConnectOpts` — plain forward+HELLO, or the watchdog
+/// path when --jar is given.
+fn connect_opts(
+    adb: &mut impl AdbTransport,
+    serial: &str,
+    conn: &ConnectOpts,
+) -> Result<(pilotdroid_agent::AgentClient, u16)> {
+    match &conn.jar {
+        Some(jar) => agent::connect_or_recover(adb, serial, conn.port, &conn.socket, jar),
+        None => agent::connect(adb, serial, conn.port, &conn.socket),
     }
 }
 
@@ -218,14 +264,8 @@ fn main() -> Result<()> {
                     AgentManager::new(&mut adb).stop(&serial)?;
                     eprintln!("agent daemon stopped on {serial}");
                 }
-                AgentCmd::Tap {
-                    x,
-                    y,
-                    nowait,
-                    port,
-                    socket,
-                } => {
-                    let (mut client, port) = agent::connect(&mut adb, &serial, *port, socket)?;
+                AgentCmd::Tap { x, y, nowait, conn } => {
+                    let (mut client, port) = connect_opts(&mut adb, &serial, conn)?;
                     let res = agent::tap(&mut client, *x, *y, !nowait);
                     let disc = agent::disconnect(&mut adb, &serial, port);
                     let (ack, ms) = res?;
@@ -235,8 +275,8 @@ fn main() -> Result<()> {
                         ack.ok, ack.events, ack.ms
                     );
                 }
-                AgentCmd::Dump { port, socket } => {
-                    let (mut client, port) = agent::connect(&mut adb, &serial, *port, socket)?;
+                AgentCmd::Dump { conn } => {
+                    let (mut client, port) = connect_opts(&mut adb, &serial, conn)?;
                     let res = agent::dump(&mut client);
                     let disc = agent::disconnect(&mut adb, &serial, port);
                     let (xml, ms) = res?;
@@ -247,11 +287,11 @@ fn main() -> Result<()> {
                 AgentCmd::Shot {
                     output,
                     quality,
-                    port,
-                    socket,
+                    scale,
+                    conn,
                 } => {
-                    let (mut client, port) = agent::connect(&mut adb, &serial, *port, socket)?;
-                    let res = agent::shot(&mut client, "jpeg", *quality);
+                    let (mut client, port) = connect_opts(&mut adb, &serial, conn)?;
+                    let res = agent::shot(&mut client, "jpeg", *quality, *scale);
                     let disc = agent::disconnect(&mut adb, &serial, port);
                     let (fmt, bytes, ms) = res?;
                     disc?;
@@ -261,6 +301,38 @@ fn main() -> Result<()> {
                         "{{\"op\":\"shot\",\"format\":\"{fmt}\",\"bytes\":{},\"rtt_ms\":{ms:.1},\"path\":\"{}\"}}",
                         bytes.len(),
                         output.display()
+                    );
+                }
+                AgentCmd::Bench {
+                    n,
+                    op,
+                    x,
+                    y,
+                    noack,
+                    conn,
+                } => {
+                    let (mut client, port) = connect_opts(&mut adb, &serial, conn)?;
+                    let kind = match op {
+                        BenchOp::Ping => agent::BenchKind::Ping,
+                        BenchOp::Tap => agent::BenchKind::Tap,
+                        BenchOp::Dump => agent::BenchKind::Dump,
+                        BenchOp::Shot => agent::BenchKind::Shot,
+                    };
+                    let res = agent::bench(&mut client, kind, *n, *x, *y, *noack);
+                    let disc = agent::disconnect(&mut adb, &serial, port);
+                    let ms = res?;
+                    disc?;
+                    let mean = ms.iter().sum::<f64>() / ms.len() as f64;
+                    let list = ms
+                        .iter()
+                        .map(|v| format!("{v:.1}"))
+                        .collect::<Vec<_>>()
+                        .join(",");
+                    println!(
+                        "{{\"op\":\"{op:?}\",\"n\":{n},\"noack\":{noack},\"mean_ms\":{mean:.1},\"p50_ms\":{:.1},\"p95_ms\":{:.1},\"min_ms\":{:.1},\"ms\":[{list}]}}",
+                        agent::percentile(&ms, 50.0),
+                        agent::percentile(&ms, 95.0),
+                        agent::percentile(&ms, 0.0),
                     );
                 }
             }

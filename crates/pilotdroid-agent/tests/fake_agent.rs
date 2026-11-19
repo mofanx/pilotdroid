@@ -29,9 +29,11 @@ async fn spawn_fake(behavior: FakeBehavior) -> SocketAddr {
                 FakeBehavior::Responsive => {
                     tokio::spawn(async move {
                         while let Some(frame) = read_frame(&mut sock).await {
-                            let resp = dispatch_fake(&frame);
-                            if sock.write_to_async(&resp).await.is_err() {
-                                break;
+                            // NOACK (§4.5): execute but send no response frame.
+                            if let Some(resp) = dispatch_fake(&frame) {
+                                if sock.write_to_async(&resp).await.is_err() {
+                                    break;
+                                }
                             }
                         }
                     });
@@ -85,31 +87,41 @@ fn respond(req: &Frame, ty: u16, payload: Vec<u8>) -> Frame {
     )
 }
 
-fn dispatch_fake(req: &Frame) -> Frame {
+/// None → the fake sent no reply (NOACK requests per docs/02 §4.5).
+fn dispatch_fake(req: &Frame) -> Option<Frame> {
+    if req.header.flags & flags::NOACK != 0 {
+        return None;
+    }
     let Ok(op) = OpCode::try_from(req.header.msg_type) else {
         let p = encode(&ErrorAck {
             code: "BAD_OPCODE".into(),
             message: format!("unknown 0x{:04x}", req.header.msg_type),
         })
         .unwrap();
-        return Frame::new(
+        return Some(Frame::new(
             req.header.channel,
             req.header.msg_type,
             flags::RESPONSE | flags::ERROR,
             req.header.req_id,
             p,
-        );
+        ));
     };
-    match op {
+    Some(match op {
         OpCode::Hello => respond(
             req,
             OpCode::HelloAck as u16,
             encode(&HelloAck {
                 agent: "fake-agent/0.1".into(),
-                caps: caps::INJECT | caps::DUMP | caps::SHOT,
+                caps: caps::INJECT
+                    | caps::DUMP
+                    | caps::SHOT
+                    | caps::QUERY
+                    | caps::BATCH
+                    | caps::TEXT,
             })
             .unwrap(),
         ),
+        OpCode::Ping => respond(req, OpCode::Pong as u16, Vec::new()),
         OpCode::Inject => {
             let r: InjectReq = decode(&req.payload).unwrap();
             respond(
@@ -131,6 +143,32 @@ fn dispatch_fake(req: &Frame) -> Frame {
             })
             .unwrap(),
         ),
+        OpCode::Query => respond(
+            req,
+            OpCode::Query as u16,
+            encode(&QueryAck {
+                found: true,
+                node: Some(NodeInfo {
+                    text: "fake".into(),
+                    id: "com.fake:id/btn".into(),
+                    desc: String::new(),
+                    bounds: [10, 20, 110, 60],
+                    class: "android.widget.Button".into(),
+                    clickable: true,
+                    enabled: true,
+                }),
+            })
+            .unwrap(),
+        ),
+        OpCode::Text => respond(
+            req,
+            OpCode::Text as u16,
+            encode(&TextAck {
+                ok: true,
+                cost_ns: 500_000,
+            })
+            .unwrap(),
+        ),
         OpCode::Screenshot => respond(
             req,
             OpCode::Screenshot as u16,
@@ -140,6 +178,29 @@ fn dispatch_fake(req: &Frame) -> Frame {
             })
             .unwrap(),
         ),
+        OpCode::Batch => {
+            let r: BatchReq = decode(&req.payload).unwrap();
+            // Per-op results (§4.2): one entry per op, ABORTED marking handled
+            // by the real agent — the fake OKs everything.
+            let results = (0..r.ops.len() as u32)
+                .map(|index| OpResult {
+                    index,
+                    code: "OK".into(),
+                    message: String::new(),
+                    cost_ns: 1_000,
+                    data: None,
+                })
+                .collect();
+            respond(
+                req,
+                OpCode::BatchResult as u16,
+                encode(&BatchAck {
+                    results,
+                    total_ns: 3_000,
+                })
+                .unwrap(),
+            )
+        }
         _ => {
             let p = encode(&ErrorAck {
                 code: "UNSUPPORTED".into(),
@@ -154,7 +215,7 @@ fn dispatch_fake(req: &Frame) -> Frame {
                 p,
             )
         }
-    }
+    })
 }
 
 // ---- client tests -----------------------------------------------------------
@@ -177,9 +238,86 @@ async fn client_full_rpc_path() {
     let xml = c.dump().unwrap();
     assert!(xml.contains("<hierarchy>"));
 
-    let (fmt, bytes) = c.screenshot("jpeg", 80).unwrap();
+    let (fmt, bytes) = c.screenshot("jpeg", 80, Some(0.5)).unwrap();
     assert_eq!(fmt, "jpeg");
     assert_eq!(&bytes[..2], &[0xFF, 0xD8]);
+}
+
+// ---- M2 client surface (batch / query / text / noack / ping) ---------------
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn client_batch_returns_per_op_results() {
+    let addr = spawn_fake(FakeBehavior::Responsive).await;
+    tokio::time::sleep(Duration::from_millis(30)).await;
+    let mut c = AgentClient::connect_timeout(addr, Duration::from_secs(2)).unwrap();
+
+    let ack = c
+        .batch_ops(vec![
+            BatchOp::Inject(InjectReq {
+                kind: InjectKind::Tap,
+                points: vec![],
+                wait_finish: false,
+            }),
+            BatchOp::WaitUntil(WaitUntilReq {
+                selector: Selector {
+                    text: Some("fake".into()),
+                    ..Default::default()
+                },
+                timeout_ms: 5000,
+                poll_ms: None,
+            }),
+            BatchOp::Inject(InjectReq {
+                kind: InjectKind::Tap,
+                points: vec![],
+                wait_finish: true,
+            }),
+        ])
+        .unwrap();
+    assert_eq!(ack.results.len(), 3);
+    assert_eq!(
+        ack.results.iter().map(|r| r.index).collect::<Vec<_>>(),
+        vec![0, 1, 2]
+    );
+    assert!(ack.results.iter().all(|r| r.code == "OK"));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn client_query_and_text_and_ping() {
+    let addr = spawn_fake(FakeBehavior::Responsive).await;
+    tokio::time::sleep(Duration::from_millis(30)).await;
+    let mut c = AgentClient::connect_timeout(addr, Duration::from_secs(2)).unwrap();
+
+    assert!(c
+        .exists(Selector {
+            id: Some("btn".into()),
+            ..Default::default()
+        })
+        .unwrap());
+    let qa = c
+        .query(QueryReq {
+            selector: Selector::default(),
+            attrs: None,
+        })
+        .unwrap();
+    assert_eq!(qa.node.unwrap().bounds, [10, 20, 110, 60]);
+
+    c.set_text("你好", true).unwrap();
+    c.ping().unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn client_noack_inject_gets_no_frame_and_stays_in_sync() {
+    let addr = spawn_fake(FakeBehavior::Responsive).await;
+    tokio::time::sleep(Duration::from_millis(30)).await;
+    let mut c = AgentClient::connect_timeout(addr, Duration::from_secs(1)).unwrap();
+
+    // Fire-and-forget: returns after the write; the fake sent no response.
+    c.tap_noack(700.0, 1600.0).unwrap();
+    c.tap_noack(710.0, 1600.0).unwrap();
+    // A subsequent normal request still pairs correctly — proves the fake
+    // honoured NOACK (an errant INJECT_RESULT would poison this hello).
+    let ack = c.hello().unwrap();
+    assert_eq!(ack.agent, "fake-agent/0.1");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -188,8 +326,8 @@ async fn client_maps_agent_error_frame() {
     tokio::time::sleep(Duration::from_millis(30)).await;
     let mut c = AgentClient::connect_timeout(addr, Duration::from_secs(2)).unwrap();
 
-    // QUERY is not implemented on the fake -> ERROR-flagged response.
-    let err = c.call(OpCode::Query, Vec::new()).unwrap_err();
+    // STREAM_CTRL is not implemented on the fake -> ERROR-flagged response.
+    let err = c.call(OpCode::StreamCtrl, Vec::new()).unwrap_err();
     match err {
         AgentError::Remote { code, .. } => assert_eq!(code, "UNSUPPORTED"),
         other => panic!("expected Remote, got {other:?}"),
@@ -315,4 +453,126 @@ fn repeated_connect_disconnect_leaves_no_forward_rules() {
         }
     }
     assert!(adb.forwards.is_empty(), "leaked rules: {:?}", adb.forwards);
+}
+
+// ---- watchdog recovery (M2) -------------------------------------------------
+
+/// FakeAdb whose `start` command actually launches a minimal frame-speaking
+/// listener on `target_port` — mirroring a device where `app_process` binds
+/// the socket. The first connect_recover attempt must fail (nothing
+/// listening), the ladder must run install+start, and the retry must
+/// succeed through HELLO.
+struct RecoveringAdb {
+    inner: FakeAdb,
+    target_port: u16,
+}
+
+impl AdbTransport for RecoveringAdb {
+    fn list_devices(&mut self) -> AdbResult<Vec<DeviceInfo>> {
+        self.inner.list_devices()
+    }
+    fn shell(&mut self, serial: &str, command: &str) -> AdbResult<ShellOutput> {
+        if command.contains("app_process") {
+            let port = self.target_port;
+            std::thread::spawn(move || {
+                let l = std::net::TcpListener::bind(("127.0.0.1", port)).unwrap();
+                if let Ok((mut s, _)) = l.accept() {
+                    // Speak just enough of the wire protocol for HELLO.
+                    while let Ok(req) = Frame::read_from(&mut s) {
+                        if req.header.msg_type == OpCode::Hello as u16 {
+                            let p = encode(&HelloAck {
+                                agent: "recovered/1".into(),
+                                caps: caps::INJECT,
+                            })
+                            .unwrap();
+                            let _ = Frame::new(
+                                req.header.channel,
+                                OpCode::HelloAck as u16,
+                                flags::RESPONSE,
+                                req.header.req_id,
+                                p,
+                            )
+                            .write_to(&mut s);
+                        } else {
+                            break;
+                        }
+                    }
+                }
+            });
+        }
+        self.inner.shell(serial, command)
+    }
+    fn push(&mut self, s: &str, l: &Path, r: &str) -> AdbResult<()> {
+        self.inner.push(s, l, r)
+    }
+    fn pull(&mut self, s: &str, r: &str, l: &Path) -> AdbResult<()> {
+        self.inner.pull(s, r, l)
+    }
+    fn forward(&mut self, s: &str, l: &str, r: &str) -> AdbResult<()> {
+        self.inner.forward(s, l, r)
+    }
+    fn forward_remove(&mut self, s: &str, l: &str) -> AdbResult<()> {
+        self.inner.forward_remove(s, l)
+    }
+}
+
+#[test]
+fn watchdog_recovers_dead_agent_and_hellos() {
+    // Reserve the target port but hold it closed — first dial must fail.
+    let probe = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = probe.local_addr().unwrap().port();
+    drop(probe);
+
+    let mut adb = RecoveringAdb {
+        inner: FakeAdb::default(),
+        target_port: port,
+    };
+    {
+        let mut m = AgentManager::new(&mut adb);
+        let (_client, _port, hello) = m
+            .connect_recover(
+                "fake0",
+                Some(port),
+                "pilotdroid_agent",
+                Path::new("/tmp/agent.jar"),
+            )
+            .unwrap();
+        assert_eq!(hello.agent, "recovered/1");
+    }
+    let inner = &adb.inner;
+    // Ladder ran: jar pushed (install) + app_process launch (start).
+    assert_eq!(inner.pushes.len(), 1, "reinstall must push the jar");
+    assert!(
+        inner.shells.iter().any(|(_, c)| c.contains("app_process")),
+        "relaunch missing: {:?}",
+        inner.shells
+    );
+    // Two dial attempts → two forward rules, both cleaned/held consistently.
+    assert_eq!(inner.forward_calls.len(), 2);
+}
+
+#[test]
+fn watchdog_surfaces_recovery_failure() {
+    // Port permanently closed — even after the ladder the retry must fail,
+    // and the error must carry the Recover variant (not a bare io error).
+    let probe = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = probe.local_addr().unwrap().port();
+    drop(probe);
+
+    let mut adb = FakeAdb::default(); // start shell does NOT launch anything
+    let mut m = AgentManager::new(&mut adb);
+    let res = m.connect_recover(
+        "fake0",
+        Some(port),
+        "pilotdroid_agent",
+        Path::new("/tmp/agent.jar"),
+    );
+    let err = match res {
+        Err(e) => e,
+        Ok(_) => panic!("expected recovery failure, got connected client"),
+    };
+    assert!(
+        matches!(err, AgentError::Recover { stage: "retry", .. }),
+        "got {err:?}"
+    );
 }
