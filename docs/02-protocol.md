@@ -104,7 +104,15 @@ Selector = { text?: string, id?: string, desc?: string, index?: u32 }
 
 - `QueryReq = { selector: Selector, attrs?: string[] }` → `{ found: bool, node?: { text,id,desc,bounds:[l,t,r,b], class, clickable, enabled } }`；exists 语义即 `found`。`attrs` 是**可选裁剪参数**：给定 `["text","bounds"]` 时 agent 只回该属性子集；省略时回全量 node。host 侧必须容忍多余字段（serde named-map 天然如此）。
 - `TextReq = { text: string, clear?: bool }` → 设备端 `AccessibilityNodeInfo.ACTION_SET_TEXT` 作用于当前焦点节点（非 ASCII 同路径）；无焦点节点 → `code:"NO_FOCUS"`；应答 `{ok, chars, cost_ns}`（chars 为写入字符数）。
-- `ShotReq`/`ShotAck`：应答含 `{format, w, h, scale, data}`——w/h/scale 为缩放后实际几何与生效倍率的回显。
+- `ShotReq`/`ShotAck`：请求 `{format, quality: 0-100 = 80, scale: (0,1] = 1.0}`；应答含 `{format, w, h, scale, data}`——w/h/scale 为缩放后实际几何与生效倍率的回显。
+
+### 4.7 INJECT 事件序列与 KEY（M3）
+
+`InjectReq = { kind: "Tap"|"Swipe"|"Key", points?: MotionPoint[], wait_finish?: bool, keycode?: u32, backend?: "im"|"uia" }`
+
+- **MotionPoint = { action: u8, x: f32, y: f32, t_ms: u64 }**：`action` 为 `MotionEvent.ACTION_*`（0=DOWN、1=UP、2=MOVE），`t_ms` 为相对首点的 eventTime 偏移。`points` 按序构成手势：tap = [DOWN, UP(+~60ms)]；**swipe = DOWN + N×MOVE + UP**（MOVE 点密度即路径采样）。`wait_finish` 缺省 false。
+- **kind="Key"**：`keycode`（`android.view.KeyEvent.KEYCODE_*`，back=4/home=3/recent=187，任意 keycode 合法）走同一 `injectInputEvent` 通道构造 `KeyEvent`（DOWN+UP）；`points` 此时省略。可选 `meta`（metaState，缺省 0）。
+- **`backend` 可选强制字段**：`"im"`（InputManager 路径）或 `"uia"`（`UiAutomation.injectInputEvent`）；缺省走 agent 内置探测回退链（IM→UIA，connect 期探测，`HELLO_ACK.inject` 上报生效后端）。强制指定后端失败 → `code:"ERR_BACKEND"` op 错误而非静默降级。
 - `ShotReq` 增 `scale: f32 ∈ (0,1]`（缺省 1.0），设备端缩放后再编码（实测账见 spike/e2e/wifi-vs-usb.md §2 + RESULTS-M2：420KB→18KB，但编码主导 e2e，字节缩减 23×）。
 
 ### 4.5 NOACK flag（flags bit3 = 0x0008）
@@ -124,9 +132,7 @@ Selector = { text?: string, id?: string, desc?: string, index?: u32 }
 
 目的：**对拍与降级**，不是长期维护两套语义。
 
-- agent 另监听 `localabstract:pilotdroid_agent-u2compat`（或直接 `adb forward tcp:9008`），实现 u2 的 `POST /jsonrpc/0` 方法子集：`click / swipe / dumpWindowHierarchy / takeScreenshot / waitForExists / pressKey`。
-- 内部实现统一走同一执行引擎——compat 层只是编解码翻译，不改语义。
-- 用法：python `uiautomator2.connect()` 直连对拍；M0-M1 也可把该端口直接 forward 到 **u2.jar**（无修改复用，Apache 2.0），在自研 agent 未覆盖的能力上兜底。
+**ADR-005 修正**：compat 层改为 **host 侧翻译层**——独立进程监听 u2 `POST /jsonrpc/0`，把方法子集（click/swipe/dumpWindowHierarchy/takeScreenshot/waitForExists/pressKey/setText/appStart/exists）翻译为 PD01 帧并经持久 socket 复用连接发给 agent。原"agent 内嵌 JSON-RPC 端口"方案被否：UiAutomation 单持有者约束下不能再起第二个服务进程，且内嵌方案使 agent 体积/迭代成本膨胀（详见 ADR-005）。
 
 ## 6. 连接管理与超时
 

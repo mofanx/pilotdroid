@@ -42,10 +42,16 @@ CAPS=$(echo "$HELLO" | python3 -c 'import json,sys; print(json.load(sys.stdin)["
 echo "== A2 INJECT tap result + logcat side-effect =="
 adb -s "$DEV" shell 'logcat -c' 2>/dev/null
 INJ=$($CLI inject-tap 700 1600 2>&1) || true
-sleep 0.5
 # MIUI logs `MIUIInput: Input event injection from package: null action ...`
 # for every injected event; on other ROMs grep generic injection markers.
-LC=$(adb -s "$DEV" shell 'logcat -d -b all -t 400' | grep -cE "njection from package|injectInputEvent|Input event injection" || true)
+# Marker flushes asynchronously — poll with settle (up to 3s), `-b all` since
+# MIUI writes to the system buffer.
+LC=0
+for _ in 1 2 3 4 5 6; do
+  sleep 0.5
+  LC=$(adb -s "$DEV" shell 'logcat -d -b all -t 400' | grep -cE "njection from package|injectInputEvent|Input event injection" || true)
+  [ "$LC" -ge 1 ] && break
+done
 echo "$INJ" | grep -q '"ok": *true\|"ok":true' && [ "$LC" -ge 1 ] \
   && ok "inject_tap_observable" || bad "inject_tap_observable" "resp=$INJ logcat_inject_lines=$LC"
 
@@ -130,8 +136,14 @@ SZ=$(stat -c%s /tmp/shot-half.jpg 2>/dev/null || echo 0)
 echo "== M2-A14 NOACK: no response frame, inject still lands =="
 adb -s "$DEV" shell 'logcat -c' 2>/dev/null
 NA=$($CLI noack-tap 700 1600 2>&1) || true
-sleep 0.5
-LC=$(adb -s "$DEV" shell 'logcat -d -t 400' | grep -cE "njection from package" || true)
+# MIUIInput marker writes to the system buffer and flushes asynchronously —
+# poll with settle (up to 3s) instead of a single `logcat -d` snapshot.
+LC=0
+for _ in 1 2 3 4 5 6; do
+  sleep 0.5
+  LC=$(adb -s "$DEV" shell 'logcat -d -b all -t 400' | grep -cE "njection from package" || true)
+  [ "$LC" -ge 1 ] && break
+done
 echo "$NA" | grep -q "OK: no response" && [ "$LC" -ge 1 ] \
   && ok "noack_tap" || bad "noack_tap" "out=$NA logcat=$LC"
 
