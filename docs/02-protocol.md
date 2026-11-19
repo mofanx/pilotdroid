@@ -50,7 +50,7 @@
 | 0x0030 | SCREENSHOT | h→a | 按需截图：format(jpeg/png/raw)、quality、scale、display_id |
 | 0x0040 | BATCH | h→a | 有序 op 数组 + 失败策略（见 §4） |
 | 0x0041 | BATCH_RESULT | a→h | 每 op 的结果数组（stream-more 中间推送） |
-| 0x0050 | STREAM_CTRL | h→a | start/stop 帧流：fps、编码(h264/jpeg)、display_id |
+| 0x0050 | STREAM_CTRL | h→a | start/stop 帧流：fps、scale、quality、format(jpeg，h264 留位)、display_id——契约见 §4.8 |
 | 0x0060 | TEXT | h→a | 文本输入（ASCII 走注入；非 ASCII 走 IME 通道，见 03-device-agent §6） |
 | 0x00F0 | AGENT_STOP | h→a | 显式退出 |
 
@@ -126,7 +126,20 @@ Selector = { text?: string, id?: string, desc?: string, index?: u32 }
 
 - ch=0 严格 request/response：一请求至多一响应（NOACK 为零）；M2 期 host 侧**串行**（至多一个在途请求）。
 - **禁止跨通道交错**：media 帧（ch=1）不得出现在本 socket——未来帧流使用第二条独立 socket/forward（STREAM_CTRL 激活时建立）。agent 收到非 control 帧按协议错误拒连。
-- `stream-more` 中间推送与 CANCEL 语义**不在 M2 范围**（BATCH_RESULT 单帧返回），保留 flags bit1 与 CANCEL opcode 位待 M3 帧流再起用。
+- `stream-more` 中间推送与 CANCEL 语义**不在 M2 范围**（BATCH_RESULT 单帧返回），保留 flags bit1 与 CANCEL opcode 位待帧流再起用——STREAM_MORE 于 M4 media 帧流首次启用（§4.8）。
+
+### 4.8 媒体通道帧流（M4 契约，定稿——决策见 ADR-006）
+
+**传输**：media 帧走第二条独立 socket `localabstract:pilotdroid_agent_media`（第二条 `adb forward`），与 control socket 完全隔离——慢读者不可阻塞 control op。agent 启动时与 control socket 一并绑定，任一时刻至多一个流式会话。
+
+- **STREAM_CTRL（control 通道，0x0050）**：
+  - 请求 `{"op":"start", "fps"?:u8=5, "scale"?:f32=0.5, "quality"?:u8=70, "format"?:"jpeg"}` → 应答 `{ok, socket, effective_fps_hint}`；已在流中 → `code:"ERR_STREAM_BUSY"`。
+  - 请求 `{"op":"stop"}` → 应答 `{ok, frames_sent, dropped}`。
+- **FRAME（media 通道，ch=1，msg_type 0x0001）**：帧头 `req_id` 为单调递增 seq（缺口即丢帧）；flags 置 `STREAM_MORE`（终止帧不置）；payload msgpack `{format, w, h, ts_ns, take_ns, enc_ns, dropped, data}`——`dropped` 为累计丢帧计数，`ts_ns` 为采集时刻。
+- **背压**：写阻塞超过一个帧间隔 → 丢帧不阻塞，`dropped++`；media 积压绝不影响 control 通道。
+- **stop 清理**：`stop` / control 连接断开 / media 客户端断开 → 停采集循环、join 线程、关闭该流连接（socket 继续监听）；无残留线程。
+- **会话绑定**：流绑定发起它的 control 会话；control 断开即隐式 stop（防孤儿流）。
+- **编码**：v0 仅 `format:"jpeg"`（E1 归因：编码∝像素，quality 只省字节）；`"h264"` 留位待 MediaCodec 管线（M5）。`ui_event`（ch=1 type 0x0002）留作 accessibility 推送，本期不实现。
 
 ## 5. u2 JSON-RPC 兼容层
 
@@ -145,4 +158,4 @@ Selector = { text?: string, id?: string, desc?: string, index?: u32 }
 
 - msgpack vs FlatBuffers（首版 msgpack，bench 后重评）。
 - UI 树 wire 格式：XML 透传（兼容 u2 工具链）vs 结构化 node 数组（更小）。
-- 帧流编码：h264 需要 MediaCodec 管线（M3）；JPEG 序列帧实现更简单——takeScreenshot p50≈13-24ms（A14）意味着 ~40fps 理论上限，15fps 流可达性已被 spike-2 支撑。
+- 帧流编码：JPEG 序列帧已定稿（§4.8，实测 ~5-15fps @scale0.5 受 takeScreenshot 抖动支配）；h264 需 MediaCodec 管线，归 M5。
