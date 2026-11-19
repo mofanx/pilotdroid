@@ -191,6 +191,8 @@ fn dispatch_fake(req: &Frame) -> Option<Frame> {
                 w: Some(720),
                 h: Some(1600),
                 scale: Some(1.0),
+                take_ns: None,
+                enc_ns: None,
             })
             .unwrap(),
         ),

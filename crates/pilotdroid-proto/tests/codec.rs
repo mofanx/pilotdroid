@@ -185,6 +185,8 @@ fn payload_msgpack_roundtrip_all_types() {
         w: None,
         h: None,
         scale: None,
+        take_ns: None,
+        enc_ns: None,
     };
     assert_eq!(decode::<ShotAck>(&encode(&shot).unwrap()).unwrap(), shot);
 
@@ -453,6 +455,8 @@ fn shot_ack_decodes_agent_geometry_fields() {
         w: Some(720),
         h: Some(1600),
         scale: Some(0.5),
+        take_ns: None,
+        enc_ns: None,
     };
     assert_eq!(decode::<ShotAck>(&encode(&ack).unwrap()).unwrap(), ack);
     // M1-era {format,data} replies still decode with the extras absent.
@@ -572,4 +576,52 @@ fn inject_req_m2_wire_shape_still_decodes() {
     assert_eq!(req.meta, None);
     assert_eq!(req.backend, None);
     assert!(req.wait_finish);
+}
+
+#[test]
+fn shot_ack_take_enc_ns_split_fields() {
+    // M3 agent emits take_ns (capture+scale) / enc_ns (JPEG encode) for
+    // observability (m3-experiments.py consumes them). Option — M2-era
+    // ShotAck without them still decodes to None.
+    let full = ShotAck {
+        format: "jpeg".into(),
+        data: serde_bytes::ByteBuf::from(vec![0xFF, 0xD8]),
+        w: Some(720),
+        h: Some(1600),
+        scale: Some(1.0),
+        take_ns: Some(25_600_000),
+        enc_ns: Some(101_900_000),
+    };
+    assert_eq!(decode::<ShotAck>(&encode(&full).unwrap()).unwrap(), full);
+    let v: rmpv::Value = rmp_serde::from_slice(&encode(&full).unwrap()).unwrap();
+    let keys: Vec<String> = v
+        .as_map()
+        .unwrap()
+        .iter()
+        .filter_map(|(k, _)| k.as_str().map(str::to_string))
+        .collect();
+    assert!(keys.contains(&"take_ns".to_string()), "{keys:?}");
+    assert!(keys.contains(&"enc_ns".to_string()), "{keys:?}");
+
+    let m2 = ShotAck {
+        format: "jpeg".into(),
+        data: serde_bytes::ByteBuf::from(vec![0xFF, 0xD8]),
+        w: None,
+        h: None,
+        scale: None,
+        take_ns: None,
+        enc_ns: None,
+    };
+    let back: ShotAck = decode(&encode(&m2).unwrap()).unwrap();
+    assert_eq!(back.take_ns, None);
+    assert_eq!(back.enc_ns, None);
+    // ...and None fields must not reach the wire.
+    let v2: rmpv::Value = rmp_serde::from_slice(&encode(&m2).unwrap()).unwrap();
+    let keys2: Vec<String> = v2
+        .as_map()
+        .unwrap()
+        .iter()
+        .filter_map(|(k, _)| k.as_str().map(str::to_string))
+        .collect();
+    assert!(!keys2.contains(&"take_ns".to_string()), "{keys2:?}");
 }
