@@ -42,3 +42,4 @@ Thumbs.db
 spike/apk/*.idsig
 agent/build/
 agent/agent.jar
+__pycache__/
