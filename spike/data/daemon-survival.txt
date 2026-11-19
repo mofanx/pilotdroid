@@ -1,0 +1,6 @@
+# daemon survival — Mi 11, heartbeat 1s/line
+# setup: (a) nohup setsid bg  (b) plain bg — both wrote 4 lines before test
+adb kill-server +8s:  a=16 b=16 lines, 2 app_process alive   # host daemon kill: BOTH survive
+adb kill-server +5s:  a=21 b=21
+adb usb (device-side adbd restart):  a=28 b=28 FROZEN, ps count=0  # BOTH KILLED
+# conclusion: session-end survival = free; adbd restart kills all shell-spawned processes

@@ -20,7 +20,9 @@ spike/**/*.png
 spike/**/*.raw
 spike/tmp/
 spike/build/
-spike/spike.jar
+spike/*.jar
+spike/apk/*.apk
+spike/apk/*.keystore
 
 # IDE / 编辑器
 .idea/
@@ -37,3 +39,4 @@ Thumbs.db
 # 环境/密钥（如有）
 .env
 .env.*
+spike/apk/*.idsig
