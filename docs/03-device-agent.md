@@ -40,6 +40,7 @@ bit0 InputManagerGlobal.injectInputEvent(ev, mode)   ← async p50≈1.5-4ms（�
 - MotionEvent 由 host 传参数在 agent 内构造：`downTime/eventTime/action/x/y/pressure/metaState`。
 - mode：0=async（p50~1.5-2ms，稳定），2=wait_for_finish（返回真实分发结果，但**延迟随前台目标变化**：轻量前台 ~3ms，重负载前台 ~15ms——性能验收按 async 口径或固定前台条件测量）。默认 2，批量中间步用 0 提效。
 - **存活探测**：能力探测时对 bit0/bit1 真实注入一次——duchamp 型设备会在 `injectInputEvent` 时把进程 SIGKILL（SecurityException 都不给），探测必须观察"调用后进程还在不在"。
+- **M3 后端 A/B 实测（n=50 tap，Mi11，spike/e2e/m3-experiments.json）**：IM dev p50=**2.57ms** / e2e 6.6ms vs UIA dev p50=**23.9ms** / e2e 66.9ms——IM 快 ~21ms，**IM 维持默认后端**，UIA 仅作 IM 失败/OEM 收权时回退（`InjectReq.backend` 强制字段仅用于归因测量与极端规避，不用于常规路径）。
 
 ## 4. 截图三策略（spike-2 已裁决主路径）
 

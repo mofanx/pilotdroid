@@ -70,16 +70,42 @@ class Agent:
     def ping(self):
         return self.call(T["PING"], {})
 
-    def inject_tap(self, x, y, wait_finish=False):
-        return self.call(T["INJECT"],
-                         {"op": "tap", "x": float(x), "y": float(y),
-                          "wait_finish": bool(wait_finish)})
+    def inject_tap(self, x, y, wait_finish=False, backend=None):
+        req = {"op": "tap", "x": float(x), "y": float(y),
+               "wait_finish": bool(wait_finish)}
+        if backend:
+            req["backend"] = backend
+        return self.call(T["INJECT"], req)
 
-    def inject_swipe(self, x1, y1, x2, y2, duration_ms=300, steps=10):
-        return self.call(T["INJECT"],
-                         {"op": "swipe", "x1": float(x1), "y1": float(y1),
-                          "x2": float(x2), "y2": float(y2),
-                          "duration_ms": int(duration_ms), "steps": int(steps)})
+    def inject_swipe(self, x1, y1, x2, y2, duration_ms=300, steps=10,
+                     backend=None):
+        req = {"op": "swipe", "x1": float(x1), "y1": float(y1),
+               "x2": float(x2), "y2": float(y2),
+               "duration_ms": int(duration_ms), "steps": int(steps)}
+        if backend:
+            req["backend"] = backend
+        return self.call(T["INJECT"], req)
+
+    def inject_key(self, keycode, meta=0, backend=None):
+        req = {"kind": "Key", "keycode": int(keycode),
+               "meta": int(meta), "wait_finish": False}
+        if backend:
+            req["backend"] = backend
+        return self.call(T["INJECT"], req)
+
+    def inject_swipe_pts(self, x1, y1, x2, y2, duration_ms=300, steps=10,
+                         backend=None):
+        pts = []
+        for i in range(int(steps) + 1):
+            f = i / int(steps)
+            pts.append({"action": 0 if i == 0 else (1 if i == int(steps) else 2),
+                        "x": float(x1) + (float(x2) - float(x1)) * f,
+                        "y": float(y1) + (float(y2) - float(y1)) * f,
+                        "t_ms": int(int(duration_ms) * f)})
+        req = {"kind": "Swipe", "points": pts, "wait_finish": False}
+        if backend:
+            req["backend"] = backend
+        return self.call(T["INJECT"], req)
 
     def inject_tap_noack(self, x, y):
         return self.call(T["INJECT"],
@@ -184,10 +210,19 @@ def main():
             print(json.dumps(a.hello(), default=str))
         elif cmd == "ping":
             print(json.dumps(a.ping(), default=str))
-        elif cmd == "inject-tap":
-            print(json.dumps(a.inject_tap(args[1], args[2]), default=str))
-        elif cmd == "inject-swipe":
-            print(json.dumps(a.inject_swipe(*map(float, args[1:6])), default=str))
+        elif cmd == "inject-tap":  # inject-tap X Y [backend]
+            print(json.dumps(a.inject_tap(args[1], args[2],
+                                          backend=args[3] if len(args) > 3 else None), default=str))
+        elif cmd == "inject-swipe":  # inject-swipe X1 Y1 X2 Y2 MS [backend]
+            print(json.dumps(a.inject_swipe(*map(float, args[1:6]),
+                                            backend=args[6] if len(args) > 6 else None), default=str))
+        elif cmd == "inject-key":  # inject-key KEYCODE [meta] [backend]
+            print(json.dumps(a.inject_key(args[1],
+                                          meta=args[2] if len(args) > 2 else 0,
+                                          backend=args[3] if len(args) > 3 else None), default=str))
+        elif cmd == "swipe-pts":  # swipe-pts X1 Y1 X2 Y2 MS STEPS [backend]
+            print(json.dumps(a.inject_swipe_pts(*map(float, args[1:7]),
+                                                backend=args[7] if len(args) > 7 else None), default=str))
         elif cmd == "noack-tap":
             a.inject_tap_noack(args[1], args[2])
             # contract: no frame comes back — a read must time out
@@ -209,12 +244,18 @@ def main():
             print(json.dumps(a.batch(json.loads(args[1])), default=str))
         elif cmd == "text":
             print(json.dumps(a.text(args[1], clear=len(args) > 2), default=str))
-        elif cmd == "shot":
+        elif cmd == "shot":  # shot OUT [scale] [quality]
             scale = float(args[2]) if len(args) > 2 else 1.0
-            r = a.shot(scale=scale)
+            qual = int(args[3]) if len(args) > 3 else 80
+            r = a.shot(quality=qual, scale=scale)
             p = r["payload"]
             open(args[1], "wb").write(p["data"])
             print(f"wrote {len(p['data'])}B {p.get('w')}x{p.get('h')} scale={p.get('scale',1)} -> {args[1]}")
+        elif cmd == "shot-stat":  # shot-stat SCALE QUALITY -> timing+bytes JSON
+            r = a.shot(quality=int(args[2]), scale=float(args[1]))
+            p = r["payload"]
+            p["data"] = f"<{len(p['data'])}B>"
+            print(json.dumps(p, default=str))
         elif cmd == "stop":
             print(json.dumps(a.stop(), default=str))
         elif cmd == "bench":

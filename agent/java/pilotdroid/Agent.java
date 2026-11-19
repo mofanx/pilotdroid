@@ -11,6 +11,7 @@ import android.os.Looper;
 import android.os.SystemClock;
 import android.view.InputDevice;
 import android.view.InputEvent;
+import android.view.KeyEvent;
 import android.view.MotionEvent;
 import android.view.accessibility.AccessibilityNodeInfo;
 
@@ -221,20 +222,32 @@ public final class Agent {
         private Map<String, Object> inject(Object req) throws Exception {
             Map<?, ?> r = req instanceof Map ? (Map<?, ?>) req : new LinkedHashMap<>();
             boolean waitFinish = bool(r.get("wait_finish"), false);
+            // §4.7 backend force: "im"|"uia"; forced failure is ERR_BACKEND,
+            // never a silent downgrade to the other channel.
+            String force = str(r.get("backend"), null);
+            if (force != null) {
+                if (!"im".equals(force) && !"uia".equals(force))
+                    throw new OpError("ERR_BACKEND", "unknown backend " + force);
+                if (!injector.has(force))
+                    throw new OpError("ERR_BACKEND", "backend " + force + " unavailable");
+            }
             long t0 = System.nanoTime();
             int events;
             boolean ok;
             Object kind = r.get("kind");
             if (kind != null) {
                 // wire contract: {kind:"Tap"|"Swipe"|"Key",
-                //                 points:[{action,x,y,t_ms}], wait_finish}
+                //                 points:[{action,x,y,t_ms}]|keycode, wait_finish}
                 if ("Key".equals(String.valueOf(kind))) {
-                    throw new OpError("UNSUPPORTED", "kind Key unsupported");
+                    events = injector.key((int) num(r.get("keycode"), 0),
+                            (int) num(r.get("meta"), 0), waitFinish, force);
+                    ok = events == 2;
+                } else {
+                    List<?> pts = r.get("points") instanceof List
+                            ? (List<?>) r.get("points") : new ArrayList<>();
+                    events = injector.points(pts, waitFinish, force);
+                    ok = events == pts.size() && events > 0;
                 }
-                List<?> pts = r.get("points") instanceof List
-                        ? (List<?>) r.get("points") : new ArrayList<>();
-                events = injector.points(pts, waitFinish);
-                ok = events == pts.size() && events > 0;
             } else {
                 // legacy flat schema used by agent_client.py / verify-agent.sh
                 String op = str(r.get("op"), "tap");
@@ -243,21 +256,24 @@ public final class Agent {
                             (float) num(r.get("x1"), 0), (float) num(r.get("y1"), 0),
                             (float) num(r.get("x2"), 0), (float) num(r.get("y2"), 0),
                             (int) num(r.get("duration_ms"), 300),
-                            (int) num(r.get("steps"), 10), waitFinish);
+                            (int) num(r.get("steps"), 10), waitFinish, force);
                     ok = events > 0;
                 } else {
                     events = injector.tap((float) num(r.get("x"), 0),
-                            (float) num(r.get("y"), 0), waitFinish);
+                            (float) num(r.get("y"), 0), waitFinish, force);
                     ok = events == 2;
                 }
             }
+            if (force != null && !ok)
+                throw new OpError("ERR_BACKEND",
+                        "forced backend " + force + " failed: " + events + " events");
             long cost = System.nanoTime() - t0;
             Map<String, Object> m = new LinkedHashMap<>();
             m.put("ok", ok);
             m.put("events", events);
             m.put("ms", cost / 1e6);   // wire contract field
             m.put("cost_ns", cost);    // observability extra (serde ignores)
-            m.put("backend", injector.backend());
+            m.put("backend", force != null ? force : injector.backend());
             return m;
         }
 
@@ -314,6 +330,7 @@ public final class Agent {
             int quality = (int) num(r.get("quality"), 80);
             float scale = (float) num(r.get("scale"), 1.0);
             if (scale <= 0f || scale > 1f) scale = 1f;
+            long s0 = System.nanoTime();
             Bitmap bmp = uia.takeScreenshot();
             if (bmp == null) throw new IllegalStateException("takeScreenshot null");
             Bitmap outBmp = bmp;
@@ -322,10 +339,14 @@ public final class Agent {
                         Math.max(1, Math.round(bmp.getWidth() * scale)),
                         Math.max(1, Math.round(bmp.getHeight() * scale)), true);
             }
+            long s1 = System.nanoTime();
             ByteArrayOutputStream bos = new ByteArrayOutputStream(1 << 16);
             outBmp.compress(Bitmap.CompressFormat.JPEG, quality, bos);
+            long s2 = System.nanoTime();
             Map<String, Object> m = new LinkedHashMap<>();
             m.put("format", "jpeg");
+            m.put("take_ns", s1 - s0);     // observability: capture+scale
+            m.put("enc_ns", s2 - s1);      // observability: jpeg encode
             m.put("w", outBmp.getWidth());
             m.put("h", outBmp.getHeight());
             m.put("scale", scale);
@@ -530,37 +551,54 @@ public final class Agent {
             return "none";
         }
 
-        private boolean put(MotionEvent ev, int mode) {
-            try {
-                if (im != null && imFailures < 3) {
+        /** Is the named backend channel available right now? */
+        boolean has(String b) {
+            return "im".equals(b) ? im != null : uiaInject != null;
+        }
+
+        private static void recycleEv(InputEvent ev) {
+            // KeyEvent has no public recycle on this level; MotionEvent does.
+            if (ev instanceof MotionEvent) ((MotionEvent) ev).recycle();
+        }
+
+        /** @param force null=fallback chain, "im"/"uia"=that channel only. */
+        private boolean put(InputEvent ev, int mode, String force) {
+            if (!"uia".equals(force) && im != null && imFailures < 3) {
+                try {
                     Boolean r = (Boolean) inject.invoke(im, ev, mode);
                     if (Boolean.TRUE.equals(r)) {
-                        ev.recycle();
+                        recycleEv(ev);
                         return true;
                     }
+                } catch (Throwable t) {
+                    imFailures++;
                 }
-            } catch (Throwable t) {
-                imFailures++;
+                if (force != null) {           // forced im failed: no fallback
+                    recycleEv(ev);
+                    return false;
+                }
             }
-            // fallback: UiAutomation.injectInputEvent (slower but OEM-safe)
-            try {
-                if (uiaInject != null) {
-                    Boolean r = (Boolean) uiaInject.invoke(uia, ev, mode == 2);
-                    if (Boolean.TRUE.equals(r)) {
-                        imFailures++; // prefer IM next time, but tolerate flakiness
-                        ev.recycle();
-                        return true;
+            if (!"im".equals(force)) {
+                // fallback: UiAutomation.injectInputEvent (slower but OEM-safe)
+                try {
+                    if (uiaInject != null) {
+                        Boolean r = (Boolean) uiaInject.invoke(uia, ev, mode == 2);
+                        if (Boolean.TRUE.equals(r)) {
+                            if (force == null) imFailures++; // prefer IM, tolerate flakiness
+                            recycleEv(ev);
+                            return true;
+                        }
                     }
+                } catch (Throwable t) {
+                    imFailures++;
                 }
-            } catch (Throwable t) {
-                imFailures++;
             }
-            ev.recycle();
+            recycleEv(ev);
             return false;
         }
 
         /** Generic MotionEvent point sequence: [{action,x,y,t_ms}]. */
-        int points(List<?> pts, boolean waitFinish) {
+        int points(List<?> pts, boolean waitFinish, String force) {
             long t0 = SystemClock.uptimeMillis();
             int ok = 0;
             int n = pts.size();
@@ -573,24 +611,37 @@ public final class Agent {
                         action,
                         (float) num(p.get("x"), 0), (float) num(p.get("y"), 0), 0);
                 ev.setSource(InputDevice.SOURCE_TOUCHSCREEN);
-                if (put(ev, waitFinish && i == n - 1 ? 2 : 0)) ok++;
+                if (put(ev, waitFinish && i == n - 1 ? 2 : 0, force)) ok++;
             }
             return ok;
         }
 
-        int tap(float x, float y, boolean waitFinish) {
+        /** kind="Key": KeyEvent DOWN+UP over the same injectInputEvent. */
+        int key(int keycode, int meta, boolean waitFinish, String force) {
+            long now = SystemClock.uptimeMillis();
+            int ok = 0;
+            for (int a : new int[]{KeyEvent.ACTION_DOWN, KeyEvent.ACTION_UP}) {
+                KeyEvent ev = new KeyEvent(now, now, a, keycode, 0, meta,
+                        -1, 0, 0, InputDevice.SOURCE_KEYBOARD);
+                if (put(ev, waitFinish && a == KeyEvent.ACTION_UP ? 2 : 0,
+                        force)) ok++;
+            }
+            return ok;
+        }
+
+        int tap(float x, float y, boolean waitFinish, String force) {
             long now = SystemClock.uptimeMillis();
             int ok = 0;
             for (int a : new int[]{MotionEvent.ACTION_DOWN, MotionEvent.ACTION_UP}) {
                 MotionEvent ev = MotionEvent.obtain(now, now, a, x, y, 0);
                 ev.setSource(InputDevice.SOURCE_TOUCHSCREEN);
-                if (put(ev, waitFinish ? 2 : 0)) ok++;
+                if (put(ev, waitFinish ? 2 : 0, force)) ok++;
             }
             return ok;
         }
 
         int swipe(float x1, float y1, float x2, float y2, int durMs, int steps,
-                  boolean waitFinish) {
+                  boolean waitFinish, String force) {
             long t0 = SystemClock.uptimeMillis();
             int ok = 0;
             for (int i = 0; i <= steps; i++) {
@@ -601,7 +652,7 @@ public final class Agent {
                         action, x1 + (x2 - x1) * f, y1 + (y2 - y1) * f, 0);
                 ev.setSource(InputDevice.SOURCE_TOUCHSCREEN);
                 int mode = (waitFinish && i == steps) ? 2 : 0;
-                if (put(ev, mode)) ok++;
+                if (put(ev, mode, force)) ok++;
             }
             return ok;
         }
