@@ -5,17 +5,17 @@
 ## 定位
 
 - **协议与架构自主**：ADB client 层 vendor 成熟实现（`adb_client` 等，Apache/MIT），差异化投入集中在设备端 agent 与 RPC 协议层。
-- **设备端 agent 双件制**：Java 薄片（scrcpy 式 `app_process` server：注入 / 采集 / UI 树查询）为主，Rust native 组件仅承担批量/规则执行器。
-- **能力探测 + 降级链**：注入（injectInputEvent → /dev/input → `input tap`）、截图（screenrecord 流 / MediaCodec 虚拟显示 / `screencap`）均按设备能力运行时探测降级，以实测为准。
+- **设备端 agent：Java dex 为能力主体**（实测裁决：`app_process` + `InputManagerGlobal` 注入 p50≈3ms、30/30 成功；`/dev/input` 写在 Enforcing 下被 SELinux 全拒）。Rust native 仅为可选监听件。
+- **能力探测 + 降级链**：注入（InputManagerGlobal → 隐藏 API 兜底 → UiAutomation → `input` 命令）、截图（resident → exec-out screencap → 帧流）均按设备能力运行时探测降级，以实测为准。
 
 ## 路线图（以真机实测数据驱动）
 
 | 里程碑 | 内容 | 验收 |
 |---|---|---|
-| M0 | 无 agent 基线：ADB vendor + 内置命令（`uiautomator dump`/`input tap`/`screencap`）端到端跑通 | 全设备零安装可用 |
-| M1 | Java agent 复用 u2.jar + JSON-RPC 打通，Python uiautomator2 客户端 A/B 对拍 | 功能等价 uiautomator2-rs 核心 |
-| M2 | 持久 socket + 二进制分帧 + 批量/条件执行，双协议兼容层并存 | 批量序列 N 次往返 → 1 次 |
-| M3 | scrcpy 式注入与帧流接管，Java 薄片收敛为纯 UI 查询层 | 注入 P99、帧率达到实测目标线 |
+| M0 | 基线与对拍工具：u2 / adb 内置 / app_process 原型三方延迟基线 | harness 可一键复跑，基线表落档 |
+| M1 | adb_client + 常驻 dex agent + 持久 socket，核心操作可用 | click e2e p50 ≤20ms、dump ≤400ms |
+| M2 | 二进制分帧 + 批量/设备端条件（wait_until）+ u2 兼容层 | 10 步序列往返 = 1 |
+| M3 | selector/xpath 语义层、帧流选项、Unicode 输入、OEM 矩阵扩展 | 详见 `docs/05-roadmap.md` |
 
 ## 仓库结构
 
