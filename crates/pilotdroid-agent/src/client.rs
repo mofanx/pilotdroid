@@ -55,11 +55,24 @@ impl AgentClient {
         Ok(decode(&f.payload)?)
     }
 
+    /// PING — heartbeat round trip (response must be PONG).
+    pub fn ping(&mut self) -> Result<()> {
+        let f = self.request(OpCode::Ping, Vec::new())?;
+        expect(&f, OpCode::Pong, "PONG")
+    }
+
     /// INJECT a MotionEvent sequence (kind + points describe the gesture).
     pub fn inject(&mut self, req: InjectReq) -> Result<InjectAck> {
         let f = self.request(OpCode::Inject, encode(&req)?)?;
         expect(&f, OpCode::InjectResult, "INJECT_RESULT")?;
         Ok(decode(&f.payload)?)
+    }
+
+    /// INJECT with the NOACK flag — fire-and-forget, no response frame is
+    /// sent by the agent (docs/02 §4.5). Execution errors are dropped
+    /// device-side; use only for discardable ops.
+    pub fn inject_noack(&mut self, req: InjectReq) -> Result<()> {
+        self.request_noack(OpCode::Inject, encode(&req)?)
     }
 
     /// Convenience: simple tap at (x, y) — ACTION_DOWN + ACTION_UP.
@@ -84,6 +97,28 @@ impl AgentClient {
         })
     }
 
+    /// Convenience: [`tap`](Self::tap) + NOACK — returns after the write.
+    pub fn tap_noack(&mut self, x: f32, y: f32) -> Result<()> {
+        self.inject_noack(InjectReq {
+            kind: InjectKind::Tap,
+            points: vec![
+                MotionPoint {
+                    action: ACTION_DOWN,
+                    x,
+                    y,
+                    t_ms: 0,
+                },
+                MotionPoint {
+                    action: ACTION_UP,
+                    x,
+                    y,
+                    t_ms: TAP_DURATION_MS,
+                },
+            ],
+            wait_finish: false,
+        })
+    }
+
     /// DUMP — returns the UI hierarchy XML.
     pub fn dump(&mut self) -> Result<String> {
         let f = self.request(
@@ -97,13 +132,76 @@ impl AgentClient {
         Ok(ack.xml)
     }
 
-    /// SCREENSHOT — returns (format, image bytes).
-    pub fn screenshot(&mut self, format: &str, quality: u8) -> Result<(String, Vec<u8>)> {
+    /// QUERY — selector lookup on the resident tree (docs/02 §4.4).
+    pub fn query(&mut self, req: QueryReq) -> Result<QueryAck> {
+        let f = self.request(OpCode::Query, encode(&req)?)?;
+        expect(&f, OpCode::Query, "QUERY response")?;
+        Ok(decode(&f.payload)?)
+    }
+
+    /// Convenience: `query` reduced to the exists bit.
+    pub fn exists(&mut self, selector: Selector) -> Result<bool> {
+        Ok(self
+            .query(QueryReq {
+                selector,
+                attrs: None,
+            })?
+            .found)
+    }
+
+    /// TEXT — `ACTION_SET_TEXT` on the focused node (docs/02 §4.4).
+    pub fn set_text(&mut self, text: &str, clear: bool) -> Result<()> {
+        let f = self.request(
+            OpCode::Text,
+            encode(&TextReq {
+                text: text.into(),
+                clear: Some(clear),
+            })?,
+        )?;
+        expect(&f, OpCode::Text, "TEXT response")?;
+        let ack: TextAck = decode(&f.payload)?;
+        if !ack.ok {
+            return Err(AgentError::Remote {
+                code: "TEXT_FAILED".into(),
+                message: "ACTION_SET_TEXT returned false".into(),
+            });
+        }
+        Ok(())
+    }
+
+    /// BATCH — ordered op array, one response frame with per-op results
+    /// (docs/02 §4.1/4.2).
+    pub fn batch(&mut self, req: BatchReq) -> Result<BatchAck> {
+        let f = self.request(OpCode::Batch, encode(&req)?)?;
+        expect(&f, OpCode::BatchResult, "BATCH_RESULT")?;
+        Ok(decode(&f.payload)?)
+    }
+
+    /// Convenience: BATCH with default policy (fail-stop, no deadline).
+    pub fn batch_ops(&mut self, ops: Vec<BatchOp>) -> Result<BatchAck> {
+        self.batch(BatchReq {
+            ops,
+            fail_policy: FailPolicy::Stop,
+            deadline_ms: None,
+            poll_ms: None,
+        })
+    }
+
+    /// SCREENSHOT — returns (format, image bytes). `scale` ∈ (0,1]
+    /// downscales on-device before encoding (docs/02 §4.4); `None` keeps the
+    /// M1 two-field wire shape.
+    pub fn screenshot(
+        &mut self,
+        format: &str,
+        quality: u8,
+        scale: Option<f32>,
+    ) -> Result<(String, Vec<u8>)> {
         let f = self.request(
             OpCode::Screenshot,
             encode(&ShotReq {
                 format: format.into(),
                 quality,
+                scale,
             })?,
         )?;
         expect(&f, OpCode::Screenshot, "SCREENSHOT response")?;
@@ -146,6 +244,13 @@ impl AgentClient {
         let id = self.next_req;
         self.next_req = self.next_req.wrapping_add(1);
         id
+    }
+
+    fn request_noack(&mut self, op: OpCode, payload: Vec<u8>) -> Result<()> {
+        let req_id = self.alloc_req();
+        Frame::new(Channel::Control, op as u16, flags::NOACK, req_id, payload)
+            .write_to(&mut self.stream)?;
+        Ok(())
     }
 
     fn request(&mut self, op: OpCode, payload: Vec<u8>) -> Result<Frame> {

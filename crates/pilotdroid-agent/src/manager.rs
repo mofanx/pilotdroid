@@ -20,6 +20,10 @@ pub const AGENT_SOCKET: &str = "pilotdroid_agent";
 
 const AGENT_LOG: &str = "/data/local/tmp/pilotdroid/agent.log";
 
+/// Settle delay after `agent start` — app_process needs a moment to bind
+/// the localabstract socket before the forward dial can succeed.
+const RECOVER_SETTLE: std::time::Duration = std::time::Duration::from_millis(800);
+
 /// Deploy/launch/connect orchestration over an [`AdbTransport`].
 pub struct AgentManager<'a, T: AdbTransport> {
     adb: &'a mut T,
@@ -98,6 +102,61 @@ impl<'a, T: AdbTransport> AgentManager<'a, T> {
     /// client socket (t4 review found ~95 leaked rules after a bench run).
     pub fn disconnect(&mut self, serial: &str, port: u16) -> Result<()> {
         Ok(self.adb.forward_remove(serial, &format!("tcp:{port}"))?)
+    }
+
+    /// Watchdog connect (M2): forward + dial + HELLO; on any failure run the
+    /// recovery ladder — stop (best effort), reinstall `jar`, relaunch,
+    /// settle — and retry the whole sequence **once**. Returns the client,
+    /// its port, and the HELLO ack of whichever attempt succeeded.
+    pub fn connect_recover(
+        &mut self,
+        serial: &str,
+        port: Option<u16>,
+        socket: &str,
+        jar: &Path,
+    ) -> Result<(AgentClient, u16, pilotdroid_proto::payload::HelloAck)> {
+        match self.connect_hello(serial, port, socket) {
+            ok @ Ok(_) => ok,
+            Err(first) => {
+                self.recover(serial, jar).map_err(|e| AgentError::Recover {
+                    stage: "ladder",
+                    detail: e.to_string(),
+                })?;
+                self.connect_hello(serial, port, socket)
+                    .map_err(|second| AgentError::Recover {
+                        stage: "retry",
+                        detail: format!("first: {first}; after recover: {second}"),
+                    })
+            }
+        }
+    }
+
+    /// Recovery ladder: stop any half-dead agent → reinstall `jar` → relaunch
+    /// → settle while app_process binds localabstract. Best-effort stop: a
+    /// dead/absent agent must not fail the ladder.
+    pub fn recover(&mut self, serial: &str, jar: &Path) -> Result<()> {
+        let _ = self.stop(serial);
+        self.install(serial, jar)?;
+        self.start(serial)?;
+        std::thread::sleep(RECOVER_SETTLE);
+        Ok(())
+    }
+
+    /// forward + dial + HELLO handshake (undoes the forward on any failure).
+    fn connect_hello(
+        &mut self,
+        serial: &str,
+        port: Option<u16>,
+        socket: &str,
+    ) -> Result<(AgentClient, u16, pilotdroid_proto::payload::HelloAck)> {
+        let (mut client, port) = self.connect_socket(serial, port, socket)?;
+        match client.hello() {
+            Ok(ack) => Ok((client, port, ack)),
+            Err(e) => {
+                let _ = self.disconnect(serial, port);
+                Err(e)
+            }
+        }
     }
 
     fn run_shell(&mut self, serial: &str, cmd: &str) -> Result<()> {
