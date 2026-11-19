@@ -18,7 +18,7 @@
 ## 2. 为什么不直接 fork uiautomator2-rs
 
 - 它的性能天花板是**架构性的**：每条指令一次 HTTP/JSON-RPC 往返。fork 只能改实现，改不了往返模型。
-- 本机实测（t1 spike）：`app_process` 内注入 **p50 ≈ 3ms**，而 u2 文献值 click ≈ 263ms——数量级差距只能由"常驻 agent + 持久通道 + 批量下发"拿到，这是协议层的胜利，不是实现层的。
+- 本机实测：`app_process` 内注入 **async p50 ≈ 1.5-4ms**（spike-1/2 双验证），而 u2 真实基线 click = **249.0ms**（`spike/bench/baseline-u2.json`）——数量级差距只能由"常驻 agent + 持久通道 + 批量下发"拿到，这是协议层的胜利，不是实现层的。
 - 维护面：fork 后仍要追上游 Java agent（u2.jar）演进，独立性目标反而落空。
 
 **vendor 与自研的分界线 = 该层是否贡献用户可感知的差异。** ADB 层不贡献，协议与 agent 层贡献。
@@ -39,9 +39,9 @@
 
 ## 4. 成功标准（可证伪）
 
-- click e2e p50 比 u2 基线低一个数量级（目标 <30ms；本机注入底噪 3ms，通道余量实测核定）。
+- click e2e p50 比 u2 基线低一个数量级（目标 ≤30ms；注入段 async 底噪 ~5ms，通道余量实测核定）。
 - 批量 10 步序列往返数 = 1（vs u2 的 10）。
-- 截图按需 <150ms（screencap 基线 450ms，resident UiAutomation 待 spike 验证上限）。
+- 截图按需 ≤100ms（resident takeScreenshot 实测 13-78ms；screencap 兜底 380-450ms）。
 - 全能力有降级链：任一快路径失效时退化到内置命令可用。
 
 ## 5. 非目标
@@ -55,8 +55,10 @@
 
 | 风险 | 实测状态 | 缓解 |
 |---|---|---|
-| `/dev/input` 注入 | ❌ Android 14 Enforcing 全拒（8/8 EACCES） | 已在架构中移除该路径；InputManagerGlobal 注入已验证 3ms |
+| `/dev/input` 注入 | ❌ 三机 Enforcing 全拒（A14/A16/A17） | 已在架构中移除该路径；InputManagerGlobal 注入已验证 |
 | Java agent 冷启动 | ~1.3s | 常驻 daemon 化（setsid），非 per-call |
-| UiAutomation 常驻 dump 延迟 | 未验证（估计 100-300ms） | M1 前做 spike-2 验证 |
-| OEM 差异（非 MIUI 设备） | 未覆盖 | agent 启动自测输出 capability bitmap，见 03-device-agent.md |
-| 隐藏 API 访问限制（Android 9+ greylist） | 本机反射可用 | 降级链兜底；多版本 probe 矩阵扩展 |
+| UiAutomation 常驻 dump 延迟 | ✅ 已验证 **p50≈1.8-2.4ms**（spike-2） | resident dump 为主路径 |
+| **注入权限被 OEM 收回** | ❌ duchamp/A16：INJECT_EVENTS 全收回，`input` 也 SecurityException | 探测含存活观察；MIUI 安全设置开关列 onboarding 前置 |
+| OEM 差异 | 三机已覆盖（Xiaomi×3，A14/16/17） | capability bitmap + 矩阵扩行，见 04 |
+| 隐藏 API 访问限制 | 三机反射可用 | 降级链兜底；多版本 probe 矩阵扩展 |
+| daemon 存活 | 抗断连，**死于 adbd 重启** | host 心跳 + 自动重部署（spike-2） |

@@ -20,24 +20,30 @@
 - 复用 spike 脚本方法学，输出机器可读 JSON + 表格。
 
 **验收线**
-- [ ] 产出基线表：u2 vs `adb` 内置命令 vs `app_process` 原型（已有注入 3ms 数据），样本 ≥30 次/项。
+- [x] u2 真实基线已落盘 `spike/bench/baseline-u2.json`（python uiautomator2 v3.7.1）：**click 249.0ms · dump_hierarchy 330.2ms · screenshot 176.5ms · send_keys p50 309ms/p95 2021ms**；`exists` 0.02ms 为本地惰性求值（无 RPC）。测量顺序已保证 u2 不干扰我方 resident 测量（我方测完后才起 u2，测后已 kill+清理）。
 - [ ] harness 可一键复跑（`make bench` 或脚本），纳入 CI 可跑部分（模拟器）。
 
 ## M1 · 管线打通
 
 **范围**
-- host 库骨架 + `adb_client` 集成：设备枚举、push、forward（localabstract）、exec-out。
-- dex agent v1：HELLO/capability、INJECT（tap/swipe/key/MotionEvent 序列）、SCREENSHOT（策略 A，失败回退 B）、DUMP（resident UiAutomation 或 uiautomator-dump 桥接）。
-- 生命周期：deploy→setsid 拉起→握手→心跳→断连存活→重部署。
-- **前置 spike-2**（开工前先跑，半日）：resident dump 延迟、resident screenshot 延迟、dispatchGesture 对比——填 04 矩阵空格。
+- host 库骨架 + `adb_client` 集成：设备枚举、push、forward（localabstract）、exec-out。（骨架已在 `feature/rust-skeleton` 落地）
+- dex agent v1：HELLO/capability、INJECT（tap/swipe/key/MotionEvent 序列）、SCREENSHOT（策略 A，失败回退 B）、DUMP（裸 app_process 反射 `UiAutomation` 常驻遍历——spike-2 已裁决无需 runtest/instrumentation）。
+- 生命周期：deploy→setsid 拉起→握手→心跳→断连存活→**adbd 重启/设备重启自动重部署**（spike-2 实测 daemon 抗断连不抗 adbd 重启）。
 
-**验收线**（Mi 11/A14 实测）
-- [ ] click e2e **p50 ≤ 20ms**（注入底噪 3ms + 通道开销余量）。
-- [ ] 注入成功率 **≥ 99%**（300 次样本，logcat 抽验）。
-- [ ] resident dump **p50 ≤ 400ms**（一次性 `uiautomator dump` 2.5s 的 1/6 以下）。
-- [ ] 按需截图 **p50 ≤ 150ms**（策略 A；若 spike-2 证伪则按实测下调验收线并记录）。
-- [ ] agent 断连重连不丢 session；设备重启后可自动重部署。
-- [ ] 全部能力失效时退化到 `input`/`screencap`/`uiautomator dump` 可用。
+**验收线**（spike-2 实测基线 → 量化线；Mi 11/A14，前台条件注明）
+
+| 指标 | 实测底噪 | 验收线 |
+|---|---|---|
+| resident dump p50 | 1.8-2.4ms（30 节点） | **≤ 50ms**（含序列化+传输余量） |
+| IM 注入 async p50 | 1.5-4ms | **≤ 10ms** |
+| click e2e p50 | 注入段 ~5ms + socket 通道 | **≤ 30ms** |
+| 按需截图 p50 | 13-24ms（A14）/ 78.5ms（A17） | **≤ 100ms** |
+| 注入成功率 | 30/30（复测 29/30） | **≥ 99%**（300 次样本，logcat 抽验） |
+| `wait_until` 树查询摊销 | resident dump ~2ms | poll 周期 ≤100ms 时无 RPC 往返 |
+
+- [ ] waitfinish 口径验收须注明前台条件——实测该模式延迟随注入目标变化（3ms 轻量前台 ~15ms 重前台），故**性能线按 async 口径**。
+- [ ] capability bitmap 探测须含「真实注入一次+观察进程存活」（duchamp 型设备 connect 成功但 inject 即死）。
+- [ ] 全部能力失效时退化可用——但注意 `input` 兜底在非 INJECT_EVENTS 设备上同样被拒，降级链末端是 `screencap`/`exec-out` 只读路径。
 
 ## M2 · 协议差异化（合并原 M2+M4）
 

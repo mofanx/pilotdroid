@@ -91,4 +91,4 @@ BATCH {
 
 - msgpack vs FlatBuffers（首版 msgpack，bench 后重评）。
 - UI 树 wire 格式：XML 透传（兼容 u2 工具链）vs 结构化 node 数组（更小）。
-- 帧流编码：h264 需要 MediaCodec 管线（M3）；JPEG 序列帧实现更简单（15fps 实测可达？待 spike-2）。
+- 帧流编码：h264 需要 MediaCodec 管线（M3）；JPEG 序列帧实现更简单——takeScreenshot p50≈13-24ms（A14）意味着 ~40fps 理论上限，15fps 流可达性已被 spike-2 支撑。

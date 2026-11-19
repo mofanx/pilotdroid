@@ -21,8 +21,8 @@
 │  ├─ RPC loop: 分帧解码、批量执行、wait-until、心跳        │
 │  ├─ 注入: InputManagerGlobal.injectInputEvent  ← 3ms实测│
 │  ├─ UI 树: UiAutomation + AccessibilityNodeInfo dump   │
-│  ├─ 截图: UiAutomation.takeScreenshot / SurfaceControl │
-│  └─ 帧流(可选): VirtualDisplay + MediaCodec            │
+│  ├─ 截图: UiAutomation.takeScreenshot (SurfaceControl │
+│  │      API 已移除) · 帧流(可选): VirtualDisplay+Codec │
 ├────────────────────────────────────────────────────────┤
 │  native sidecar（可选、可裁）                            │
 │  └─ /dev/input 只读监听、文件/进程杂务                   │
@@ -33,7 +33,7 @@
 
 | 裁决 | 依据 |
 |---|---|
-| **Java agent 为能力主体**，不是"薄片" | `/dev/input` 写在 Enforcing 下全拒；`InputManagerGlobal` 注入 3ms、30/30 成功（spike §2/§4） |
+| **Java agent 为能力主体**，单进程全能力 | `/dev/input` 写三机全拒；IM 注入 async p50≈1.5-4ms 30/30；裸 app_process 反射 UiAutomation connect 成功、同进程五能力共存（spike-2，双机） |
 | **native 仅可选监听件** | `/dev/input` 读可行（`getevent -pl` 8 设备枚举成功），写不可行 |
 | **agent 必须常驻** | app_process 冷启动 wall ~1.3s（ART ~1.1s），per-call spawn 不可接受 |
 | **传输 = adb forward → localabstract** | 免 TCP 端口扫描冲突，scrcpy/u2 同款；adb server 是唯一传输依赖 |
@@ -43,10 +43,9 @@
 ## 3. 注入路径（实测降级链）
 
 ```
-InputManagerGlobal.injectInputEvent (mode 0/2)   ← 主路径，p50≈3ms，已验证
-  └─ InputManager.getInstance()（隐藏 API 兜底，旧 API 级）
-       └─ UiAutomation.injectInputEvent（agent 已持 UiAutomation 时）
-            └─ `input tap/swipe`（shell 命令，~30-50ms，最终兜底，零依赖）
+InputManagerGlobal.injectInputEvent (mode 0/2)   ← 主路径，async p50≈1.5-4ms 已验证
+  └─ UiAutomation.injectInputEvent（p50≈25-49ms，有 a11y 语义）
+       └─ `input tap/swipe`（shell 命令，~30-90ms 兜底；⚠️ 非处处可用——duchamp 型设备无 INJECT_EVENTS）
 ```
 
 `/dev/input` 直写**不在链中**——在本项目的目标设备类群（Enforcing）下已被实测否决；若未来遇到 permissive 设备可作为探测项重评。
@@ -55,7 +54,7 @@ InputManagerGlobal.injectInputEvent (mode 0/2)   ← 主路径，p50≈3ms，已
 
 | 策略 | 本机实测 | 定位 |
 |---|---|---|
-| A. resident `UiAutomation.takeScreenshot` / `SurfaceControl.screenshot` | 未测（spike-2 项），预计 50-150ms | 按需截图主路径 |
+| A. resident `UiAutomation.takeScreenshot` | **已测：p50≈13-24ms（A14）/ 78.5ms（A17）**；`SurfaceControl.screenshot` A34+ 已移除 | 按需截图主路径 |
 | B. `exec-out screencap` | 420-450ms（209KB PNG） | 无 agent 兜底 / 启动期 |
 | C. 帧流：`exec-out screenrecord` h264 | 19-22fps 静态画面可用 | 无 agent 流的兜底 |
 | C+. agent 内 VirtualDisplay + MediaCodec | 编码器 60fps 能力已证 | 高帧率流（M3 可选） |
