@@ -26,7 +26,16 @@ enum Cmd {
     Devices,
 
     /// Run a command through `adb shell`, print raw output.
+    ///
+    /// By default each argument is single-quoted before being sent, so
+    /// `shell echo "a b"` reaches the device as `echo 'a b'` (exec-style
+    /// argv semantics). Use `--raw` to hand the string to remote `sh -c`
+    /// verbatim, e.g. `shell --raw 'echo a; echo b >&2'`.
     Shell {
+        /// Pass the command line to remote `sh -c` verbatim instead of
+        /// quoting each argument.
+        #[arg(long)]
+        raw: bool,
         /// Command line, e.g. `input tap 700 1600` or `getprop ro.build.version.sdk`.
         #[arg(required = true, num_args = 1..)]
         command: Vec<String>,
@@ -73,6 +82,20 @@ fn resolve_serial(cli: &Cli, adb: &mut impl AdbTransport) -> Result<String> {
     }
 }
 
+/// POSIX single-quote an argument for remote `sh -c` parsing. Without this,
+/// `shell echo "a b"` arrives as `echo a b` — the remote splits on spaces and
+/// argv semantics are lost. `'` itself becomes `'\''`, safe for any arg.
+fn sh_quote(arg: &str) -> String {
+    format!("'{}'", arg.replace('\'', "'\\''"))
+}
+
+fn build_shell_command(args: &[String]) -> String {
+    args.iter()
+        .map(|a| sh_quote(a))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 fn main() -> Result<()> {
     let cli = Cli::parse();
     let mut adb =
@@ -84,9 +107,14 @@ fn main() -> Result<()> {
                 println!("{}\t{}", d.serial, d.state);
             }
         }
-        Cmd::Shell { command } => {
+        Cmd::Shell { command, raw } => {
             let serial = resolve_serial(&cli, &mut adb)?;
-            let out = adb.shell(&serial, &command.join(" "))?;
+            let line = if *raw {
+                command.join(" ")
+            } else {
+                build_shell_command(command)
+            };
+            let out = adb.shell(&serial, &line)?;
             print!("{}", String::from_utf8_lossy(&out.stdout));
             if !out.stderr.is_empty() {
                 eprint!("{}", String::from_utf8_lossy(&out.stderr));
@@ -109,4 +137,26 @@ fn main() -> Result<()> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sh_quote_preserves_spaces_and_escapes_quote() {
+        assert_eq!(sh_quote("hello world"), "'hello world'");
+        assert_eq!(sh_quote("a'b"), "'a'\\''b'");
+        assert_eq!(sh_quote(""), "''");
+        assert_eq!(sh_quote("semi;rm -rf /"), "'semi;rm -rf /'");
+    }
+
+    #[test]
+    fn build_command_quotes_each_arg() {
+        // Regression (t4 review): multi-arg commands must not be re-split by
+        // the remote shell. `printf '%s\n' "aa bb" c` must produce two lines.
+        let cmd =
+            build_shell_command(&["printf".into(), "%s\\n".into(), "aa bb".into(), "c".into()]);
+        assert_eq!(cmd, "'printf' '%s\\n' 'aa bb' 'c'");
+    }
 }

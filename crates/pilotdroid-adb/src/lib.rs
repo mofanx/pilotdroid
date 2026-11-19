@@ -15,12 +15,25 @@ const DEFAULT_ADB_PORT: u16 = 5037;
 
 #[derive(Debug, thiserror::Error)]
 pub enum AdbError {
+    /// Backend failure. Carries the vendor error's display text only — the
+    /// vendor error type itself never leaks into this public enum (adr/001:
+    /// `adb_client` must be replaceable behind this boundary).
     #[error("adb backend error: {0}")]
-    Backend(#[from] adb_client::RustADBError),
+    Backend(String),
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
     #[error("no device matching `{0}`")]
     DeviceNotFound(String),
+    #[error("protocol error: {0}")]
+    Protocol(String),
+}
+
+impl AdbError {
+    /// Fold a vendor error into our public type. Vendor enums stay inside this
+    /// crate's implementation; callers only ever see `Backend(String)`.
+    fn backend(e: impl std::fmt::Display) -> Self {
+        Self::Backend(e.to_string())
+    }
 }
 
 pub type Result<T> = std::result::Result<T, AdbError>;
@@ -90,13 +103,26 @@ impl AdbClient {
             server: ADBServer::new(addr),
         })
     }
+
+    /// Vendor `get_device_by_name`, normalized to our error type. Matching on
+    /// the vendor's `DeviceNotFound` variant is fine here — it's an internal
+    /// detail, unlike exposing it in `AdbError`'s signature.
+    fn device(&mut self, serial: &str) -> Result<adb_client::ADBServerDevice> {
+        self.server.get_device_by_name(serial).map_err(|e| match e {
+            adb_client::RustADBError::DeviceNotFound(_) => {
+                AdbError::DeviceNotFound(serial.to_string())
+            }
+            other => AdbError::backend(other),
+        })
+    }
 }
 
 impl AdbTransport for AdbClient {
     fn list_devices(&mut self) -> Result<Vec<DeviceInfo>> {
         Ok(self
             .server
-            .devices()?
+            .devices()
+            .map_err(AdbError::backend)?
             .into_iter()
             .map(|d| DeviceInfo {
                 serial: d.identifier,
@@ -106,17 +132,11 @@ impl AdbTransport for AdbClient {
     }
 
     fn shell(&mut self, serial: &str, command: &str) -> Result<ShellOutput> {
-        let mut device = self
-            .server
-            .get_device_by_name(serial)
-            .map_err(|e| match e {
-                adb_client::RustADBError::DeviceNotFound(_) => {
-                    AdbError::DeviceNotFound(serial.to_string())
-                }
-                other => AdbError::Backend(other),
-            })?;
+        let mut device = self.device(serial)?;
         let mut raw = Vec::new();
-        device.shell_command(&[command], &mut raw)?;
+        device
+            .shell_command(&[command], &mut raw)
+            .map_err(AdbError::backend)?;
         // adb_client requests shell v2 when the host supports it but returns
         // the stream un-de-framed (packet headers included). Parse v2 packets;
         // anything that doesn't parse cleanly is a v1 raw stream.
@@ -128,37 +148,28 @@ impl AdbTransport for AdbClient {
     }
 
     fn push(&mut self, serial: &str, local: &Path, remote: &str) -> Result<()> {
-        let mut device = self
-            .server
-            .get_device_by_name(serial)
-            .map_err(|_| AdbError::DeviceNotFound(serial.to_string()))?;
+        let mut device = self.device(serial)?;
         let mut file = std::fs::File::open(local)?;
         let mut buf = Vec::new();
         file.read_to_end(&mut buf)?;
         device
             .push(buf.as_slice(), remote)
-            .map_err(AdbError::Backend)
+            .map_err(AdbError::backend)
     }
 
     fn pull(&mut self, serial: &str, remote: &str, local: &Path) -> Result<()> {
-        let mut device = self
-            .server
-            .get_device_by_name(serial)
-            .map_err(|_| AdbError::DeviceNotFound(serial.to_string()))?;
+        let mut device = self.device(serial)?;
         let mut file = std::fs::File::create(local)?;
         device
             .pull(&remote, &mut file as &mut dyn Write)
-            .map_err(AdbError::Backend)
+            .map_err(AdbError::backend)
     }
 
     fn forward(&mut self, serial: &str, local: &str, remote: &str) -> Result<()> {
-        let mut device = self
-            .server
-            .get_device_by_name(serial)
-            .map_err(|_| AdbError::DeviceNotFound(serial.to_string()))?;
+        let mut device = self.device(serial)?;
         device
             .forward(remote.to_string(), local.to_string())
-            .map_err(AdbError::Backend)
+            .map_err(AdbError::backend)
     }
 }
 
