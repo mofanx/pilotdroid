@@ -35,9 +35,9 @@ print("OK "+json.dumps(p) if not miss else "MISS:"+",".join(miss))' > /tmp/hello
   || echo "PARSE_FAIL $HELLO" > /tmp/hello.res
 grep -q "^OK" /tmp/hello.res && ok "hello_ack_fields" || bad "hello_ack_fields" "$(cat /tmp/hello.res)"
 
-echo "== A1b CAPS bitmap == normative spec: proto caps INJECT=1 DUMP=2 SHOT=4 =="
+echo "== A1b CAPS bitmap == proto caps: INJECT=1 DUMP=2 SHOT=4 QUERY=8 BATCH=16 TEXT=64 =="
 CAPS=$(echo "$HELLO" | python3 -c 'import json,sys; print(json.load(sys.stdin)["payload"]["caps"])' 2>/dev/null || echo "?")
-[ "$CAPS" = "7" ] && ok "caps_bits" || bad "caps_bits" "caps=$CAPS expected 7 (INJECT|DUMP|SHOT)"
+[ "$CAPS" = "95" ] && ok "caps_bits" || bad "caps_bits" "caps=$CAPS expected 95 (INJECT|DUMP|SHOT|QUERY|BATCH|TEXT)"
 
 echo "== A2 INJECT tap result + logcat side-effect =="
 adb -s "$DEV" shell 'logcat -c' 2>/dev/null
@@ -72,6 +72,63 @@ $CLI ping 2>/dev/null | grep -qE "\"type\": *4" && ok "ping_pong" \
 
 echo "== latency bench =="
 $CLI bench 30 > "$OUT/verify-$DEV.json" 2>/dev/null && cat "$OUT/verify-$DEV.json" || true
+
+echo "== M2: setup deterministic editable field (Settings search) =="
+adb -s "$DEV" shell 'am start -n com.android.settings/.MainSettings' >/dev/null 2>&1
+sleep 1.2
+$CLI inject-tap 720 650 >/dev/null 2>&1   # tap search stub -> EditText gains focus
+sleep 0.8
+
+echo "== M2-A8 QUERY found + structured node =="
+Q=$($CLI query '{"id":"android:id/input"}' 2>&1) || true
+echo "$Q" | python3 -c 'import json,sys
+p=json.load(sys.stdin)["payload"]
+assert p.get("found") is True, p
+n=p["node"]; assert "bounds" in n and len(n["bounds"])==4, n
+print("OK node bounds",n["bounds"])' >/dev/null 2>&1 \
+  && ok "query_found" || bad "query_found" "$Q"
+
+echo "== M2-A9 wait_until hit (inside BATCH) =="
+W=$($CLI wait '{"id":"android:id/input"}' 3000 2>&1) || true
+echo "$W" | grep -q '"code": *"OK"' && ok "wait_until_hit" || bad "wait_until_hit" "$W"
+
+echo "== M2-A10 wait_until TIMEOUT (impossible selector, 500ms) =="
+T0=$(date +%s%N)
+W=$($CLI wait '{"text":"__pd_no_such_node__"}' 500 2>&1) || true
+echo "$W" | grep -q '"code": *"TIMEOUT"' && ok "wait_until_timeout" || bad "wait_until_timeout" "$W"
+
+echo "== M2-A11 TEXT -> text becomes visible in tree =="
+$CLI text "pdtest" >/dev/null 2>&1 || true
+sleep 0.4
+Q=$($CLI query '{"text":"pdtest"}' 2>&1) || true
+echo "$Q" | grep -q '"found": *true' && ok "text_visible" || bad "text_visible" "$Q"
+
+echo "== M2-A12 BATCH per-op results =="
+B=$($CLI batch '[{"inject":{"kind":"Tap","points":[{"action":0,"x":700,"y":1400,"t_ms":0},{"action":1,"x":700,"y":1400,"t_ms":75}],"wait_finish":false}},{"query":{"selector":{"id":"android:id/input"}}}]' 2>&1) || true
+echo "$B" | python3 -c 'import json,sys
+p=json.load(sys.stdin)["payload"]; rs=p["results"]
+assert len(rs)==2, rs
+assert all(r["code"]=="OK" for r in rs), rs
+assert all("cost_ns" in r for r in rs), rs
+assert p.get("total_ns",0)>0
+print("OK")' >/dev/null 2>&1 && ok "batch_results" || bad "batch_results" "$B"
+
+echo "== M2-A13 SHOT scale=0.5 bytes shrink + JPEG =="
+$CLI shot /tmp/shot-half.jpg 0.5 >/dev/null 2>&1 || true
+SZ=$(stat -c%s /tmp/shot-half.jpg 2>/dev/null || echo 0)
+[ "$(xxd -p -l2 /tmp/shot-half.jpg 2>/dev/null)" = "ffd8" ] && [ "$SZ" -lt 250000 ] && [ "$SZ" -gt 5000 ] \
+  && ok "shot_scale" || bad "shot_scale" "bytes=$SZ"
+
+echo "== M2-A14 NOACK: no response frame, inject still lands =="
+adb -s "$DEV" shell 'logcat -c' 2>/dev/null
+NA=$($CLI noack-tap 700 1600 2>&1) || true
+sleep 0.5
+LC=$(adb -s "$DEV" shell 'logcat -d -t 400' | grep -cE "njection from package" || true)
+echo "$NA" | grep -q "OK: no response" && [ "$LC" -ge 1 ] \
+  && ok "noack_tap" || bad "noack_tap" "out=$NA logcat=$LC"
+
+# restore a neutral screen for subsequent runs
+adb -s "$DEV" shell 'input keyevent KEYCODE_HOME' >/dev/null 2>&1 || true
 
 echo "== A7 AGENT_STOP: CLI stop exit==0 and process gone =="
 ROOT="$(cd "$HERE/../.." && pwd)"; RCLI="$ROOT/target/debug/pilotdroid-cli"
