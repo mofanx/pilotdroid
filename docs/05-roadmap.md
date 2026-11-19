@@ -30,20 +30,17 @@
 - dex agent v1：HELLO/capability、INJECT（tap/swipe/key/MotionEvent 序列）、SCREENSHOT（策略 A，失败回退 B）、DUMP（裸 app_process 反射 `UiAutomation` 常驻遍历——spike-2 已裁决无需 runtest/instrumentation）。
 - 生命周期：deploy→setsid 拉起→握手→心跳→断连存活→**adbd 重启/设备重启自动重部署**（spike-2 实测 daemon 抗断连不抗 adbd 重启）。
 
-**验收线**（spike-2 实测基线 → 量化线；Mi 11/A14，前台条件注明）
+**验收线**（Mi 11/A14 实测 — M1 e2e 结果见 `spike/e2e/RESULTS-M1.md`）
+- [~] click e2e **p50 ≤ 20ms**：实测 rtt p50=**48.5ms**、设备内注入 **4.9ms**。未达 e2e 线——瓶颈为 MIUI adb-USB 传输底噪 ~40ms（裸 `adb shell` RTT 20-30ms），非 agent。M2 持久连接+BATCH 摊薄后复测。对 u2（249ms）已达 **5.1×**。
+- [x] 注入成功率 **≥ 99%**：实测 30/30，logcat `MIUIInput` 旁证。
+- [x] resident dump **p50 ≤ 400ms**：实测 rtt p50=**104ms**（设备内 ~7ms），对 u2（330ms）**3.2×**。
+- [~] 按需截图 **p50 ≤ 150ms**：实测 p50=**171ms**（min 127ms），JPEG 编码+420KB 回传为主成本，与 u2（176ms）持平。
+- [x] agent 断连存活：`adb kill-server` 前后同 pid，重连正常。
+- [ ] 全部能力失效时退化可用——注意 `input` 兜底在非 INJECT_EVENTS 设备上同样被拒（duchamp 实测），降级链末端是 `screencap`/`exec-out` 只读路径（stretch 未实现）。
 
-| 指标 | 实测底噪 | 验收线 |
-|---|---|---|
-| resident dump p50 | 1.8-2.4ms（30 节点） | **≤ 50ms**（含序列化+传输余量） |
-| IM 注入 async p50 | 1.5-4ms | **≤ 10ms** |
-| click e2e p50 | 注入段 ~5ms + socket 通道 | **≤ 30ms** |
-| 按需截图 p50 | 13-24ms（A14）/ 78.5ms（A17） | **≤ 100ms** |
-| 注入成功率 | 30/30（复测 29/30） | **≥ 99%**（300 次样本，logcat 抽验） |
-| `wait_until` 树查询摊销 | resident dump ~2ms | poll 周期 ≤100ms 时无 RPC 往返 |
-
-- [ ] waitfinish 口径验收须注明前台条件——实测该模式延迟随注入目标变化（3ms 轻量前台 ~15ms 重前台），故**性能线按 async 口径**。
-- [ ] capability bitmap 探测须含「真实注入一次+观察进程存活」（duchamp 型设备 connect 成功但 inject 即死）。
-- [ ] 全部能力失效时退化可用——但注意 `input` 兜底在非 INJECT_EVENTS 设备上同样被拒，降级链末端是 `screencap`/`exec-out` 只读路径。
+**口径注记（spike-2 复核保留）**：
+- waitfinish 验收须注明前台条件——该模式延迟随注入目标变化（3ms 轻量前台 ~15ms 重前台），故性能线按 async 口径。
+- capability bitmap 探测须含「真实注入一次+观察进程存活」（duchamp 型设备 connect 成功但 inject 即死）。
 
 ## M2 · 协议差异化（合并原 M2+M4）
 

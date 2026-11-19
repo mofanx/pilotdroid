@@ -156,7 +156,7 @@ def main():
             print(json.dumps(a.inject_swipe(*map(float, args[1:6])), default=str))
         elif cmd == "dump":
             r = a.dump()
-            sys.stdout.write(r["payload"].get("data", ""))
+            sys.stdout.write(r["payload"].get("xml") or r["payload"].get("data", ""))
         elif cmd == "shot":
             r = a.shot()
             open(args[1], "wb").write(r["payload"]["data"])
