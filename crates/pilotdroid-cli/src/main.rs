@@ -225,16 +225,22 @@ fn main() -> Result<()> {
                     port,
                     socket,
                 } => {
-                    let (mut client, _) = agent::connect(&mut adb, &serial, *port, socket)?;
-                    let (ack, ms) = agent::tap(&mut client, *x, *y, !nowait)?;
+                    let (mut client, port) = agent::connect(&mut adb, &serial, *port, socket)?;
+                    let res = agent::tap(&mut client, *x, *y, !nowait);
+                    let disc = agent::disconnect(&mut adb, &serial, port);
+                    let (ack, ms) = res?;
+                    disc?;
                     println!(
                         "{{\"op\":\"tap\",\"x\":{x},\"y\":{y},\"ok\":{},\"events\":{},\"device_ms\":{},\"rtt_ms\":{ms:.1}}}",
                         ack.ok, ack.events, ack.ms
                     );
                 }
                 AgentCmd::Dump { port, socket } => {
-                    let (mut client, _) = agent::connect(&mut adb, &serial, *port, socket)?;
-                    let (xml, ms) = agent::dump(&mut client)?;
+                    let (mut client, port) = agent::connect(&mut adb, &serial, *port, socket)?;
+                    let res = agent::dump(&mut client);
+                    let disc = agent::disconnect(&mut adb, &serial, port);
+                    let (xml, ms) = res?;
+                    disc?;
                     print!("{xml}");
                     eprintln!("dump rtt_ms={ms:.1}");
                 }
@@ -244,8 +250,11 @@ fn main() -> Result<()> {
                     port,
                     socket,
                 } => {
-                    let (mut client, _) = agent::connect(&mut adb, &serial, *port, socket)?;
-                    let (fmt, bytes, ms) = agent::shot(&mut client, "jpeg", *quality)?;
+                    let (mut client, port) = agent::connect(&mut adb, &serial, *port, socket)?;
+                    let res = agent::shot(&mut client, "jpeg", *quality);
+                    let disc = agent::disconnect(&mut adb, &serial, port);
+                    let (fmt, bytes, ms) = res?;
+                    disc?;
                     std::fs::write(output, &bytes)
                         .with_context(|| format!("writing {}", output.display()))?;
                     println!(

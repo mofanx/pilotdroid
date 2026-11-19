@@ -34,6 +34,8 @@
 - **req_id**：请求-响应配对；批量结果沿用同一 req_id 多次推送。
 - **payload**：msgpack（首版选型：Rust `rmp-serde` 零拷贝成熟、Java 侧 `msgpack-core` 纯 Java 无依赖；FlatBuffers 留作 v0.2 评估项）。
 
+**socket 名**：agent 监听 `localabstract:pilotdroid_agent`（单一事实源 = `pilotdroid_agent::AGENT_SOCKET` 常量与 Java `Agent.SOCKET_NAME`，两侧必须逐字符一致）。
+
 ## 3. Opcode 表（控制通道）
 
 | type | 名 | 方向 | 语义 |
@@ -76,7 +78,7 @@ BATCH {
 
 目的：**对拍与降级**，不是长期维护两套语义。
 
-- agent 另监听 `localabstract:pilotdroid-u2compat`（或直接 `adb forward tcp:9008`），实现 u2 的 `POST /jsonrpc/0` 方法子集：`click / swipe / dumpWindowHierarchy / takeScreenshot / waitForExists / pressKey`。
+- agent 另监听 `localabstract:pilotdroid_agent-u2compat`（或直接 `adb forward tcp:9008`），实现 u2 的 `POST /jsonrpc/0` 方法子集：`click / swipe / dumpWindowHierarchy / takeScreenshot / waitForExists / pressKey`。
 - 内部实现统一走同一执行引擎——compat 层只是编解码翻译，不改语义。
 - 用法：python `uiautomator2.connect()` 直连对拍；M0-M1 也可把该端口直接 forward 到 **u2.jar**（无修改复用，Apache 2.0），在自研 agent 未覆盖的能力上兜底。
 

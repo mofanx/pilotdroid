@@ -396,14 +396,24 @@ pub mod payload {
 }
 
 /// Capability bitmap bits (docs/03-device-agent.md §2).
+/// Capability bitmap (`HELLO_ACK.caps`) — **the normative spec**. The Java
+/// agent's `CAP_*` constants must match these bit-for-bit (enforced by the
+/// `caps_bits_are_the_wire_contract` test). Semantics: one bit per
+/// *feature/opcode group*, NOT per injection backend — backend selection is
+/// the agent's internal concern.
 pub mod caps {
-    pub const INJECT_IM: u32 = 1 << 0;
-    pub const INJECT_UIA: u32 = 1 << 1;
-    pub const UIAUTOMATION: u32 = 1 << 2;
-    pub const SCREENSHOT: u32 = 1 << 3;
-    pub const DEV_INPUT_READ: u32 = 1 << 4;
-    pub const DEV_INPUT_WRITE: u32 = 1 << 5;
-    pub const VIRTUAL_DISPLAY: u32 = 1 << 6;
-    pub const IME: u32 = 1 << 7;
-    pub const SHELL_INJECT: u32 = 1 << 8;
+    /// `INJECT` opcode served (MotionEvent sequences / taps / swipes).
+    pub const INJECT: u32 = 1 << 0;
+    /// `DUMP` opcode served (UI hierarchy XML via UiAutomation).
+    pub const DUMP: u32 = 1 << 1;
+    /// `SCREENSHOT` opcode served (`takeScreenshot` or later backends).
+    pub const SHOT: u32 = 1 << 2;
+    /// `QUERY` opcode served (selector find, M2).
+    pub const QUERY: u32 = 1 << 3;
+    /// `BATCH` opcode served (multi-op sequences, M2).
+    pub const BATCH: u32 = 1 << 4;
+    /// `STREAM_CTRL` served (frame/event push on the media channel).
+    pub const STREAM: u32 = 1 << 5;
+    /// `TEXT` opcode served (IME text input).
+    pub const TEXT: u32 = 1 << 6;
 }

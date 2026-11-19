@@ -44,7 +44,7 @@ public final class Agent {
     private static final String AGENT_VER = "0.1.0";
     private static final int PROTO_VER = 0;
 
-    // capability bitmap (docs/02 §3)
+    // capability bitmap — normative spec is pilotdroid-proto `caps` (bit-for-bit)
     private static final int CAP_INJECT = 1, CAP_DUMP = 2, CAP_SHOT = 4,
             CAP_QUERY = 8, CAP_BATCH = 16, CAP_STREAM = 32, CAP_TEXT = 64;
 

@@ -19,12 +19,26 @@ pub fn connect(
     let (mut client, port) = mgr
         .connect_socket(serial, port, socket)
         .context("connecting to agent")?;
-    let hello = client.hello().context("HELLO handshake")?;
+    // HELLO failure (dead/mismatched agent) must not leave the forward rule.
+    let hello = match client.hello() {
+        Ok(h) => h,
+        Err(e) => {
+            let _ = mgr.disconnect(serial, port);
+            return Err(e).context("HELLO handshake");
+        }
+    };
     eprintln!(
         "agent {} (caps 0x{:08x}) via tcp:{port}",
         hello.agent, hello.caps
     );
     Ok((client, port))
+}
+
+/// Remove the forward created by [`connect`].
+pub fn disconnect(adb: &mut impl AdbTransport, serial: &str, port: u16) -> Result<()> {
+    AgentManager::new(adb)
+        .disconnect(serial, port)
+        .context("removing forward")
 }
 
 pub fn tap(

@@ -8,7 +8,7 @@
 - **单个 dex jar** 推到 `/data/local/tmp/pilotdroid/agent.jar`（spike 实测 4KB dex 即可注入；完整版预估 <200KB）。
 - 构建：`javac --release 8 -classpath <sdk>/android-XX/android.jar` → `d8 --min-api 34`。**d8/SDK 仅为开发期依赖**，设备端零依赖；min-api 34 的 dex 在 SDK37 直跑无修改（实测）。
 - 运行：`CLASSPATH=/data/local/tmp/pilotdroid/agent.jar setsid app_process /data/local/tmp/pilotdroid pilotdroid.Agent <args>`，以 shell（uid 2000, `u:r:shell:s0`）身份常驻。
-- 监听 `localabstract:pilotdroid`（`LocalServerSocket` + `adb forward` 回环已实测，echo 16B）。
+- 监听 `localabstract:pilotdroid_agent`（`LocalServerSocket` + `adb forward` 回环已实测，echo 16B）。
 - **进程模型：单进程承载全部能力**。`UiAutomation` 可在裸 `app_process` 中反射构造：`new UiAutomation(Looper, UiAutomationConnection)` + `connect(FLAG_DONT_SUPPRESS_ACCESSIBILITY_SERVICES)`（flags=1 必须，避免杀用户已有无障碍服务）。**无需 `uiautomator runtest`、无需 instrumentation、无需 APK**。同进程内 UiAutomation + InputManagerGlobal + 截图 + socket 五能力共存已双机实测。
 - **u2 同构旁证**：uiautomator2 v3.7.1 的 init 同样只 push dex + `app_process` 起 Main，不再安装 APK——dex-only 路线与上游演进方向一致。
 

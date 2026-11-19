@@ -29,7 +29,7 @@ fn spawn_fake() -> (SocketAddr, mpsc::Receiver<u16>) {
                         OpCode::HelloAck as u16,
                         encode(&HelloAck {
                             agent: "fake/0".into(),
-                            caps: caps::UIAUTOMATION,
+                            caps: caps::DUMP,
                         })
                         .unwrap(),
                     ),
@@ -113,6 +113,9 @@ impl AdbTransport for NoopAdb {
         Ok(())
     }
     fn forward(&mut self, _s: &str, _l: &str, _r: &str) -> AdbResult<()> {
+        Ok(())
+    }
+    fn forward_remove(&mut self, _s: &str, _l: &str) -> AdbResult<()> {
         Ok(())
     }
 }
