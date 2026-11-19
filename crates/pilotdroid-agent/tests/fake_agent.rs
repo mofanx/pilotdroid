@@ -8,7 +8,9 @@ use std::path::Path;
 use std::time::Duration;
 
 use pilotdroid_adb::{AdbTransport, DeviceInfo, Result as AdbResult, ShellOutput};
-use pilotdroid_agent::{AgentClient, AgentError, AgentManager, AGENT_JAR_REMOTE, AGENT_MAIN_CLASS};
+use pilotdroid_agent::{
+    AgentClient, AgentError, AgentManager, MediaClient, AGENT_JAR_REMOTE, AGENT_MAIN_CLASS,
+};
 use pilotdroid_proto::payload::*;
 use pilotdroid_proto::*;
 
@@ -727,4 +729,169 @@ async fn client_press_key_and_swipe_and_backend() {
         .unwrap();
     // Fake echoes the request's backend field back.
     assert_eq!(ack.backend.as_deref(), Some("im"));
+}
+
+// ---- media-channel stream tests (docs/02 §4.8) ------------------------------
+
+/// Spawn a stream-capable fake: control listener answers STREAM_CTRL; the
+/// media listener pushes `frames` FRAMEs (seq = req_id) on first connect,
+/// STREAM_MORE on all but the last. `gap_at` skips one seq number to
+/// emulate an agent-side drop. Returns (control_addr, media_addr).
+async fn spawn_stream_fake(frames: u32, gap_at: Option<u32>) -> (SocketAddr, SocketAddr) {
+    let ctrl = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let media = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let (ctrl_addr, media_addr) = (ctrl.local_addr().unwrap(), media.local_addr().unwrap());
+
+    tokio::spawn(async move {
+        let (mut sock, _) = ctrl.accept().await.unwrap();
+        while let Some(frame) = read_frame(&mut sock).await {
+            let resp = if frame.header.msg_type == OpCode::StreamCtrl as u16 {
+                let req: StreamCtrlReq = decode(&frame.payload).unwrap();
+                match req.op {
+                    StreamOp::Start => respond(
+                        &frame,
+                        OpCode::StreamCtrl as u16,
+                        encode(&StreamStartAck {
+                            ok: true,
+                            socket: "pilotdroid_agent_media".into(),
+                            effective_fps_hint: Some(5.0),
+                        })
+                        .unwrap(),
+                    ),
+                    StreamOp::Stop => respond(
+                        &frame,
+                        OpCode::StreamCtrl as u16,
+                        encode(&StreamStopAck {
+                            ok: true,
+                            frames_sent: frames as u64,
+                            dropped: gap_at.map(|_| 1).unwrap_or(0),
+                        })
+                        .unwrap(),
+                    ),
+                }
+            } else {
+                match dispatch_fake(&frame) {
+                    Some(r) => r,
+                    None => continue,
+                }
+            };
+            if sock.write_to_async(&resp).await.is_err() {
+                break;
+            }
+        }
+    });
+
+    tokio::spawn(async move {
+        let (mut sock, _) = media.accept().await.unwrap();
+        let mut seq: u32 = 0;
+        let mut sent = 0;
+        while sent < frames {
+            // Skip the seq once — receiver should see a gap of 1.
+            if gap_at == Some(seq) {
+                seq += 1;
+                continue;
+            }
+            let last = sent == frames - 1;
+            let flags = if last { 0 } else { flags::STREAM_MORE };
+            let f = Frame::new(
+                Channel::Media,
+                MediaType::Frame as u16,
+                flags,
+                seq,
+                encode(&MediaFrame {
+                    format: "jpeg".into(),
+                    w: 540,
+                    h: 1200,
+                    ts_ns: 1_000 + seq as u64,
+                    take_ns: Some(30_000_000),
+                    enc_ns: Some(40_000_000),
+                    dropped: gap_at.filter(|&g| seq > g).map(|_| 1).unwrap_or(0),
+                    data: vec![0xFF, 0xD8, seq as u8, 0xD9].into(),
+                })
+                .unwrap(),
+            );
+            if sock.write_to_async(&f).await.is_err() {
+                return;
+            }
+            seq += 1;
+            sent += 1;
+        }
+    });
+    (ctrl_addr, media_addr)
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn media_stream_receives_frames_in_order() {
+    let (ctrl_addr, media_addr) = spawn_stream_fake(8, None).await;
+    tokio::time::sleep(Duration::from_millis(30)).await;
+
+    let mut ctrl = AgentClient::connect_timeout(ctrl_addr, Duration::from_secs(2)).unwrap();
+    let ack = ctrl
+        .stream_start(StreamCtrlReq {
+            op: StreamOp::Start,
+            fps: Some(10),
+            scale: Some(0.5),
+            quality: Some(70),
+            format: None,
+        })
+        .unwrap();
+    assert!(ack.ok);
+    assert_eq!(ack.socket, "pilotdroid_agent_media");
+
+    let mut media = MediaClient::connect(media_addr, Duration::from_secs(2)).unwrap();
+    for i in 0..8 {
+        let f = media.recv().unwrap();
+        assert_eq!(f.format, "jpeg");
+        assert_eq!(f.ts_ns, 1_000 + i as u64);
+        assert_eq!(&f.data[..], &[0xFF, 0xD8, i as u8, 0xD9]);
+    }
+    assert!(media.is_ended(), "last frame clears STREAM_MORE");
+    assert_eq!(media.stats().frames, 8);
+    assert_eq!(media.stats().seq_gaps, 0);
+    assert_eq!(media.stats().bytes, 8 * 4);
+
+    let stop = ctrl.stream_stop().unwrap();
+    assert!(stop.ok);
+    assert_eq!(stop.frames_sent, 8);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn media_stream_detects_seq_gap_and_dropped_count() {
+    let (ctrl_addr, media_addr) = spawn_stream_fake(6, Some(3)).await;
+    tokio::time::sleep(Duration::from_millis(30)).await;
+
+    let mut ctrl = AgentClient::connect_timeout(ctrl_addr, Duration::from_secs(2)).unwrap();
+    ctrl.stream_start(StreamCtrlReq {
+        op: StreamOp::Start,
+        fps: None,
+        scale: None,
+        quality: None,
+        format: None,
+    })
+    .unwrap();
+
+    let mut media = MediaClient::connect(media_addr, Duration::from_secs(2)).unwrap();
+    while !media.is_ended() {
+        media.recv().unwrap();
+    }
+    // seq 3 skipped → exactly one gap; agent-reported dropped propagates.
+    assert_eq!(media.stats().seq_gaps, 1);
+    assert_eq!(media.stats().dropped, 1);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn media_channel_rejects_non_frame_message() {
+    // §4.8: only ch=1/msg_type=0x0001 is legal on the media socket.
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        let (mut sock, _) = listener.accept().await.unwrap();
+        let f = Frame::new(Channel::Control, OpCode::Pong as u16, 0, 0, vec![]);
+        sock.write_to_async(&f).await.unwrap();
+    });
+    let mut media = MediaClient::connect(addr, Duration::from_secs(2)).unwrap();
+    match media.recv() {
+        Err(AgentError::UnexpectedResponse { .. }) => {}
+        other => panic!("expected UnexpectedResponse, got {other:?}"),
+    }
 }
