@@ -7,9 +7,13 @@
 
 mod client;
 mod manager;
+mod stream;
 
 pub use client::AgentClient;
-pub use manager::{AgentManager, AGENT_DIR, AGENT_JAR_REMOTE, AGENT_MAIN_CLASS, AGENT_SOCKET};
+pub use manager::{
+    AgentManager, AGENT_DIR, AGENT_JAR_REMOTE, AGENT_MAIN_CLASS, AGENT_SOCKET, MEDIA_SOCKET,
+};
+pub use stream::{MediaClient, StreamStats};
 
 use std::io;
 

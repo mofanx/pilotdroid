@@ -2,11 +2,11 @@
 //! dispatch surface is unit-testable against a fake agent without a device.
 
 use std::path::Path;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use pilotdroid_adb::AdbTransport;
-use pilotdroid_agent::{AgentClient, AgentManager};
+use pilotdroid_agent::{AgentClient, AgentManager, MediaClient, StreamStats};
 use pilotdroid_proto::payload::*;
 
 /// Watchdog connect (graded recovery, M3): on connect/HELLO failure run the
@@ -108,6 +108,93 @@ pub fn bench(
         out.push(t.elapsed().as_secs_f64() * 1e3);
     }
     Ok(out)
+}
+
+/// Tunables for `agent stream` (docs/02 §4.8 defaults live agent-side).
+#[derive(Debug, Clone, Default)]
+pub struct StreamOpts {
+    pub fps: Option<u8>,
+    pub scale: Option<f32>,
+    pub quality: Option<u8>,
+    pub duration: Duration,
+    /// Write each received frame as `out/frame_{seq:05}.jpg`.
+    pub out: Option<std::path::PathBuf>,
+}
+
+/// Outcome of one stream session — wire counters plus wall-clock rate.
+#[derive(Debug)]
+pub struct StreamReport {
+    pub stats: StreamStats,
+    pub elapsed: Duration,
+    /// Agent-side totals from the stop ack.
+    pub frames_sent: u64,
+}
+
+/// Receive loop until `duration` or a terminal frame (STREAM_MORE clear).
+/// `out_dir` gets one JPEG per frame named by seq. Returns early on a
+/// clean terminal frame; a mid-stream socket error aborts with the stats
+/// collected so far still visible on `media.stats()`.
+pub fn stream_collect(
+    media: &mut MediaClient,
+    duration: Duration,
+    out_dir: Option<&Path>,
+) -> Result<()> {
+    let deadline = Instant::now() + duration;
+    if let Some(dir) = out_dir {
+        std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
+    }
+    while !media.is_ended() && Instant::now() < deadline {
+        let f = media.recv().context("media FRAME")?;
+        if let Some(dir) = out_dir {
+            let seq = media.last_seq().unwrap_or(0);
+            std::fs::write(dir.join(format!("frame_{seq:05}.jpg")), &f.data)?;
+        }
+    }
+    Ok(())
+}
+
+/// Full `agent stream` session: STREAM_CTRL start on the control client,
+/// second forward to the media socket, collect for `opts.duration`,
+/// STREAM_CTRL stop, media forward removed (control forward is the
+/// caller's to pair with [`disconnect`]).
+pub fn stream_session(
+    adb: &mut impl AdbTransport,
+    serial: &str,
+    client: &mut AgentClient,
+    opts: &StreamOpts,
+) -> Result<StreamReport> {
+    let start = client
+        .stream_start(StreamCtrlReq {
+            op: StreamOp::Start,
+            fps: opts.fps,
+            scale: opts.scale,
+            quality: opts.quality,
+            format: None,
+        })
+        .context("STREAM_CTRL start")?;
+    let mut mgr = AgentManager::new(adb);
+    let (mut media, media_port) = mgr
+        .connect_media(serial, None, &start.socket)
+        .context("media forward+dial")?;
+    let t = Instant::now();
+    let res = stream_collect(&mut media, opts.duration, opts.out.as_deref());
+    let elapsed = t.elapsed();
+    // Stop is best-effort: a dead agent must not swallow the collected
+    // stats; session binding (§4.8) cleans up on disconnect anyway.
+    let stop = client.stream_stop().unwrap_or(StreamStopAck {
+        ok: false,
+        frames_sent: 0,
+        dropped: 0,
+    });
+    let _ = mgr.disconnect(serial, media_port);
+    res?;
+    let mut stats = media.stats().clone();
+    stats.dropped = stats.dropped.max(stop.dropped);
+    Ok(StreamReport {
+        stats,
+        elapsed,
+        frames_sent: stop.frames_sent,
+    })
 }
 
 /// Percentile of a sample (nearest-rank on a sorted copy).

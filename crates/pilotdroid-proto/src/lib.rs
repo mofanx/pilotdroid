@@ -579,6 +579,76 @@ pub mod payload {
         pub total_ns: u64,
     }
 
+    // ---- M4 media channel (docs/02 §4.8, ADR-006) ---------------------------
+
+    /// STREAM_CTRL request op (§4.8). `start` carries the tuning fields;
+    /// `stop` takes none.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+    #[serde(rename_all = "snake_case")]
+    pub enum StreamOp {
+        Start,
+        Stop,
+    }
+
+    /// STREAM_CTRL request — `{op:"start", fps?, scale?, quality?, format?}`.
+    /// Tuning fields are start-only and skipped on the wire when unset.
+    #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+    pub struct StreamCtrlReq {
+        pub op: StreamOp,
+        /// Target frames/sec (agent default 5).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub fps: Option<u8>,
+        /// Downscale factor (0,1] (agent default 0.5).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub scale: Option<f32>,
+        /// JPEG quality 1-100 (agent default 70).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub quality: Option<u8>,
+        /// "jpeg" only in M4; "h264" reserved (M5).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub format: Option<String>,
+    }
+
+    /// STREAM_CTRL start response — `{ok, socket, effective_fps_hint?}`.
+    /// `socket` is the localabstract name the media channel listens on.
+    #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+    pub struct StreamStartAck {
+        pub ok: bool,
+        pub socket: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub effective_fps_hint: Option<f32>,
+    }
+
+    /// STREAM_CTRL stop response — `{ok, frames_sent, dropped}`.
+    #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+    pub struct StreamStopAck {
+        pub ok: bool,
+        pub frames_sent: u64,
+        pub dropped: u64,
+    }
+
+    /// FRAME payload on the media channel (ch=1, msg_type 0x0001). The
+    /// frame header `req_id` is the monotonic seq (§4.8); `dropped` is the
+    /// agent's cumulative drop counter for backpressure observability.
+    #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+    pub struct MediaFrame {
+        pub format: String,
+        pub w: u32,
+        pub h: u32,
+        /// Capture timestamp (ns, device clock).
+        pub ts_ns: u64,
+        /// capture+scale cost — same provenance as ShotAck.take_ns.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub take_ns: Option<u64>,
+        /// JPEG encode cost — same provenance as ShotAck.enc_ns.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub enc_ns: Option<u64>,
+        /// Cumulative agent-side drop count at this frame.
+        #[serde(default)]
+        pub dropped: u64,
+        pub data: ByteBuf,
+    }
+
     /// ERROR-flagged response payload.
     #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
     pub struct ErrorAck {

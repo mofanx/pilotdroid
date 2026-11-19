@@ -275,6 +275,34 @@ impl AgentClient {
         Ok((ack.format, ack.data.into_vec()))
     }
 
+    /// STREAM_CTRL start (docs/02 §4.8) — the returned `socket` names the
+    /// localabstract the media channel listens on; the caller forwards a
+    /// second port to it and connects a [`MediaClient`](crate::MediaClient).
+    /// `ERR_STREAM_BUSY` (Remote) when a stream is already bound to a
+    /// control session.
+    pub fn stream_start(&mut self, req: StreamCtrlReq) -> Result<StreamStartAck> {
+        let f = self.request(OpCode::StreamCtrl, encode(&req)?)?;
+        expect(&f, OpCode::StreamCtrl, "STREAM_CTRL response")?;
+        Ok(decode(&f.payload)?)
+    }
+
+    /// STREAM_CTRL stop — agent joins the capture thread and reports
+    /// `{frames_sent, dropped}` (§4.8 cleanup semantics).
+    pub fn stream_stop(&mut self) -> Result<StreamStopAck> {
+        let f = self.request(
+            OpCode::StreamCtrl,
+            encode(&StreamCtrlReq {
+                op: StreamOp::Stop,
+                fps: None,
+                scale: None,
+                quality: None,
+                format: None,
+            })?,
+        )?;
+        expect(&f, OpCode::StreamCtrl, "STREAM_CTRL response")?;
+        Ok(decode(&f.payload)?)
+    }
+
     /// Ask the agent to exit (AGENT_STOP). The agent may close the socket
     /// before/instead of replying, so a missing response is success too.
     pub fn stop(&mut self) -> Result<()> {

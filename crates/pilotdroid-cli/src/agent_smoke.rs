@@ -175,3 +175,59 @@ fn cli_agent_ops_against_fake() -> io::Result<()> {
     );
     Ok(())
 }
+
+// ---- media-channel stream_collect smoke ------------------------------------
+
+/// Spawn a media fake: accept one conn, push `frames` FRAMEs (seq=req_id,
+/// STREAM_MORE on all but last), then return.
+fn spawn_media_fake(frames: u32) -> SocketAddr {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    thread::spawn(move || {
+        if let Ok((mut sock, _)) = listener.accept() {
+            for seq in 0..frames {
+                let last = seq == frames - 1;
+                let f = Frame::new(
+                    Channel::Media,
+                    MediaType::Frame as u16,
+                    if last { 0 } else { flags::STREAM_MORE },
+                    seq,
+                    encode(&MediaFrame {
+                        format: "jpeg".into(),
+                        w: 8,
+                        h: 8,
+                        ts_ns: seq as u64,
+                        take_ns: None,
+                        enc_ns: None,
+                        dropped: 0,
+                        data: vec![0xFF, 0xD8, seq as u8, 0xD9].into(),
+                    })
+                    .unwrap(),
+                );
+                if f.write_to(&mut sock).is_err() {
+                    return;
+                }
+            }
+        }
+    });
+    addr
+}
+
+#[test]
+fn stream_collect_writes_frames_and_stats() -> io::Result<()> {
+    let addr = spawn_media_fake(5);
+    let mut media = pilotdroid_agent::MediaClient::connect(addr, Duration::from_secs(2)).unwrap();
+    let dir = std::env::temp_dir().join(format!("pilotdroid-stream-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+
+    agent::stream_collect(&mut media, Duration::from_secs(5), Some(&dir)).unwrap();
+
+    assert!(media.is_ended());
+    assert_eq!(media.stats().frames, 5);
+    assert_eq!(media.stats().seq_gaps, 0);
+    // Frames landed on disk named by seq.
+    for seq in 0..5u32 {
+        assert!(dir.join(format!("frame_{seq:05}.jpg")).exists());
+    }
+    std::fs::remove_dir_all(&dir)
+}
