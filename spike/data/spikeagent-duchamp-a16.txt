@@ -1,0 +1,19 @@
+=== SpikeAgent all (duchamp) ===
+ctor_ms=64.4 connect_ms=41.9 flags=1
+dump_first_ms=0.960923
+dump_nodes=0
+dump_stats_ms=mean=0.58 p50=0.32 p95=1.15 min=0.18 max=3.09
+Killed  (在 testInjectUia 期间被 SIGKILL，rc=137，2/2 复现)
+
+=== connect-only survival ===
+ctor_ms=20.8 connect_ms=20.6 flags=1 / connected / 进程存活 >20s（setsid, pid 27204）
+
+=== heartbeat survival (no UiAutomation) ===
+hb 0..31+ 持续写入，进程 comm=app_process ppid=1 存活 >50s → 纯进程存活正常
+
+=== SpikeInject IM-only (duchamp) ===
+init_ms=18.12 im_class=InputManagerGlobal → Killed (SIGKILL)
+
+=== input tap fallback ===
+java.lang.SecurityException: Injecting input events requires INJECT_EVENTS (uid=2000 denied)
+logcat: Permission Denial: injectInputEvent() pid=27276 uid=2000 requires INJECT_EVENTS

@@ -90,3 +90,40 @@ python3 -m venv /tmp/pd-venv && /tmp/pd-venv/bin/pip install uiautomator2
 /tmp/pd-venv/bin/python bench/bench_u2.py  # u2 基线 → bench/baseline-u2.json
 # 清理: adb shell pkill -f wetest.uia2; adb shell rm -rf /data/local/tmp/u2*
 ```
+
+## ⑤ 独立复核（t3·devin，2026-11-19 晚）
+
+复核方式：独立重跑 `scripts/02`、`03`、`06`、`07` + 手动 sock 回环；Mi 11 `ba0d072d`，**前台=com.kunenglish**（与 t1 测量时 juloo.keyboard2 启动页不同——关键变量）。
+
+| t1 报告值 | 复核实测 | 判定 |
+|---|---|---|
+| /dev/input 写 8/8 EACCES | 8/8 `open-w-DENIED` | ✅ 复现 |
+| IM 注入 async ~2.2ms | async p50=1.40-1.56ms | ✅ 复现 |
+| IM 注入 waitfinish p50≈3.07ms | **waitfinish p50=13.5-14.7ms** | ⚠️ **未复现**——waitfinish 延迟随前台注入目标变化（轻量前台 3ms ↔ 重前台 15ms）；async 口径不受影响 |
+| inject_ok 30/30 | 30/30 + 29/30（1 次抖动） | ✅ 基本复现 |
+| `uiautomator dump` 2.25-3.13s | 2.25-2.38s（冷首调 11.25s） | ✅ 复现 |
+| `screencap` 450-510ms | 420-450ms（exec-out 380-410ms） | ✅ 复现 |
+| `input tap` e2e 30-50ms | 60-90ms | ⚠️ 偏慢——同前台变量 |
+| UA 反射 connect（ctor10+conn28ms） | ctor 9.6ms + connect 14.6ms flags=1 | ✅ 复现 |
+| resident dump p50≈2.39ms | p50=1.84ms（30 节点） | ✅ 复现 |
+| agent 内 IM 注入 p50≈4.94ms | p50=10.59ms | ⚠️ ~2x，同前台变量；数量级成立 |
+| UiA 注入 p50≈48.9ms | p50=33.35ms | ✅ 同量级 |
+| takeScreenshot p50≈24.2ms | p50=13.32ms | ✅ 复现（更快） |
+| SurfaceControl.screenshot 移除 | NoSuchMethod + DisplayCaptureArgs 不存在 | ✅ 复现 |
+| localabstract+forward echo | `echo_bytes=16` 真实回环 | ✅ 复现 |
+
+**复核结论**：架构裁决全部成立（单进程、IM 主注入、resident dump/截图数量级优势）。**一处措辞修正**：「注入 ~3ms」应限定为 async 口径或注明前台条件——waitfinish 实测 3-15ms 区间依赖注入目标应用；已回填 docs/04 §3 与 docs/05 M1 验收线。
+
+### ⚠️ 复核新发现：第三台设备 duchamp（`192.168.123.130:5555`, Redmi 2311DRK48C, A16/SDK36, Enforcing）——注入全灭机型
+
+复核期间该设备在线，顺手采集矩阵行，发现**全部注入路径不可用**（2/2 复现，原始数据 `data/spikeagent-duchamp-a16.txt`、`env-info-duchamp.txt`、`devinput-duchamp.txt`）：
+
+- `/dev/input` 写：5/5 拒（与另两机一致）
+- `app_process`+`InputManagerGlobal` 注入（spike.jar，无 UA）：init 后 **SIGKILL**
+- `app_process`+`UiAutomation.injectInputEvent`：connect 成功后注入时 **SIGKILL**
+- `input tap` 命令：**SecurityException**——`uid=2000` 无 `INJECT_EVENTS`（logcat `Permission Denial ... uid=2000 requires INJECT_EVENTS`）
+- 对照：UiAutomation `connect` 本身可存活（setsid >20s）、纯 heartbeat 进程存活 >50s、resident dump 可跑但返回 0 节点（前台 Douyin splash 状态）
+- **推断**：符合 MIUI/HyperOS「USB调试(安全设置)」未开启时收回 shell 模拟点击权限的特征；connect 成功 ≠ 注入可用
+- **方案影响**：①能力探测必须「真实注入一次+观察进程存活」；②onboarding 前置条件 +1；③该机型上 u2 同样会失败——非我方独有问题；④降级链末端在此类设备只剩只读能力。已回填 docs/04 矩阵行与 §3 权限层结论。
+
+另注：`scripts/07-spike2-agent.sh` 提交时缺执行位（mode 100644），已在本次复核中修正为 100755。
