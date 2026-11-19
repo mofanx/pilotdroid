@@ -278,7 +278,7 @@ public final class Agent {
             disp.add(b.width()); disp.add(b.height());
             m.put("display", disp);
             m.put("caps", CAP_INJECT | CAP_DUMP | CAP_SHOT | CAP_QUERY | CAP_BATCH
-                    | CAP_TEXT); // STREAM reserved for M3
+                    | CAP_STREAM | CAP_TEXT); // M4 stream channel served
             m.put("inject", injector.backend()); // "im" | "uia" | "im+uia-fallback"
             return m;
         }
@@ -543,19 +543,23 @@ public final class Agent {
 
     // ---------- selector (docs/02 §4.3) --------------------------------------
 
-    /** Selector = {text?, id?, desc?, index?} — AND semantics; index is the
-     *  nth-match ordinal (default 0). */
+    /** Selector = {text?, id?, desc?, class?, scrollable?, index?} — AND
+     *  semantics; index is the nth-match ordinal (default 0). */
     private static final class Selector {
-        private final String text, id, desc;
+        private final String text, id, desc, cls;
         private final int index;
+        private final Boolean scrollable;
 
         Selector(Object spec) {
             Map<?, ?> m = spec instanceof Map ? (Map<?, ?>) spec : new LinkedHashMap<>();
             this.text = str0(m.get("text"));
             this.id = str0(m.get("id"));
             this.desc = str0(m.get("desc"));
+            this.cls = str0(m.get("class"));
             this.index = m.get("index") instanceof Number
                     ? ((Number) m.get("index")).intValue() : 0;
+            this.scrollable = m.get("scrollable") instanceof Boolean
+                    ? (Boolean) m.get("scrollable") : null;
         }
 
         private static String str0(Object o) { return o == null ? null : String.valueOf(o); }
@@ -568,13 +572,20 @@ public final class Agent {
                 // full "pkg:id/name" equality, or bare "name" -> :id/ suffix
                 if (!id.equals(rid) && !rid.endsWith(":id/" + id)) return false;
             }
+            if (cls != null) {
+                String cn = cs(n.getClassName());
+                // full qualified equality, or bare simple name -> ".name" suffix
+                if (!cls.equals(cn) && !cn.endsWith("." + cls)) return false;
+            }
+            if (scrollable != null && scrollable != n.isScrollable()) return false;
             return true;
         }
 
         private static String cs(CharSequence s) { return s == null ? "" : s.toString(); }
 
         public String toString() {
-            return "{text=" + text + ",id=" + id + ",desc=" + desc + ",index=" + index + "}";
+            return "{text=" + text + ",id=" + id + ",desc=" + desc + ",class=" + cls
+                    + ",scrollable=" + scrollable + ",index=" + index + "}";
         }
     }
 
@@ -1020,6 +1031,7 @@ public final class Agent {
             bounds.add(b.left); bounds.add(b.top); bounds.add(b.right); bounds.add(b.bottom);
             m.put("bounds", bounds);
             m.put("class", n.getClassName() == null ? "" : n.getClassName().toString());
+            m.put("scrollable", n.isScrollable());
             m.put("clickable", n.isClickable());
             m.put("enabled", n.isEnabled());
             if (attrs != null) m.keySet().retainAll(attrs);

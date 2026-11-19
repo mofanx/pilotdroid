@@ -35,9 +35,9 @@ print("OK "+json.dumps(p) if not miss else "MISS:"+",".join(miss))' > /tmp/hello
   || echo "PARSE_FAIL $HELLO" > /tmp/hello.res
 grep -q "^OK" /tmp/hello.res && ok "hello_ack_fields" || bad "hello_ack_fields" "$(cat /tmp/hello.res)"
 
-echo "== A1b CAPS bitmap == proto caps: INJECT=1 DUMP=2 SHOT=4 QUERY=8 BATCH=16 TEXT=64 =="
+echo "== A1b CAPS bitmap == proto caps: INJECT=1 DUMP=2 SHOT=4 QUERY=8 BATCH=16 STREAM=32 TEXT=64 =="
 CAPS=$(echo "$HELLO" | python3 -c 'import json,sys; print(json.load(sys.stdin)["payload"]["caps"])' 2>/dev/null || echo "?")
-[ "$CAPS" = "95" ] && ok "caps_bits" || bad "caps_bits" "caps=$CAPS expected 95 (INJECT|DUMP|SHOT|QUERY|BATCH|TEXT)"
+[ "$CAPS" = "127" ] && ok "caps_bits" || bad "caps_bits" "caps=$CAPS expected 127 (INJECT|DUMP|SHOT|QUERY|BATCH|STREAM|TEXT)"
 
 echo "== A2 INJECT tap result + logcat side-effect =="
 adb -s "$DEV" shell 'logcat -c' 2>/dev/null
@@ -133,6 +133,24 @@ p=json.load(sys.stdin)["payload"]; n=p["results"][0]["data"]["node"]
 assert set(n.keys())=={"text","bounds"}, f"node keys={sorted(n.keys())} expected [text,bounds]"
 print("OK pruned",n)' >/dev/null 2>&1 \
   && ok "query_attrs" || bad "query_attrs" "$Q"
+
+echo "== M5-A1 QUERY class selector (className mapping) =="
+Q=$($CLI query '{"class":"android.widget.TextView"}' 2>&1) || true
+echo "$Q" | python3 -c 'import json,sys
+p=json.load(sys.stdin)["payload"]
+assert p.get("found") is True, p
+n=p["node"]; assert "TextView" in n.get("class",""), n
+print("OK class node",n.get("class"))' >/dev/null 2>&1 \
+  && ok "query_class" || bad "query_class" "$Q"
+
+echo "== M5-A2 QUERY scrollable selector (shim scroll backing) =="
+Q=$($CLI query '{"scrollable":true}' 2>&1) || true
+echo "$Q" | python3 -c 'import json,sys
+p=json.load(sys.stdin)["payload"]
+assert p.get("found") is True, p
+n=p["node"]; assert n.get("scrollable") is True, n
+print("OK scrollable bounds",n["bounds"])' >/dev/null 2>&1 \
+  && ok "query_scrollable" || bad "query_scrollable" "$Q"
 
 echo "== M2-A9 wait_until hit (inside BATCH) =="
 W=$($CLI wait '{"id":"android:id/input"}' 3000 2>&1) || true
