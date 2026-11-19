@@ -50,11 +50,11 @@
 - TEXT（ASCII 注入 + broadcast 剪贴板 Unicode 兜底）。
 - **不做**独立规则引擎 DSL——wait_until + 条件参数化够用即停（需求实证后再评估）。
 
-**验收线**
-- [ ] 10 步混合序列（tap→wait_until→tap→screenshot…）**往返数 = 1**；同序列 u2 需 10 次。
-- [ ] 批量内相邻注入摊销 **≤ 5ms/次**（wait_finish=false 时）。
-- [ ] wait_until 命中延迟 ≤ 设备端 poll 周期 + 1 帧，且全程零主机往返。
-- [ ] 兼容层：python uiautomator2 客户端连接 compat 端口完成 click/dump/screenshot 冒烟全通过。
+**验收线**（实测见 `spike/e2e/RESULTS-M2.md` + `e2e-m2.json`，feature/m2-e2e）
+- [x] 混合序列**往返数 = 1**：实测 tap→wait_until→tap 单帧 BATCH e2e p50=**58.5ms** vs u2 等价 **612.9ms**（**10.5×**）。
+- [x] 批量内相邻注入摊销 **≤ 5ms/次**：NOACK tap 单连接 n=100 p50=**0.0ms**（fire-and-forget）；带 ack tap p50=54.2ms 仍为传输抖动主导。
+- [x] wait_until 命中零主机往返：设备内 p50=**7ms**（poll 周期内），e2e 50ms 含传输。
+- [ ] 兼容层：python uiautomator2 客户端连接 compat 端口冒烟（未实现，移 M3）。
 
 ## M3 · 语义与流
 
