@@ -1,0 +1,30 @@
+{
+ "device": "ba0d072d (Mi11 A14)",
+ "agent_ver": "0.3.0",
+ "fps5": {
+  "n": 97,
+  "wall_s": 20.1,
+  "eff_fps": 4.83,
+  "frames_sent": 97,
+  "dropped": 0,
+  "take_ms_p50": 132.2,
+  "enc_ms_p50": 70.2,
+  "jpeg_B_p50": 45711,
+  "gap_ms_p50": 200.5,
+  "w": 720,
+  "h": 1600
+ },
+ "fps10": {
+  "n": 125,
+  "wall_s": 20.2,
+  "eff_fps": 6.19,
+  "frames_sent": 125,
+  "dropped": 0,
+  "take_ms_p50": 110.6,
+  "enc_ms_p50": 60.6,
+  "jpeg_B_p50": 45711,
+  "gap_ms_p50": 168.5,
+  "w": 720,
+  "h": 1600
+ }
+}
