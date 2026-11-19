@@ -326,6 +326,25 @@ pub mod payload {
     pub struct HelloAck {
         pub agent: String,
         pub caps: u32,
+        /// Agent build version (M2 emits e.g. "0.2.0").
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub ver: Option<String>,
+        /// Protocol version the agent speaks.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub proto: Option<u8>,
+        /// Device SDK level (`Build.VERSION.SDK_INT`).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub sdk: Option<u32>,
+        /// Primary ABI.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub abi: Option<String>,
+        /// Active display `[w, h]` in px.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub display: Option<Vec<i32>>,
+        /// Injection backend in use: "im" | "uia" | "im+uia-fallback"
+        /// (fallback-chain probe, docs/02 §3 / t2 spec).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub inject: Option<String>,
     }
 
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -357,6 +376,13 @@ pub mod payload {
         pub ok: bool,
         pub events: u32,
         pub ms: f64,
+        /// Device-internal cost (Java emits alongside ms).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub cost_ns: Option<u64>,
+        /// Injection backend that handled the op ("im" | "uia" |
+        /// "im+uia-fallback") — observability for the fallback chain.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub backend: Option<String>,
     }
 
     #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -384,6 +410,16 @@ pub mod payload {
     pub struct ShotAck {
         pub format: String,
         pub data: ByteBuf,
+        /// Image dimensions after on-device scaling (M2 agent emits them;
+        /// absent on M1-era replies — kept optional for compat).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub w: Option<u32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub h: Option<u32>,
+        /// Scale factor the agent applied (echo of ShotReq.scale, 1.0 when
+        /// unscaled).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub scale: Option<f32>,
     }
 
     // ---- M2 payloads (docs/02-protocol.md §4) -------------------------------
@@ -460,6 +496,9 @@ pub mod payload {
     #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
     pub struct TextAck {
         pub ok: bool,
+        /// Characters written by ACTION_SET_TEXT (M2 agent reports it).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub chars: Option<u64>,
         pub cost_ns: u64,
     }
 

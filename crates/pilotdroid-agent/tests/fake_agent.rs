@@ -118,6 +118,12 @@ fn dispatch_fake(req: &Frame) -> Option<Frame> {
                     | caps::QUERY
                     | caps::BATCH
                     | caps::TEXT,
+                ver: None,
+                proto: None,
+                sdk: None,
+                abi: None,
+                display: None,
+                inject: None,
             })
             .unwrap(),
         ),
@@ -131,6 +137,8 @@ fn dispatch_fake(req: &Frame) -> Option<Frame> {
                     ok: true,
                     events: r.points.len() as u32,
                     ms: 2.5,
+                    cost_ns: None,
+                    backend: None,
                 })
                 .unwrap(),
             )
@@ -165,6 +173,7 @@ fn dispatch_fake(req: &Frame) -> Option<Frame> {
             OpCode::Text as u16,
             encode(&TextAck {
                 ok: true,
+                chars: Some(2),
                 cost_ns: 500_000,
             })
             .unwrap(),
@@ -175,6 +184,9 @@ fn dispatch_fake(req: &Frame) -> Option<Frame> {
             encode(&ShotAck {
                 format: "jpeg".into(),
                 data: vec![0xFF, 0xD8, 0xFF, 0xE0, 0x00].into(),
+                w: Some(720),
+                h: Some(1600),
+                scale: Some(1.0),
             })
             .unwrap(),
         ),
@@ -483,6 +495,12 @@ impl AdbTransport for RecoveringAdb {
                             let p = encode(&HelloAck {
                                 agent: "recovered/1".into(),
                                 caps: caps::INJECT,
+                                ver: None,
+                                proto: None,
+                                sdk: None,
+                                abi: None,
+                                display: None,
+                                inject: None,
                             })
                             .unwrap();
                             let _ = Frame::new(
