@@ -150,11 +150,12 @@ public final class Agent {
                         payload = map("bye", true); stop = true; break;
                     default:
                         rtype = reqType; err = true;
-                        payload = map("error", "unsupported opcode 0x" + Integer.toHexString(reqType));
+                        payload = errPayload("UNSUPPORTED",
+                                "unsupported opcode 0x" + Integer.toHexString(reqType));
                 }
             } catch (Throwable t) {
                 rtype = reqType; err = true;
-                payload = map("error", String.valueOf(t));
+                payload = errPayload("INTERNAL", String.valueOf(t));
             }
             out.write("PD01".getBytes("US-ASCII"));
             out.writeByte(PROTO_VER);
@@ -186,27 +187,43 @@ public final class Agent {
 
         private Map<String, Object> inject(Object req) throws Exception {
             Map<?, ?> r = req instanceof Map ? (Map<?, ?>) req : new LinkedHashMap<>();
-            String op = str(r.get("op"), "tap");
             boolean waitFinish = bool(r.get("wait_finish"), false);
             long t0 = System.nanoTime();
             int events;
             boolean ok;
-            if ("swipe".equals(op)) {
-                events = injector.swipe(
-                        (float) num(r.get("x1"), 0), (float) num(r.get("y1"), 0),
-                        (float) num(r.get("x2"), 0), (float) num(r.get("y2"), 0),
-                        (int) num(r.get("duration_ms"), 300),
-                        (int) num(r.get("steps"), 10), waitFinish);
-                ok = events > 0;
+            Object kind = r.get("kind");
+            if (kind != null) {
+                // Rust wire contract (pilotdroid-proto::payload::InjectReq):
+                // {kind:"Tap"|"Swipe"|"Key", points:[{action,x,y,t_ms}], wait_finish}
+                if ("Key".equals(String.valueOf(kind))) {
+                    throw new IllegalArgumentException("kind Key unsupported in M1");
+                }
+                List<?> pts = r.get("points") instanceof List
+                        ? (List<?>) r.get("points") : new ArrayList<>();
+                events = injector.points(pts, waitFinish);
+                ok = events == pts.size() && events > 0;
             } else {
-                events = injector.tap((float) num(r.get("x"), 0),
-                        (float) num(r.get("y"), 0), waitFinish);
-                ok = events == 2;
+                // legacy flat schema used by agent_client.py / verify-agent.sh
+                String op = str(r.get("op"), "tap");
+                if ("swipe".equals(op)) {
+                    events = injector.swipe(
+                            (float) num(r.get("x1"), 0), (float) num(r.get("y1"), 0),
+                            (float) num(r.get("x2"), 0), (float) num(r.get("y2"), 0),
+                            (int) num(r.get("duration_ms"), 300),
+                            (int) num(r.get("steps"), 10), waitFinish);
+                    ok = events > 0;
+                } else {
+                    events = injector.tap((float) num(r.get("x"), 0),
+                            (float) num(r.get("y"), 0), waitFinish);
+                    ok = events == 2;
+                }
             }
+            long cost = System.nanoTime() - t0;
             Map<String, Object> m = new LinkedHashMap<>();
             m.put("ok", ok);
             m.put("events", events);
-            m.put("cost_ns", System.nanoTime() - t0);
+            m.put("ms", cost / 1e6);   // wire contract field
+            m.put("cost_ns", cost);    // observability extra (serde ignores)
             return m;
         }
 
@@ -259,6 +276,26 @@ public final class Agent {
             boolean r = Boolean.TRUE.equals(inject.invoke(im, ev, mode));
             ev.recycle();
             return r;
+        }
+
+        /** Inject a generic MotionEvent point sequence (wire contract:
+         *  points = [{action,x,y,t_ms}]). Single-pointer gestures only. */
+        int points(List<?> pts, boolean waitFinish) throws Exception {
+            long t0 = SystemClock.uptimeMillis();
+            int ok = 0;
+            int n = pts.size();
+            for (int i = 0; i < n; i++) {
+                Map<?, ?> p = pts.get(i) instanceof Map
+                        ? (Map<?, ?>) pts.get(i) : new LinkedHashMap<>();
+                int action = (int) num(p.get("action"), 0);
+                MotionEvent ev = MotionEvent.obtain(t0,
+                        t0 + (long) num(p.get("t_ms"), 0),
+                        action,
+                        (float) num(p.get("x"), 0), (float) num(p.get("y"), 0), 0);
+                ev.setSource(InputDevice.SOURCE_TOUCHSCREEN);
+                if (put(ev, waitFinish && i == n - 1 ? 2 : 0)) ok++;
+            }
+            return ok;
         }
 
         /** @return number of events injected (2 = down+up) */
@@ -325,7 +362,7 @@ public final class Agent {
             m.put("format", "xml");
             m.put("nodes", count[0]);
             m.put("cost_ns", System.nanoTime() - t0);
-            m.put("data", sb.toString());
+            m.put("xml", sb.toString()); // wire contract field (was `data`)
             return m;
         }
 
@@ -543,6 +580,16 @@ public final class Agent {
     }
 
     // ---------- tiny helpers ---------------------------------------------------
+
+    /** ERROR-flagged payload — wire contract is {code,message}; keep `error`
+     *  alias for the python dev client. */
+    private static Map<String, Object> errPayload(String code, String message) {
+        Map<String, Object> m = new LinkedHashMap<>();
+        m.put("code", code);
+        m.put("message", message);
+        m.put("error", message);
+        return m;
+    }
 
     private static Map<String, Object> map(Object... kv) {
         Map<String, Object> m = new LinkedHashMap<>();

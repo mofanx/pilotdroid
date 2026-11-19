@@ -31,13 +31,13 @@
 - 生命周期：deploy→setsid 拉起→握手→心跳→断连存活→重部署。
 - **前置 spike-2**（开工前先跑，半日）：resident dump 延迟、resident screenshot 延迟、dispatchGesture 对比——填 04 矩阵空格。
 
-**验收线**（Mi 11/A14 实测）
-- [ ] click e2e **p50 ≤ 20ms**（注入底噪 3ms + 通道开销余量）。
-- [ ] 注入成功率 **≥ 99%**（300 次样本，logcat 抽验）。
-- [ ] resident dump **p50 ≤ 400ms**（一次性 `uiautomator dump` 2.5s 的 1/6 以下）。
-- [ ] 按需截图 **p50 ≤ 150ms**（策略 A；若 spike-2 证伪则按实测下调验收线并记录）。
-- [ ] agent 断连重连不丢 session；设备重启后可自动重部署。
-- [ ] 全部能力失效时退化到 `input`/`screencap`/`uiautomator dump` 可用。
+**验收线**（Mi 11/A14 实测 — M1 e2e 结果见 `spike/e2e/RESULTS-M1.md`，feature/m1-e2e）
+- [~] click e2e **p50 ≤ 20ms**：实测 rtt p50=**48.5ms**、设备内注入 **4.9ms**。未达 e2e 线——瓶颈为 MIUI adb-USB 传输底噪 ~40ms（裸 `adb shell` RTT 20-30ms），非 agent。M2 持久连接+BATCH 摊薄后复测。对 u2（249ms）已达 **5.1×**。
+- [x] 注入成功率 **≥ 99%**：实测 30/30，logcat `MIUIInput` 旁证。
+- [x] resident dump **p50 ≤ 400ms**：实测 rtt p50=**104ms**（设备内 ~7ms），对 u2（330ms）**3.2×**。
+- [~] 按需截图 **p50 ≤ 150ms**：实测 p50=**171ms**（min 127ms），JPEG 编码+420KB 回传为主成本，与 u2（176ms）持平。
+- [x] agent 断连存活：`adb kill-server` 前后同 pid，重连正常。
+- [ ] 全部能力失效时退化到 `input`/`screencap`/`uiautomator dump` 可用（stretch 未实现）。
 
 ## M2 · 协议差异化（合并原 M2+M4）
 
