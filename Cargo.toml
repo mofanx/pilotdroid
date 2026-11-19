@@ -1,0 +1,16 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/pilotdroid-adb",
+    "crates/pilotdroid-cli",
+    "crates/pilotdroid-proto",
+]
+
+[workspace.package]
+edition = "2021"
+version = "0.1.0"
+rust-version = "1.74"
+
+[workspace.dependencies]
+pilotdroid-adb = { path = "crates/pilotdroid-adb" }
+pilotdroid-proto = { path = "crates/pilotdroid-proto" }

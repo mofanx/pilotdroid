@@ -1,0 +1,10 @@
+[package]
+name = "pilotdroid-adb"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "Vendor boundary over the ADB transport (adr/001: adb_client first, CLI fallback, self-hosted last resort)"
+
+[dependencies]
+adb_client = "2.1.15"
+thiserror = "2.0.20"

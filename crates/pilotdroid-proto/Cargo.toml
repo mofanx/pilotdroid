@@ -1,0 +1,9 @@
+[package]
+name = "pilotdroid-proto"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "Binary framing protocol for the pilotdroid agent channel (docs/02-protocol.md)"
+
+[dependencies]
+thiserror = "2.0.20"
