@@ -1,0 +1,37 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  rust:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+
+      - name: fmt
+        run: cargo fmt --all -- --check
+
+      - name: clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: test
+        # NOTE(boundary): unit/protocol tests only. Do NOT add
+        # android-emulator-runner jobs that assert device capabilities —
+        # emulators are adb-root/permissive and their /dev/input, SELinux and
+        # input-injection behavior does NOT transfer to retail devices.
+        # Emulators may only validate protocol framing and the API-level
+        # InputManager/InputManagerGlobal boundary; every capability-matrix
+        # conclusion (docs/04-capability-matrix.md) must come from real
+        # hardware via spike/scripts.
+        run: cargo test --workspace
+
+  # The Java agent dex build needs an Android SDK platform jar + d8
+  # (agent/README.md); it is intentionally out of scope for this workflow
+  # until a dedicated job with SDK setup is added.
