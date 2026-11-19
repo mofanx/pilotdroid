@@ -30,7 +30,7 @@
 - **magic `PD01` + ver**：版本协商失败即拒连，便于后续演进。
 - **ch（channel, 2bit）**：0=control，1=media（截图/帧流/事件推送），2=diag。
 - **type**：见 §3 opcode 表。
-- **flags**：bit0=req/resp，bit1=stream-more（批量中间结果），bit2=error。
+- **flags**：bit0=req/resp，bit1=stream-more（M3 帧流起用，M2 恒 0），bit2=error，bit3=NOACK（fire-and-forget，见 §4.5）。
 - **req_id**：请求-响应配对；批量结果沿用同一 req_id 多次推送。
 - **payload**：msgpack（首版选型：Rust `rmp-serde` 零拷贝成熟、Java 侧 `msgpack-core` 纯 Java 无依赖；FlatBuffers 留作 v0.2 评估项）。
 
@@ -56,23 +56,68 @@
 
 媒体通道（ch=1）独占 type：0x0001 FRAME（编码帧 + pts + display_id）、0x0002 UI_EVENT（可选，accessibility 变更通知）。
 
-## 4. 批量语义（核心差异化）
+## 4. 批量与设备端谓词语义（M2 契约，定稿）
+
+### 4.1 BATCH 请求
 
 ```
 BATCH {
-  fail_policy: STOP_ON_ERROR | CONTINUE,
-  ops: [
-    { inject: {type: tap, x, y, wait_finish: true} },
-    { wait_until: {selector: {...}, timeout_ms: 5000, poll_ms: 100} },
-    { inject: {type: swipe, path: [...], duration_ms} },
-    { screenshot: {format: jpeg, quality: 80} },
-  ]
+  ops: [ <op>, ... ],                  // ≥1；每项为单键 map（见下）
+  fail_policy: "stop" | "continue",    // 缺省 "stop"
+  deadline_ms: u64,                    // 可选：batch 级总时限
+  poll_ms: u64,                        // 可选：wait_until 默认轮询间隔，缺省 20
 }
 ```
 
-- **wait_until 是 opcode 而非 host 侧轮询**——条件判断在设备端 UiAutomation/树缓存上跑，消除跨端往返。这是批量与"设备端规则下沉"合并成一个里程碑的原因（规则引擎 = wait_until + 简单条件-动作组合，不需要独立 DSL/Lua，先用 selector+timeout 参数化表达，够用即停）。
-- 中间结果 `stream-more` 推送：host 可实时显示进度，长批量可被取消（CANCEL type，h→a，按 req_id 取消）。
-- 事务语义：BATCH 非原子（UI 自动化无回滚可能），失败点之后的行为仅由 fail_policy 决定。
+`<op>` = 单键 map：`{"inject": InjectReq}`、`{"wait_until": WaitReq}`、`{"query": QueryReq}`、`{"dump": DumpReq}`、`{"screenshot": ShotReq}`、`{"text": TextReq}`。
+
+### 4.2 BATCH_RESULT 响应（单响应帧）
+
+```
+{ results: [
+    { index: u32,                 // 对应 ops 下标
+      code: "OK"|"TIMEOUT"|"DEADLINE"|"ABORTED"|"ERR_*",
+      message: string,
+      cost_ns: u64,               // 该 op 设备内耗时
+      data?: <该 op 的响应 payload> },  // dump→{xml}, shot→{format,data}, query→{found,node}
+    ...
+  ],
+  total_ns: u64 }
+```
+
+- **每 op 必有一条 result**：fail_policy=stop 下首个非 OK 之后记 `ABORTED`；`deadline_ms` 耗尽后未执行记 `DEADLINE`。
+- op 自身失败 ≠ 帧错误；整帧畸形才走 ERROR flag + ErrorAck。
+- 事务语义：BATCH 非原子，失败点之后仅由 fail_policy 决定。
+
+### 4.3 wait_until（设备端谓词求值，ADR-004）
+
+```
+WaitReq = { selector: Selector, timeout_ms: u64 = 5000, poll_ms?: u64 }
+Selector = { text?: string, id?: string, desc?: string, index?: u32 }
+```
+
+四元组 **AND** 语义：`text`/`desc` 精确匹配；`id` 为 resource-id——`"pkg:id/name"` 全等、裸 `"name"` 按 `:id/` 后缀匹配；`index` 为多命中序号（缺省 0，同时构成存在性语义：第 N 命中不存在 → 未命中）。
+
+求值在设备端常驻 UiAutomation 树缓存上每 `poll_ms`（默认 20ms，可被 BATCH.poll_ms 覆盖）执行一次；命中 → `code:"OK"`（`data.node` 附带命中节点 bounds/text/id/desc），超时 → `code:"TIMEOUT"`（op 结果，非帧错误）。
+
+### 4.4 QUERY / TEXT / SCREENSHOT-scale wire 契约
+
+- `QueryReq = { selector: Selector, attrs?: string[] }` → `{ found: bool, node?: { text,id,desc,bounds:[l,t,r,b], class, clickable, enabled } }`；exists 语义即 `found`。
+- `TextReq = { text: string, clear?: bool }` → 设备端 `AccessibilityNodeInfo.ACTION_SET_TEXT` 作用于当前焦点节点（非 ASCII 同路径）；无焦点节点 → `code:"NO_FOCUS"`。
+- `ShotReq` 增 `scale: f32 ∈ (0,1]`（缺省 1.0），设备端缩放后再编码（实测账见 spike/e2e/wifi-vs-usb.md §2：420KB 全幅中传输占 ~104ms，半分辨率可至 ~26ms）。
+
+### 4.5 NOACK flag（flags bit3 = 0x0008）
+
+请求帧置 NOACK → agent 执行后**不回响应帧**（fire-and-forget）。约束：
+
+- 仅对无返回值的 op 合法（INJECT/TEXT 等）；对 DUMP/QUERY/SHOT/BATCH 置 NOACK 视为协议错误，agent 回 ERROR 帧（响应型 op 的错误不可被 NOACK 吞掉）。
+- NOACK 下执行错误静默丢弃；`req_id` 仍递增占号（日志可对账）。host 不得等待 NOACK 请求的回包。
+
+### 4.6 控制通道配对约束（定稿）
+
+- ch=0 严格 request/response：一请求至多一响应（NOACK 为零）；M2 期 host 侧**串行**（至多一个在途请求）。
+- **禁止跨通道交错**：media 帧（ch=1）不得出现在本 socket——未来帧流使用第二条独立 socket/forward（STREAM_CTRL 激活时建立）。agent 收到非 control 帧按协议错误拒连。
+- `stream-more` 中间推送与 CANCEL 语义**不在 M2 范围**（BATCH_RESULT 单帧返回），保留 flags bit1 与 CANCEL opcode 位待 M3 帧流再起用。
 
 ## 5. u2 JSON-RPC 兼容层
 
