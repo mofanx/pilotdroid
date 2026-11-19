@@ -15,11 +15,12 @@ import msgpack
 MAGIC = b"PD01"
 VER = 0
 CH_CTRL = 0
-F_RESP, F_MORE, F_ERR = 0x0001, 0x0002, 0x0004
+F_RESP, F_MORE, F_ERR, F_NOACK = 0x0001, 0x0002, 0x0004, 0x0008
 
 T = dict(HELLO=0x0001, HELLO_ACK=0x0002, PING=0x0003, PONG=0x0004,
-         INJECT=0x0010, INJECT_RESULT=0x0011, DUMP=0x0020,
-         SCREENSHOT=0x0030, AGENT_STOP=0x00F0)
+         INJECT=0x0010, INJECT_RESULT=0x0011, DUMP=0x0020, QUERY=0x0021,
+         SCREENSHOT=0x0030, BATCH=0x0040, BATCH_RESULT=0x0041,
+         TEXT=0x0060, AGENT_STOP=0x00F0)
 
 
 class Agent:
@@ -46,12 +47,14 @@ class Agent:
             buf += d
         return buf
 
-    def call(self, mtype, payload=None):
+    def call(self, mtype, payload=None, flags=0):
         self.req_id += 1
         body = msgpack.packb(payload or {}, use_bin_type=True)
-        hdr = MAGIC + struct.pack(">BBHHI", VER, CH_CTRL, mtype, 0, self.req_id) \
-            + struct.pack(">I", len(body))
+        hdr = MAGIC + struct.pack(">BBHHI", VER, CH_CTRL, mtype, flags,
+                                  self.req_id) + struct.pack(">I", len(body))
         self.sock.sendall(hdr + body)
+        if flags & F_NOACK:
+            return None  # fire-and-forget: contract says no response frame
         rh = self._recvn(18)
         assert rh[:4] == MAGIC, f"bad magic {rh[:4]!r}"
         ver, ch, rtype, flags, rid = struct.unpack(">BBHHI", rh[4:14])
@@ -78,11 +81,42 @@ class Agent:
                           "x2": float(x2), "y2": float(y2),
                           "duration_ms": int(duration_ms), "steps": int(steps)})
 
+    def inject_tap_noack(self, x, y):
+        return self.call(T["INJECT"],
+                         {"kind": "Tap",
+                          "points": [{"action": 0, "x": float(x),
+                                      "y": float(y), "t_ms": 0},
+                                     {"action": 1, "x": float(x),
+                                      "y": float(y), "t_ms": 75}],
+                          "wait_finish": False}, flags=F_NOACK)
+
     def dump(self):
         return self.call(T["DUMP"], {})
 
-    def shot(self, quality=80):
-        return self.call(T["SCREENSHOT"], {"format": "jpeg", "quality": quality})
+    def query(self, selector):
+        return self.call(T["QUERY"], {"selector": selector})
+
+    def wait_until(self, selector, timeout_ms=5000, poll_ms=None):
+        req = {"selector": selector, "timeout_ms": int(timeout_ms)}
+        if poll_ms:
+            req["poll_ms"] = int(poll_ms)
+        return self.batch([{"wait_until": req}])
+
+    def batch(self, ops, fail_policy="stop", deadline_ms=None, poll_ms=None):
+        req = {"ops": ops, "fail_policy": fail_policy}
+        if deadline_ms:
+            req["deadline_ms"] = int(deadline_ms)
+        if poll_ms:
+            req["poll_ms"] = int(poll_ms)
+        return self.call(T["BATCH"], req)
+
+    def text(self, s, clear=False):
+        return self.call(T["TEXT"], {"text": str(s), "clear": bool(clear)})
+
+    def shot(self, quality=80, scale=1.0):
+        return self.call(T["SCREENSHOT"],
+                         {"format": "jpeg", "quality": quality,
+                          "scale": float(scale)})
 
     def stop(self):
         return self.call(T["AGENT_STOP"], {})
@@ -154,13 +188,33 @@ def main():
             print(json.dumps(a.inject_tap(args[1], args[2]), default=str))
         elif cmd == "inject-swipe":
             print(json.dumps(a.inject_swipe(*map(float, args[1:6])), default=str))
+        elif cmd == "noack-tap":
+            a.inject_tap_noack(args[1], args[2])
+            # contract: no frame comes back — a read must time out
+            a.sock.settimeout(0.5)
+            try:
+                a._recvn(18)
+                print("VIOLATION: got a response to a NOACK request")
+            except socket.timeout:
+                print("OK: no response frame (fire-and-forget honored)")
         elif cmd == "dump":
             r = a.dump()
             sys.stdout.write(r["payload"].get("xml") or r["payload"].get("data", ""))
+        elif cmd == "query":  # query '{"text":"x"}' or '{"id":"...","index":N}'
+            print(json.dumps(a.query(json.loads(args[1])), default=str))
+        elif cmd == "wait":  # wait '{"text":"x"}' [timeout_ms]
+            sel = json.loads(args[1])
+            print(json.dumps(a.wait_until(sel, int(args[2]) if len(args) > 2 else 5000), default=str))
+        elif cmd == "batch":  # batch '<ops json array>'
+            print(json.dumps(a.batch(json.loads(args[1])), default=str))
+        elif cmd == "text":
+            print(json.dumps(a.text(args[1], clear=len(args) > 2), default=str))
         elif cmd == "shot":
-            r = a.shot()
-            open(args[1], "wb").write(r["payload"]["data"])
-            print(f"wrote {len(r['payload']['data'])}B -> {args[1]}")
+            scale = float(args[2]) if len(args) > 2 else 1.0
+            r = a.shot(scale=scale)
+            p = r["payload"]
+            open(args[1], "wb").write(p["data"])
+            print(f"wrote {len(p['data'])}B {p.get('w')}x{p.get('h')} scale={p.get('scale',1)} -> {args[1]}")
         elif cmd == "stop":
             print(json.dumps(a.stop(), default=str))
         elif cmd == "bench":

@@ -6,6 +6,7 @@ import android.graphics.Rect;
 import android.net.LocalServerSocket;
 import android.net.LocalSocket;
 import android.os.Build;
+import android.os.Bundle;
 import android.os.Looper;
 import android.os.SystemClock;
 import android.view.InputDevice;
@@ -24,24 +25,20 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * pilotdroid device agent — M1: single app_process, all capabilities.
+ * pilotdroid device agent — M2: single app_process, BATCH/wait_until/QUERY/
+ * TEXT/SHOT-scale/NOACK per docs/02-protocol.md §4 (finalized contract).
  *
- * <p>Serve: localabstract:pilotdroid_agent, PD01 18-byte frames (docs/02 §2),
- * msgpack payloads. Opcodes: HELLO/PING/INJECT/DUMP/SCREENSHOT/AGENT_STOP.
+ * <p>Serve: localabstract:pilotdroid_agent, PD01 18-byte frames + msgpack.
  *
  * <p>Launch:
  * <pre>
- *   CLASSPATH=/data/local/tmp/pilotdroid/agent.jar setsid \
+ *   CLASSPATH=/data/local/tmp/pilotdroid/agent.jar setsid env \
  *     app_process /data/local/tmp/pilotdroid pilotdroid.Agent
  * </pre>
- *
- * <p>Proven on-device (spike-2, RESULTS-2.md): UiAutomation constructible
- * under plain app_process; resident dump ~2ms; InputManagerGlobal inject ~4ms;
- * takeScreenshot ~24ms. All five capabilities coexist in ONE process.
  */
 public final class Agent {
     private static final String SOCKET_NAME = "pilotdroid_agent";
-    private static final String AGENT_VER = "0.1.0";
+    private static final String AGENT_VER = "0.2.0";
     private static final int PROTO_VER = 0;
 
     // capability bitmap — normative spec is pilotdroid-proto `caps` (bit-for-bit)
@@ -51,9 +48,10 @@ public final class Agent {
     // opcodes
     private static final int T_HELLO = 0x0001, T_HELLO_ACK = 0x0002,
             T_PING = 0x0003, T_PONG = 0x0004, T_INJECT = 0x0010,
-            T_INJECT_RESULT = 0x0011, T_DUMP = 0x0020, T_SHOT = 0x0030,
-            T_STOP = 0x00F0;
-    private static final int F_RESP = 0x0001, F_ERR = 0x0004;
+            T_INJECT_RESULT = 0x0011, T_DUMP = 0x0020, T_QUERY = 0x0021,
+            T_SHOT = 0x0030, T_BATCH = 0x0040, T_BATCH_RESULT = 0x0041,
+            T_TEXT = 0x0060, T_STOP = 0x00F0;
+    private static final int F_RESP = 0x0001, F_ERR = 0x0004, F_NOACK = 0x0008;
 
     private Agent() {}
 
@@ -63,8 +61,8 @@ public final class Agent {
         } catch (Throwable ignore) {
         }
         UiAutomation uia = connectUiAutomation();
-        Injector injector = new Injector();
         Dumper dumper = new Dumper(uia);
+        Injector injector = new Injector(uia);
 
         LocalServerSocket srv = new LocalServerSocket(SOCKET_NAME);
         System.out.println("pilotdroid-agent " + AGENT_VER + " listening localabstract:"
@@ -96,6 +94,12 @@ public final class Agent {
         return u;
     }
 
+    /** Op-level failure carrying a contract code (BATCH result.code / ERROR.code). */
+    private static final class OpError extends Exception {
+        final String code;
+        OpError(String code, String message) { super(message); this.code = code; }
+    }
+
     /** One client connection: frame in -> dispatch -> frame out. */
     private static final class Session {
         private final DataInputStream in;
@@ -121,53 +125,78 @@ public final class Agent {
                 if (magic[0] != 'P' || magic[1] != 'D' || magic[2] != '0' || magic[3] != '1') {
                     return; // not our protocol — drop
                 }
-                int ver = in.readUnsignedByte();
+                in.readUnsignedByte();          // ver
                 int ch = in.readUnsignedByte();
                 int type = in.readUnsignedShort();
                 int flags = in.readUnsignedShort();
                 long reqId = in.readInt() & 0xffffffffL;
                 int plen = in.readInt();
                 if (plen < 0 || plen > 64 * 1024 * 1024) return;
+                if (ch != 0) return;            // control-only socket (§4.6)
                 byte[] payload = new byte[plen];
                 in.readFully(payload);
                 Object req = Msgpack.read(payload);
-                respond(type, reqId, req);
+                respond(type, flags, reqId, req);
             }
         }
 
-        private void respond(int reqType, long reqId, Object req) throws Exception {
+        private void respond(int reqType, int flags, long reqId, Object req)
+                throws Exception {
+            boolean noack = (flags & F_NOACK) != 0;
+            // §4.5: NOACK is only legal on fire-and-forget ops; on
+            // response-ops it is a protocol error (error must not be swallowed).
+            if (noack && reqType != T_INJECT && reqType != T_TEXT) {
+                write(reqType, reqId, F_RESP | F_ERR,
+                        errPayload("PROTO", "NOACK illegal on response opcode"));
+                return;
+            }
             int rtype;
             Object payload;
             boolean err = false;
             try {
                 switch (reqType) {
-                    case T_HELLO:   rtype = T_HELLO_ACK;      payload = hello();      break;
-                    case T_PING:    rtype = T_PONG;           payload = map("ts", SystemClock.uptimeMillis()); break;
-                    case T_INJECT:  rtype = T_INJECT_RESULT;  payload = inject(req);  break;
-                    case T_DUMP:    rtype = T_DUMP;           payload = dumper.xml(); break;
-                    case T_SHOT:    rtype = T_SHOT;           payload = shot(req);    break;
+                    case T_HELLO:   rtype = T_HELLO_ACK;      payload = hello();          break;
+                    case T_PING:    rtype = T_PONG;
+                        payload = map("ts", SystemClock.uptimeMillis());                  break;
+                    case T_INJECT:  rtype = T_INJECT_RESULT;  payload = inject(req);      break;
+                    case T_DUMP:    rtype = T_DUMP;           payload = dumper.xml();     break;
+                    case T_QUERY:   rtype = T_QUERY;          payload = query(req);       break;
+                    case T_SHOT:    rtype = T_SHOT;           payload = shot(req);        break;
+                    case T_TEXT:    rtype = T_TEXT;           payload = text(req);        break;
+                    case T_BATCH:   rtype = T_BATCH_RESULT;   payload = batch(req);       break;
                     case T_STOP:    rtype = T_STOP;
-                        payload = map("bye", true); stop = true; break;
+                        payload = map("bye", true); stop = true;                          break;
                     default:
-                        rtype = reqType; err = true;
-                        payload = errPayload("UNSUPPORTED",
+                        throw new OpError("UNSUPPORTED",
                                 "unsupported opcode 0x" + Integer.toHexString(reqType));
                 }
+            } catch (OpError t) {
+                rtype = reqType; err = true;
+                payload = errPayload(t.code, String.valueOf(t.getMessage()));
             } catch (Throwable t) {
                 rtype = reqType; err = true;
                 payload = errPayload("INTERNAL", String.valueOf(t));
             }
+            if (noack) {
+                if (stop) System.exit(0);
+                return; // fire-and-forget honored
+            }
+            write(rtype, reqId, F_RESP | (err ? F_ERR : 0), payload);
+            if (stop) System.exit(0);
+        }
+
+        private void write(int rtype, long reqId, int flags, Object payload)
+                throws Exception {
             out.write("PD01".getBytes("US-ASCII"));
             out.writeByte(PROTO_VER);
             out.writeByte(0); // control channel
             out.writeShort(rtype);
-            out.writeShort(F_RESP | (err ? F_ERR : 0));
+            out.writeShort(flags);
             out.writeInt((int) reqId);
             byte[] body = Msgpack.write(payload);
             out.writeInt(body.length);
             out.write(body);
             out.flush();
-            if (stop) System.exit(0);
         }
 
         private Map<String, Object> hello() {
@@ -181,7 +210,9 @@ public final class Agent {
             List<Object> disp = new ArrayList<>();
             disp.add(b.width()); disp.add(b.height());
             m.put("display", disp);
-            m.put("caps", CAP_INJECT | CAP_DUMP | CAP_SHOT);
+            m.put("caps", CAP_INJECT | CAP_DUMP | CAP_SHOT | CAP_QUERY | CAP_BATCH
+                    | CAP_TEXT); // STREAM reserved for M3
+            m.put("inject", injector.backend()); // "im" | "uia" | "im+uia-fallback"
             return m;
         }
 
@@ -193,10 +224,10 @@ public final class Agent {
             boolean ok;
             Object kind = r.get("kind");
             if (kind != null) {
-                // Rust wire contract (pilotdroid-proto::payload::InjectReq):
-                // {kind:"Tap"|"Swipe"|"Key", points:[{action,x,y,t_ms}], wait_finish}
+                // wire contract: {kind:"Tap"|"Swipe"|"Key",
+                //                 points:[{action,x,y,t_ms}], wait_finish}
                 if ("Key".equals(String.valueOf(kind))) {
-                    throw new IllegalArgumentException("kind Key unsupported in M1");
+                    throw new OpError("UNSUPPORTED", "kind Key unsupported");
                 }
                 List<?> pts = r.get("points") instanceof List
                         ? (List<?>) r.get("points") : new ArrayList<>();
@@ -224,35 +255,235 @@ public final class Agent {
             m.put("events", events);
             m.put("ms", cost / 1e6);   // wire contract field
             m.put("cost_ns", cost);    // observability extra (serde ignores)
+            m.put("backend", injector.backend());
             return m;
+        }
+
+        private Map<String, Object> query(Object req) {
+            Map<?, ?> r = req instanceof Map ? (Map<?, ?>) req : new LinkedHashMap<>();
+            Selector sel = new Selector(r.get("selector"));
+            AccessibilityNodeInfo hit = dumper.find(sel);
+            Map<String, Object> m = new LinkedHashMap<>();
+            m.put("found", hit != null);
+            if (hit != null) {
+                m.put("node", Dumper.nodeInfo(hit));
+                hit.recycle();
+            }
+            return m;
+        }
+
+        private Map<String, Object> text(Object req) throws Exception {
+            Map<?, ?> r = req instanceof Map ? (Map<?, ?>) req : new LinkedHashMap<>();
+            String s = str(r.get("text"), "");
+            boolean clear = bool(r.get("clear"), false);
+            long t0 = System.nanoTime();
+            AccessibilityNodeInfo edit = dumper.focusedEditable();
+            if (edit == null) throw new OpError("NO_FOCUS", "no focused editable node");
+            boolean ok;
+            try {
+                if (clear) setText(edit, "");
+                ok = setText(edit, s);
+            } finally {
+                edit.recycle();
+            }
+            if (!ok) throw new OpError("ERR_SET_TEXT", "ACTION_SET_TEXT returned false");
+            Map<String, Object> m = new LinkedHashMap<>();
+            m.put("ok", true);
+            m.put("chars", s.length());
+            m.put("cost_ns", System.nanoTime() - t0);
+            return m;
+        }
+
+        private static boolean setText(AccessibilityNodeInfo n, String s) {
+            Bundle b = new Bundle();
+            b.putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, s);
+            return n.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, b);
         }
 
         private Map<String, Object> shot(Object req) {
             Map<?, ?> r = req instanceof Map ? (Map<?, ?>) req : new LinkedHashMap<>();
             int quality = (int) num(r.get("quality"), 80);
+            float scale = (float) num(r.get("scale"), 1.0);
+            if (scale <= 0f || scale > 1f) scale = 1f;
             Bitmap bmp = uia.takeScreenshot();
             if (bmp == null) throw new IllegalStateException("takeScreenshot null");
+            Bitmap outBmp = bmp;
+            if (scale < 1f) {
+                outBmp = Bitmap.createScaledBitmap(bmp,
+                        Math.max(1, Math.round(bmp.getWidth() * scale)),
+                        Math.max(1, Math.round(bmp.getHeight() * scale)), true);
+            }
             ByteArrayOutputStream bos = new ByteArrayOutputStream(1 << 16);
-            bmp.compress(Bitmap.CompressFormat.JPEG, quality, bos);
+            outBmp.compress(Bitmap.CompressFormat.JPEG, quality, bos);
             Map<String, Object> m = new LinkedHashMap<>();
             m.put("format", "jpeg");
-            m.put("w", bmp.getWidth());
-            m.put("h", bmp.getHeight());
+            m.put("w", outBmp.getWidth());
+            m.put("h", outBmp.getHeight());
+            m.put("scale", scale);
             m.put("data", bos.toByteArray());
-            bmp.recycle();
+            outBmp.recycle();
+            if (outBmp != bmp) bmp.recycle();
             return m;
+        }
+
+        // ---------- BATCH (docs/02 §4) -------------------------------------
+
+        private Map<String, Object> batch(Object req) {
+            Map<?, ?> r = req instanceof Map ? (Map<?, ?>) req : new LinkedHashMap<>();
+            List<?> ops = r.get("ops") instanceof List ? (List<?>) r.get("ops")
+                    : new ArrayList<>();
+            boolean stopOnErr = !"continue".equals(str(r.get("fail_policy"), "stop"));
+            long deadlineNs = r.get("deadline_ms") instanceof Number
+                    ? ((Number) r.get("deadline_ms")).longValue() * 1_000_000L : -1;
+            long t0 = System.nanoTime();
+            List<Object> results = new ArrayList<>(ops.size());
+            boolean aborted = false;
+            for (int i = 0; i < ops.size(); i++) {
+                Map<String, Object> res = new LinkedHashMap<>();
+                res.put("index", i);
+                long ot = System.nanoTime();
+                if (aborted) {
+                    res.put("code", "ABORTED");
+                    res.put("message", "skipped: earlier op failed");
+                    res.put("cost_ns", 0L);
+                    results.add(res);
+                    continue;
+                }
+                if (deadlineNs > 0 && System.nanoTime() - t0 > deadlineNs) {
+                    res.put("code", "DEADLINE");
+                    res.put("message", "batch deadline exceeded");
+                    res.put("cost_ns", 0L);
+                    results.add(res);
+                    aborted = true;
+                    continue;
+                }
+                String name = "";
+                Object spec = null;
+                if (ops.get(i) instanceof Map) {
+                    Map<?, ?> op = (Map<?, ?>) ops.get(i);
+                    for (Map.Entry<?, ?> e : op.entrySet()) {
+                        name = String.valueOf(e.getKey());
+                        spec = e.getValue();
+                        break; // single-key map
+                    }
+                }
+                try {
+                    Map<String, Object> data = execOp(name, spec, r);
+                    res.put("code", "OK");
+                    res.put("message", "");
+                    res.put("cost_ns", System.nanoTime() - ot);
+                    if (data != null) res.put("data", data);
+                } catch (OpError e) {
+                    res.put("code", e.code);
+                    res.put("message", String.valueOf(e.getMessage()));
+                    res.put("cost_ns", System.nanoTime() - ot);
+                    aborted = stopOnErr;
+                } catch (Throwable e) {
+                    res.put("code", "ERR_INTERNAL");
+                    res.put("message", String.valueOf(e));
+                    res.put("cost_ns", System.nanoTime() - ot);
+                    aborted = stopOnErr;
+                }
+                results.add(res);
+            }
+            Map<String, Object> m = new LinkedHashMap<>();
+            m.put("results", results);
+            m.put("total_ns", System.nanoTime() - t0);
+            return m;
+        }
+
+        /** Execute one batch member by its single key name. */
+        private Map<String, Object> execOp(String name, Object spec, Map<?, ?> ctx)
+                throws Exception {
+            switch (name) {
+                case "inject":     return inject(spec);
+                case "query":      return query(spec);
+                case "dump":       return dumper.xml();
+                case "screenshot": return shot(spec);
+                case "text":       return text(spec);
+                case "wait_until": return waitUntil(spec, ctx);
+                default:
+                    throw new OpError("UNSUPPORTED", "batch op " + name);
+            }
+        }
+
+        /** wait_until: poll the selector every poll_ms until timeout. */
+        private Map<String, Object> waitUntil(Object spec, Map<?, ?> batchCtx)
+                throws Exception {
+            Map<?, ?> r = spec instanceof Map ? (Map<?, ?>) spec : new LinkedHashMap<>();
+            Selector sel = new Selector(r.get("selector"));
+            long timeoutMs = (long) num(r.get("timeout_ms"), 5000);
+            long pollMs = (long) num(r.get("poll_ms"),
+                    num(batchCtx.get("poll_ms"), 20));
+            long t0 = SystemClock.uptimeMillis();
+            Map<String, Object> m = new LinkedHashMap<>();
+            for (;;) {
+                AccessibilityNodeInfo hit = dumper.find(sel);
+                if (hit != null) {
+                    m.put("found", true);
+                    m.put("node", Dumper.nodeInfo(hit));
+                    hit.recycle();
+                    return m;
+                }
+                if (SystemClock.uptimeMillis() - t0 >= timeoutMs) {
+                    throw new OpError("TIMEOUT",
+                            "selector " + sel + " not matched within " + timeoutMs + "ms");
+                }
+                Thread.sleep(Math.max(1, pollMs));
+            }
+        }
+    }
+
+    // ---------- selector (docs/02 §4.3) --------------------------------------
+
+    /** Selector = {text?, id?, desc?, index?} — AND semantics; index is the
+     *  nth-match ordinal (default 0). */
+    private static final class Selector {
+        private final String text, id, desc;
+        private final int index;
+
+        Selector(Object spec) {
+            Map<?, ?> m = spec instanceof Map ? (Map<?, ?>) spec : new LinkedHashMap<>();
+            this.text = str0(m.get("text"));
+            this.id = str0(m.get("id"));
+            this.desc = str0(m.get("desc"));
+            this.index = m.get("index") instanceof Number
+                    ? ((Number) m.get("index")).intValue() : 0;
+        }
+
+        private static String str0(Object o) { return o == null ? null : String.valueOf(o); }
+
+        boolean match(AccessibilityNodeInfo n) {
+            if (text != null && !text.equals(cs(n.getText()))) return false;
+            if (desc != null && !desc.equals(cs(n.getContentDescription()))) return false;
+            if (id != null) {
+                String rid = cs(n.getViewIdResourceName());
+                // full "pkg:id/name" equality, or bare "name" -> :id/ suffix
+                if (!id.equals(rid) && !rid.endsWith(":id/" + id)) return false;
+            }
+            return true;
+        }
+
+        private static String cs(CharSequence s) { return s == null ? "" : s.toString(); }
+
+        public String toString() {
+            return "{text=" + text + ",id=" + id + ",desc=" + desc + ",index=" + index + "}";
         }
     }
 
     // ---------- input injection ----------------------------------------------
 
-    /** InputManagerGlobal.injectInputEvent — fast path (spike-2: ~4ms/tap). */
+    /** IM-first injector with UiAutomation.injectInputEvent fallback
+     *  (duchamp showed INJECT_EVENTS can be revoked per-OEM). */
     private static final class Injector {
-        private final Object im;
-        private final Method inject;
+        private final UiAutomation uia;
+        private Object im;                    // InputManagerGlobal, may be null
+        private Method inject;                // injectInputEvent(InputEvent,int)
+        private Method uiaInject;             // injectInputEvent(InputEvent,boolean)
+        private int imFailures;
 
-        Injector() throws Exception {
-            Object im = null;
+        Injector(UiAutomation uia) {
+            this.uia = uia;
             for (String n : new String[]{
                     "android.hardware.input.InputManagerGlobal",
                     "android.hardware.input.InputManager"}) {
@@ -260,27 +491,67 @@ public final class Agent {
                     Class<?> c = Class.forName(n);
                     Method g = c.getDeclaredMethod("getInstance");
                     g.setAccessible(true);
-                    im = g.invoke(null);
+                    this.im = g.invoke(null);
                     break;
                 } catch (Throwable ignore) {
                 }
             }
-            if (im == null) throw new IllegalStateException("no InputManager");
-            this.im = im;
-            this.inject = im.getClass().getDeclaredMethod("injectInputEvent",
-                    InputEvent.class, int.class);
-            inject.setAccessible(true);
+            if (im != null) {
+                try {
+                    this.inject = im.getClass().getDeclaredMethod("injectInputEvent",
+                            InputEvent.class, int.class);
+                    inject.setAccessible(true);
+                } catch (Throwable t) {
+                    im = null;
+                }
+            }
+            try {
+                this.uiaInject = UiAutomation.class.getDeclaredMethod(
+                        "injectInputEvent", InputEvent.class, boolean.class);
+                uiaInject.setAccessible(true);
+            } catch (Throwable ignore) {
+                this.uiaInject = null;
+            }
         }
 
-        private boolean put(MotionEvent ev, int mode) throws Exception {
-            boolean r = Boolean.TRUE.equals(inject.invoke(im, ev, mode));
+        String backend() {
+            if (im != null && imFailures == 0) return "im";
+            if (uiaInject != null && (im == null || imFailures > 0)) return "uia";
+            if (im != null) return "im+uia-fallback";
+            return "none";
+        }
+
+        private boolean put(MotionEvent ev, int mode) {
+            try {
+                if (im != null && imFailures < 3) {
+                    Boolean r = (Boolean) inject.invoke(im, ev, mode);
+                    if (Boolean.TRUE.equals(r)) {
+                        ev.recycle();
+                        return true;
+                    }
+                }
+            } catch (Throwable t) {
+                imFailures++;
+            }
+            // fallback: UiAutomation.injectInputEvent (slower but OEM-safe)
+            try {
+                if (uiaInject != null) {
+                    Boolean r = (Boolean) uiaInject.invoke(uia, ev, mode == 2);
+                    if (Boolean.TRUE.equals(r)) {
+                        imFailures++; // prefer IM next time, but tolerate flakiness
+                        ev.recycle();
+                        return true;
+                    }
+                }
+            } catch (Throwable t) {
+                imFailures++;
+            }
             ev.recycle();
-            return r;
+            return false;
         }
 
-        /** Inject a generic MotionEvent point sequence (wire contract:
-         *  points = [{action,x,y,t_ms}]). Single-pointer gestures only. */
-        int points(List<?> pts, boolean waitFinish) throws Exception {
+        /** Generic MotionEvent point sequence: [{action,x,y,t_ms}]. */
+        int points(List<?> pts, boolean waitFinish) {
             long t0 = SystemClock.uptimeMillis();
             int ok = 0;
             int n = pts.size();
@@ -298,8 +569,7 @@ public final class Agent {
             return ok;
         }
 
-        /** @return number of events injected (2 = down+up) */
-        int tap(float x, float y, boolean waitFinish) throws Exception {
+        int tap(float x, float y, boolean waitFinish) {
             long now = SystemClock.uptimeMillis();
             int ok = 0;
             for (int a : new int[]{MotionEvent.ACTION_DOWN, MotionEvent.ACTION_UP}) {
@@ -310,9 +580,8 @@ public final class Agent {
             return ok;
         }
 
-        /** @return number of events injected */
         int swipe(float x1, float y1, float x2, float y2, int durMs, int steps,
-                  boolean waitFinish) throws Exception {
+                  boolean waitFinish) {
             long t0 = SystemClock.uptimeMillis();
             int ok = 0;
             for (int i = 0; i <= steps; i++) {
@@ -329,7 +598,7 @@ public final class Agent {
         }
     }
 
-    // ---------- UI tree dump ---------------------------------------------------
+    // ---------- UI tree: dump + find ------------------------------------------
 
     private static final class Dumper {
         private final UiAutomation uia;
@@ -343,6 +612,75 @@ public final class Agent {
             root.getBoundsInScreen(r);
             root.recycle();
             return r;
+        }
+
+        /** DFS for the nth node matching the selector (fresh tree per call). */
+        AccessibilityNodeInfo find(Selector sel) {
+            AccessibilityNodeInfo root = uia.getRootInActiveWindow();
+            if (root == null) return null;
+            int[] seen = {0};
+            AccessibilityNodeInfo hit = dfs(root, sel, seen);
+            root.recycle();
+            return hit;
+        }
+
+        private AccessibilityNodeInfo dfs(AccessibilityNodeInfo n, Selector sel,
+                                          int[] seen) {
+            if (sel.match(n) && seen[0]++ == sel.index) {
+                return AccessibilityNodeInfo.obtain(n);
+            }
+            int kids = n.getChildCount();
+            for (int i = 0; i < kids; i++) {
+                AccessibilityNodeInfo ch = n.getChild(i);
+                if (ch != null) {
+                    AccessibilityNodeInfo hit = dfs(ch, sel, seen);
+                    ch.recycle();
+                    if (hit != null) return hit;
+                }
+            }
+            return null;
+        }
+
+        /** The currently focused editable node, or null. */
+        AccessibilityNodeInfo focusedEditable() {
+            AccessibilityNodeInfo root = uia.getRootInActiveWindow();
+            if (root == null) return null;
+            AccessibilityNodeInfo hit = findFocused(root);
+            root.recycle();
+            return hit;
+        }
+
+        private AccessibilityNodeInfo findFocused(AccessibilityNodeInfo n) {
+            if (n.isEditable() && n.isFocused()) return AccessibilityNodeInfo.obtain(n);
+            int kids = n.getChildCount();
+            for (int i = 0; i < kids; i++) {
+                AccessibilityNodeInfo ch = n.getChild(i);
+                if (ch != null) {
+                    AccessibilityNodeInfo hit = findFocused(ch);
+                    ch.recycle();
+                    if (hit != null) return hit;
+                }
+            }
+            return null;
+        }
+
+        /** Structured node info for QUERY/wait_until results. */
+        static Map<String, Object> nodeInfo(AccessibilityNodeInfo n) {
+            Rect b = new Rect();
+            n.getBoundsInScreen(b);
+            Map<String, Object> m = new LinkedHashMap<>();
+            m.put("text", n.getText() == null ? "" : n.getText().toString());
+            m.put("id", n.getViewIdResourceName() == null ? ""
+                    : n.getViewIdResourceName());
+            m.put("desc", n.getContentDescription() == null ? ""
+                    : n.getContentDescription().toString());
+            List<Object> bounds = new ArrayList<>();
+            bounds.add(b.left); bounds.add(b.top); bounds.add(b.right); bounds.add(b.bottom);
+            m.put("bounds", bounds);
+            m.put("class", n.getClassName() == null ? "" : n.getClassName().toString());
+            m.put("clickable", n.isClickable());
+            m.put("enabled", n.isEnabled());
+            return m;
         }
 
         /** u2-compatible hierarchy XML. */
@@ -362,7 +700,7 @@ public final class Agent {
             m.put("format", "xml");
             m.put("nodes", count[0]);
             m.put("cost_ns", System.nanoTime() - t0);
-            m.put("xml", sb.toString()); // wire contract field (was `data`)
+            m.put("xml", sb.toString()); // wire contract field
             return m;
         }
 

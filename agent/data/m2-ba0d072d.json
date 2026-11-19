@@ -1,0 +1,30 @@
+{
+  "device": "ba0d072d",
+  "agent": "0.2.0 (feature/m2-agent)",
+  "note": "persistent conn, e2e=frame rtt incl ~45ms MIUI adb transport floor",
+  "query_e2e_p50_ms": 49.0,
+  "batch_wait_until_hit": {
+    "e2e_p50_ms": 51.0,
+    "dev_p50_ms": 7.0
+  },
+  "batch_tap_wait_tap": {
+    "e2e_p50_ms": 62.9,
+    "dev_p50_ms": 18.7,
+    "vs_sequential_3ops_ms": 150,
+    "vs_u2_equiv_ms": 700
+  },
+  "text": {
+    "e2e_p50_ms": 53.0,
+    "dev_p50_ms": 18.5,
+    "vs_u2_set_text_p50_ms": 309
+  },
+  "shot": {
+    "scale1_e2e_p50_ms": 153.2,
+    "scale05_e2e_p50_ms": 142.4,
+    "scale05_bytes": 18432,
+    "full_bytes": 420679,
+    "scale05_dim": "720x1600"
+  },
+  "noack_inject_send_p50_ms": 0.03,
+  "assertions": "15/15 verify-agent.sh"
+}
