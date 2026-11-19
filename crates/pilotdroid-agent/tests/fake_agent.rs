@@ -135,10 +135,14 @@ fn dispatch_fake(req: &Frame) -> Option<Frame> {
                 OpCode::InjectResult as u16,
                 encode(&InjectAck {
                     ok: true,
-                    events: r.points.len() as u32,
+                    events: if r.kind == InjectKind::Key {
+                        2 // KeyEvent down+up
+                    } else {
+                        r.points.len() as u32
+                    },
                     ms: 2.5,
                     cost_ns: None,
-                    backend: None,
+                    backend: r.backend.clone(),
                 })
                 .unwrap(),
             )
@@ -269,6 +273,9 @@ async fn client_batch_returns_per_op_results() {
                 kind: InjectKind::Tap,
                 points: vec![],
                 wait_finish: false,
+                keycode: None,
+                meta: None,
+                backend: None,
             }),
             BatchOp::WaitUntil(WaitUntilReq {
                 selector: Selector {
@@ -282,6 +289,9 @@ async fn client_batch_returns_per_op_results() {
                 kind: InjectKind::Tap,
                 points: vec![],
                 wait_finish: true,
+                keycode: None,
+                meta: None,
+                backend: None,
             }),
         ])
         .unwrap();
@@ -367,6 +377,8 @@ struct FakeAdb {
     /// Append-only log of forward() calls (removed entries stay here so
     /// tests can assert the forward spec even after forward_remove).
     forward_calls: Vec<(String, String, String)>,
+    /// Whether `test -f <agent.jar>` reports the remote jar present.
+    jar_exists: bool,
 }
 
 impl AdbTransport for FakeAdb {
@@ -378,10 +390,15 @@ impl AdbTransport for FakeAdb {
     }
     fn shell(&mut self, serial: &str, command: &str) -> AdbResult<ShellOutput> {
         self.shells.push((serial.into(), command.into()));
+        let exit = if command.starts_with("test -f") && !self.jar_exists {
+            Some(1)
+        } else {
+            Some(0)
+        };
         Ok(ShellOutput {
             stdout: Vec::new(),
             stderr: Vec::new(),
-            exit_code: Some(0),
+            exit_code: exit,
         })
     }
     fn push(&mut self, serial: &str, local: &Path, remote: &str) -> AdbResult<()> {
@@ -417,11 +434,14 @@ fn manager_emits_expected_command_surface() {
     let shells: Vec<&str> = adb.shells.iter().map(|(_, c)| c.as_str()).collect();
     assert!(shells.iter().any(|c| c.contains("mkdir -p")), "{shells:?}");
     assert!(
-        shells.iter().any(|c| c.contains("setsid")
+        shells.iter().any(|c| c.contains("setsid env CLASSPATH")
             && c.contains("app_process")
             && c.contains(AGENT_MAIN_CLASS)),
         "{shells:?}"
     );
+    // Single process: setsid env launches app_process directly — no `sh -c`
+    // wrapper (the extra sh parent was the M2 double-process wart).
+    assert!(!shells.iter().any(|c| c.contains("sh -c")), "{shells:?}");
     assert!(shells.iter().any(|c| c.contains("pkill")), "{shells:?}");
 
     assert_eq!(adb.pushes.len(), 1);
@@ -484,7 +504,9 @@ impl AdbTransport for RecoveringAdb {
         self.inner.list_devices()
     }
     fn shell(&mut self, serial: &str, command: &str) -> AdbResult<ShellOutput> {
-        if command.contains("app_process") {
+        // app_process can only bind when the remote jar exists — a missing
+        // jar makes restart fail, forcing the install fallback (M3 ladder).
+        if command.contains("app_process") && self.inner.jar_exists {
             let port = self.target_port;
             std::thread::spawn(move || {
                 let l = std::net::TcpListener::bind(("127.0.0.1", port)).unwrap();
@@ -521,6 +543,7 @@ impl AdbTransport for RecoveringAdb {
         self.inner.shell(serial, command)
     }
     fn push(&mut self, s: &str, l: &Path, r: &str) -> AdbResult<()> {
+        self.inner.jar_exists = true; // install materializes the remote jar
         self.inner.push(s, l, r)
     }
     fn pull(&mut self, s: &str, r: &str, l: &Path) -> AdbResult<()> {
@@ -542,7 +565,10 @@ fn watchdog_recovers_dead_agent_and_hellos() {
     drop(probe);
 
     let mut adb = RecoveringAdb {
-        inner: FakeAdb::default(),
+        inner: FakeAdb {
+            jar_exists: true,
+            ..Default::default()
+        },
         target_port: port,
     };
     {
@@ -552,14 +578,14 @@ fn watchdog_recovers_dead_agent_and_hellos() {
                 "fake0",
                 Some(port),
                 "pilotdroid_agent",
-                Path::new("/tmp/agent.jar"),
+                None, // zero-copy restart: no --jar needed while remote jar exists
             )
             .unwrap();
         assert_eq!(hello.agent, "recovered/1");
     }
     let inner = &adb.inner;
-    // Ladder ran: jar pushed (install) + app_process launch (start).
-    assert_eq!(inner.pushes.len(), 1, "reinstall must push the jar");
+    // Zero-copy path: restart (stop+start) revived the daemon — no push.
+    assert_eq!(inner.pushes.len(), 0, "zero-copy restart must not push");
     assert!(
         inner.shells.iter().any(|(_, c)| c.contains("app_process")),
         "relaunch missing: {:?}",
@@ -583,7 +609,7 @@ fn watchdog_surfaces_recovery_failure() {
         "fake0",
         Some(port),
         "pilotdroid_agent",
-        Path::new("/tmp/agent.jar"),
+        Some(Path::new("/tmp/agent.jar")),
     );
     let err = match res {
         Err(e) => e,
@@ -593,4 +619,110 @@ fn watchdog_surfaces_recovery_failure() {
         matches!(err, AgentError::Recover { stage: "retry", .. }),
         "got {err:?}"
     );
+}
+
+#[test]
+fn watchdog_installs_when_remote_jar_missing() {
+    // Zero-copy restart can't help when the remote jar is gone — the graded
+    // ladder must detect `test -f` failure and push the local jar (requires
+    // --jar), then relaunch and HELLO.
+    let probe = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = probe.local_addr().unwrap().port();
+    drop(probe);
+
+    let mut adb = RecoveringAdb {
+        inner: FakeAdb {
+            jar_exists: false, // remote agent.jar absent
+            ..Default::default()
+        },
+        target_port: port,
+    };
+    {
+        let mut m = AgentManager::new(&mut adb);
+        let (_client, _port, hello) = m
+            .connect_recover(
+                "fake0",
+                Some(port),
+                "pilotdroid_agent",
+                Some(Path::new("/tmp/agent.jar")),
+            )
+            .unwrap();
+        assert_eq!(hello.agent, "recovered/1");
+    }
+    let inner = &adb.inner;
+    assert_eq!(inner.pushes.len(), 1, "missing remote jar → install push");
+    assert!(
+        inner.shells.iter().any(|(_, c)| c.starts_with("test -f")),
+        "remote jar probe missing: {:?}",
+        inner.shells
+    );
+}
+
+#[test]
+fn watchdog_jar_missing_no_local_reports_stage() {
+    // Remote jar absent and no --jar supplied → explicit jar-missing error,
+    // not a bare connect retry failure.
+    let probe = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = probe.local_addr().unwrap().port();
+    drop(probe);
+
+    let mut adb = FakeAdb {
+        jar_exists: false,
+        ..Default::default()
+    };
+    let mut m = AgentManager::new(&mut adb);
+    let res = m.connect_recover("fake0", Some(port), "pilotdroid_agent", None);
+    match res {
+        Err(AgentError::Recover { stage, detail }) => {
+            assert_eq!(stage, "jar-missing");
+            assert!(detail.contains("jar"), "{detail}");
+        }
+        Err(e) => panic!("expected Recover{{stage:jar-missing}}, got {e:?}"),
+        Ok(_) => panic!("expected recovery failure, got connected client"),
+    }
+}
+
+// ---- M3 client surface: press / swipe / backend ----------------------------
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn client_press_key_and_swipe_and_backend() {
+    let addr = spawn_fake(FakeBehavior::Responsive).await;
+    tokio::time::sleep(Duration::from_millis(30)).await;
+    let mut c = AgentClient::connect_timeout(addr, Duration::from_secs(2)).unwrap();
+
+    // KEY: press(4 = KEYCODE_BACK) — fake counts 2 events (KeyEvent down+up).
+    let ack = c.press(4, None).unwrap();
+    assert!(ack.ok);
+    assert_eq!(ack.events, 2, "key = KeyEvent DOWN+UP");
+
+    let ack = c.swipe(100.0, 1500.0, 500.0, 800.0, 300).unwrap();
+    assert!(ack.ok);
+    // swipe() interpolates duration/10 MOVE points between DOWN and UP.
+    assert_eq!(ack.events, 32, "swipe = DOWN + 30×MOVE + UP");
+
+    let ack = c
+        .inject(InjectReq {
+            kind: InjectKind::Tap,
+            points: vec![
+                MotionPoint {
+                    action: 0,
+                    x: 10.0,
+                    y: 20.0,
+                    t_ms: 0,
+                },
+                MotionPoint {
+                    action: 1,
+                    x: 10.0,
+                    y: 20.0,
+                    t_ms: 60,
+                },
+            ],
+            wait_finish: false,
+            keycode: None,
+            meta: None,
+            backend: Some("im".into()),
+        })
+        .unwrap();
+    // Fake echoes the request's backend field back.
+    assert_eq!(ack.backend.as_deref(), Some("im"));
 }

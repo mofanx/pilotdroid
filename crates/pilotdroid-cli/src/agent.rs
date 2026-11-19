@@ -9,40 +9,15 @@ use pilotdroid_adb::AdbTransport;
 use pilotdroid_agent::{AgentClient, AgentManager};
 use pilotdroid_proto::payload::*;
 
-/// forward localabstract → tcp, connect, HELLO handshake.
-pub fn connect(
-    adb: &mut impl AdbTransport,
-    serial: &str,
-    port: Option<u16>,
-    socket: &str,
-) -> Result<(AgentClient, u16)> {
-    let mut mgr = AgentManager::new(adb);
-    let (mut client, port) = mgr
-        .connect_socket(serial, port, socket)
-        .context("connecting to agent")?;
-    // HELLO failure (dead/mismatched agent) must not leave the forward rule.
-    let hello = match client.hello() {
-        Ok(h) => h,
-        Err(e) => {
-            let _ = mgr.disconnect(serial, port);
-            return Err(e).context("HELLO handshake");
-        }
-    };
-    eprintln!(
-        "agent {} (caps 0x{:08x}) via tcp:{port}",
-        hello.agent, hello.caps
-    );
-    Ok((client, port))
-}
-
-/// Watchdog variant of [`connect`] (M2): on connect/HELLO failure run the
-/// recovery ladder — reinstall `jar` + relaunch — then retry once.
+/// Watchdog connect (graded recovery, M3): on connect/HELLO failure run the
+/// graded recovery ladder — zero-copy restart first; reinstall only when
+/// the remote jar is missing or `jar` forces a reflash (M3).
 pub fn connect_or_recover(
     adb: &mut impl AdbTransport,
     serial: &str,
     port: Option<u16>,
     socket: &str,
-    jar: &Path,
+    jar: Option<&Path>,
 ) -> Result<(AgentClient, u16)> {
     match AgentManager::new(adb).connect_recover(serial, port, socket, jar) {
         Ok((client, port, hello)) => {
