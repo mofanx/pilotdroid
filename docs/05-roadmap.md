@@ -75,7 +75,22 @@
 - [x] KEY op（任意 keycode）、INJECT 事件序列、backend 强制字段、SHOT quality/take_ns-enc_ns 分段——verify 21/21。
 - [x] 仲裁实验：SHOT 固定成本主导（enc 随像素非 quality）；backend A/B IM 快 21ms 维持默认；keep-alive 负结果（~43ms 尾=adbd 连续请求批量量子）；dash 2602BRT18C/SDK37 矩阵行 caps=95。
 - [x] watchdog 分级恢复：kill -9 后无 --jar 调用 1.15s 自动恢复。
-- 剩余：xpath fixture 对拍、帧流、Unicode IME、P1 矩阵扩展。
+- 剩余：xpath fixture 对拍、Unicode IME、P1 矩阵扩展（帧流移交 M4 并交付）。
+
+## M4 · 帧流与 daemon 韧性
+
+**范围**
+- media channel 帧流（ADR-006）：第二 localabstract `pilotdroid_agent_media`，ch=1 JPEG 序列帧，§4.8 契约。
+- `agent stream` CLI + 夜间 soak（无人值守 daemon 韧性验证）。
+
+**M4 已交付（feature/m4-e2e，实测 `spike/e2e/RESULTS-M4.md`）**
+- [x] **帧流 ≥5fps @ scale=0.5 持续 ≥60s**：实测 **6.02fps / 391帧/65s / 3.7Mbps / dropped=0 / seq_gaps=0**（Mi11/A14）；req fps=10 → 6.0 有效（takeScreenshot ~115ms + JPEG ~66ms/帧 = ~6fps 天花板，E1 固定成本归因兑现）。
+- [x] **流期间 control 不阻塞**：第二会话并发 tap p50=5.95ms、5-tap batch=16.4ms（=无流基线）。
+- [x] **stop 后无残留**：post-stream verify-agent.sh 27/27（media EOF、owner 会话绑定、ERR_STREAM_BUSY 全部实测）。
+- [x] **摊销收益量化**：SHOT 轮询天花板 5.07fps（197.2ms e2e @0.5）→ 流 6.02fps（+18%）且控制通道全程可用；带宽 77.6KB/帧 vs 全分辨率 ~420KB。
+- [x] agent 侧：takeScreenshot 线程亲和性经 main-Looper marshal 解决（AMS 拒绝第二 UiAutomation 连接）；host 侧：MediaClient/StreamStats/`agent stream` 全链路。
+- [x] **夜间 soak**：`spike/e2e/soak-m4.sh`——session bench + 周期 kill-9/watchdog 恢复循环 + RSS/fd 采样，报告 `soak-report.md`。
+- 剩余：硬件编码路径（>6fps 需 SurfaceFlinger/MediaCodec，ADR-006 被否方案）、多设备流矩阵。
 
 ## 明确的排序依据
 
