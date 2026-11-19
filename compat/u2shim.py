@@ -30,7 +30,15 @@ class _Selector:
     def __init__(self, dev, **kw):
         self.dev, self.kw = dev, kw
 
+    _SUPPORTED = ("text", "resourceId", "description", "index")
+
     def _sel(self):
+        bad = [k for k in self.kw if k not in self._SUPPORTED]
+        if bad:
+            raise ValueError(
+                f"u2shim selector: unsupported keys {bad}; "
+                f"supported: {list(self._SUPPORTED)} "
+                f"(className/packageName/xpath not in v0)")
         s = {}
         if "text" in self.kw:
             s["text"] = self.kw["text"]
