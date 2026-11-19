@@ -30,6 +30,12 @@ fn spawn_fake() -> (SocketAddr, mpsc::Receiver<u16>) {
                         encode(&HelloAck {
                             agent: "fake/0".into(),
                             caps: caps::DUMP,
+                            ver: None,
+                            proto: None,
+                            sdk: None,
+                            abi: None,
+                            display: None,
+                            inject: None,
                         })
                         .unwrap(),
                     ),
@@ -39,6 +45,8 @@ fn spawn_fake() -> (SocketAddr, mpsc::Receiver<u16>) {
                             ok: true,
                             events: 2,
                             ms: 1.5,
+                            cost_ns: None,
+                            backend: None,
                         })
                         .unwrap(),
                     ),
@@ -54,6 +62,9 @@ fn spawn_fake() -> (SocketAddr, mpsc::Receiver<u16>) {
                         encode(&ShotAck {
                             format: "jpeg".into(),
                             data: vec![0xFF, 0xD8].into(),
+                            w: None,
+                            h: None,
+                            scale: None,
                         })
                         .unwrap(),
                     ),

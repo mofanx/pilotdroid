@@ -147,6 +147,12 @@ fn payload_msgpack_roundtrip_all_types() {
     let hello = HelloAck {
         agent: "pilotdroid/0.1".into(),
         caps: caps::INJECT | caps::DUMP | caps::SHOT,
+        ver: None,
+        proto: None,
+        sdk: None,
+        abi: None,
+        display: None,
+        inject: None,
     };
     assert_eq!(decode::<HelloAck>(&encode(&hello).unwrap()).unwrap(), hello);
 
@@ -173,6 +179,9 @@ fn payload_msgpack_roundtrip_all_types() {
     let shot = ShotAck {
         format: "jpeg".into(),
         data: serde_bytes::ByteBuf::from(vec![0xFF, 0xD8, 0xFF]),
+        w: None,
+        h: None,
+        scale: None,
     };
     assert_eq!(decode::<ShotAck>(&encode(&shot).unwrap()).unwrap(), shot);
 
@@ -407,4 +416,82 @@ fn query_and_text_payloads_roundtrip() {
         clear: Some(true),
     };
     assert_eq!(decode::<TextReq>(&encode(&t).unwrap()).unwrap(), t);
+}
+
+// ---- M2 cleanup: wire-redundant fields landed in proto (t5 review) ---------
+
+#[test]
+fn text_ack_decodes_agent_chars_field() {
+    // Java agent emits {ok, chars, cost_ns} — proto must carry chars (t5).
+    let ack = TextAck {
+        ok: true,
+        chars: Some(6),
+        cost_ns: 9_227_761,
+    };
+    assert_eq!(decode::<TextAck>(&encode(&ack).unwrap()).unwrap(), ack);
+    // Older/other agents without chars still decode.
+    let raw = rmpv::Value::Map(vec![
+        (rmpv::Value::from("ok"), rmpv::Value::from(true)),
+        (rmpv::Value::from("cost_ns"), rmpv::Value::from(5u64)),
+    ]);
+    let back: TextAck = decode(&rmp_serde::to_vec_named(&raw).unwrap()).unwrap();
+    assert_eq!(back.chars, None);
+}
+
+#[test]
+fn shot_ack_decodes_agent_geometry_fields() {
+    // Java M2 agent emits {format,data,w,h,scale} — proto must carry them (t5).
+    let ack = ShotAck {
+        format: "jpeg".into(),
+        data: vec![0xFF, 0xD8].into(),
+        w: Some(720),
+        h: Some(1600),
+        scale: Some(0.5),
+    };
+    assert_eq!(decode::<ShotAck>(&encode(&ack).unwrap()).unwrap(), ack);
+    // M1-era {format,data} replies still decode with the extras absent.
+    let raw = rmpv::Value::Map(vec![
+        (rmpv::Value::from("format"), rmpv::Value::from("jpeg")),
+        (
+            rmpv::Value::from("data"),
+            rmpv::Value::Binary(vec![0xFF, 0xD8]),
+        ),
+    ]);
+    let back: ShotAck = decode(&rmp_serde::to_vec_named(&raw).unwrap()).unwrap();
+    assert_eq!(back.w, None);
+    assert_eq!(back.scale, None);
+}
+
+#[test]
+fn hello_and_inject_acks_carry_agent_extras() {
+    // M2 Java emits ver/proto/sdk/abi/display/inject on HELLO_ACK and
+    // cost_ns/backend on INJECT_RESULT — proto must carry them (t5 sweep).
+    let hello = HelloAck {
+        agent: "pilotdroid".into(),
+        caps: 0x5f,
+        ver: Some("0.2.0".into()),
+        proto: Some(0),
+        sdk: Some(34),
+        abi: Some("arm64-v8a".into()),
+        display: Some(vec![1440, 3200]),
+        inject: Some("im+uia-fallback".into()),
+    };
+    assert_eq!(decode::<HelloAck>(&encode(&hello).unwrap()).unwrap(), hello);
+    // M1 minimal {agent,caps} still decodes.
+    let raw = rmpv::Value::Map(vec![
+        (rmpv::Value::from("agent"), rmpv::Value::from("pilotdroid")),
+        (rmpv::Value::from("caps"), rmpv::Value::from(7u64)),
+    ]);
+    let back: HelloAck = decode(&rmp_serde::to_vec_named(&raw).unwrap()).unwrap();
+    assert_eq!(back.caps, 7);
+    assert_eq!(back.inject, None);
+
+    let inj = InjectAck {
+        ok: true,
+        events: 2,
+        ms: 4.9,
+        cost_ns: Some(4_900_000),
+        backend: Some("uia".into()),
+    };
+    assert_eq!(decode::<InjectAck>(&encode(&inj).unwrap()).unwrap(), inj);
 }

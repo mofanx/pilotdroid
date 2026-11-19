@@ -85,7 +85,7 @@ BATCH {
   total_ns: u64 }
 ```
 
-- **每 op 必有一条 result**：fail_policy=stop 下首个非 OK 之后记 `ABORTED`；`deadline_ms` 耗尽后未执行记 `DEADLINE`。
+- **每 op 必有一条 result**：fail_policy=stop 下首个非 OK 之后记 `ABORTED`；`deadline_ms` 语义（实现口径，t5 复核对齐）：deadline 耗尽时**首个**未执行 op 记 `DEADLINE`，**其后**所有未执行 op 记 `ABORTED`——DEADLINE 是"撞上时限的那一个"，ABORTED 是"被其连坐跳过的"。
 - op 自身失败 ≠ 帧错误；整帧畸形才走 ERROR flag + ErrorAck。
 - 事务语义：BATCH 非原子，失败点之后仅由 fail_policy 决定。
 
@@ -102,9 +102,10 @@ Selector = { text?: string, id?: string, desc?: string, index?: u32 }
 
 ### 4.4 QUERY / TEXT / SCREENSHOT-scale wire 契约
 
-- `QueryReq = { selector: Selector, attrs?: string[] }` → `{ found: bool, node?: { text,id,desc,bounds:[l,t,r,b], class, clickable, enabled } }`；exists 语义即 `found`。
-- `TextReq = { text: string, clear?: bool }` → 设备端 `AccessibilityNodeInfo.ACTION_SET_TEXT` 作用于当前焦点节点（非 ASCII 同路径）；无焦点节点 → `code:"NO_FOCUS"`。
-- `ShotReq` 增 `scale: f32 ∈ (0,1]`（缺省 1.0），设备端缩放后再编码（实测账见 spike/e2e/wifi-vs-usb.md §2：420KB 全幅中传输占 ~104ms，半分辨率可至 ~26ms）。
+- `QueryReq = { selector: Selector, attrs?: string[] }` → `{ found: bool, node?: { text,id,desc,bounds:[l,t,r,b], class, clickable, enabled } }`；exists 语义即 `found`。`attrs` 是**可选裁剪参数**：给定 `["text","bounds"]` 时 agent 只回该属性子集；省略时回全量 node。host 侧必须容忍多余字段（serde named-map 天然如此）。
+- `TextReq = { text: string, clear?: bool }` → 设备端 `AccessibilityNodeInfo.ACTION_SET_TEXT` 作用于当前焦点节点（非 ASCII 同路径）；无焦点节点 → `code:"NO_FOCUS"`；应答 `{ok, chars, cost_ns}`（chars 为写入字符数）。
+- `ShotReq`/`ShotAck`：应答含 `{format, w, h, scale, data}`——w/h/scale 为缩放后实际几何与生效倍率的回显。
+- `ShotReq` 增 `scale: f32 ∈ (0,1]`（缺省 1.0），设备端缩放后再编码（实测账见 spike/e2e/wifi-vs-usb.md §2 + RESULTS-M2：420KB→18KB，但编码主导 e2e，字节缩减 23×）。
 
 ### 4.5 NOACK flag（flags bit3 = 0x0008）
 
