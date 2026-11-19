@@ -15,7 +15,7 @@
 │  ADB client 层（vendor: adb_client）                     │
 │  └─ smartsocket / shell v2 / sync push / forward       │
 ├─────────────── transport: adb forward ─────────────────┤
-│  tcp:localhost:PORT ⇄ localabstract:pilotdroid         │
+│  tcp:localhost:PORT ⇄ localabstract:pilotdroid_agent         │
 ├────────────────────────────────────────────────────────┤
 │  设备端 pilotdroid-agent（dex, app_process 常驻）         │
 │  ├─ RPC loop: 分帧解码、批量执行、wait-until、心跳        │
@@ -64,7 +64,7 @@ InputManagerGlobal.injectInputEvent (mode 0/2)   ← 主路径，p50≈3ms，已
 
 1. **探测**：`getprop`（SDK/ABI）→ agent 版本协商 → capability bitmap 上报（注入/截图/UI 树/流 四路可用性）。
 2. **部署**：dex push `/data/local/tmp/pilotdroid/`（MD5 校验，幂等）。
-3. **拉起**：`app_process` + `setsid` daemon 化 → `localabstract:pilotdroid` 监听 → host `adb forward` 建立 → 握手（协议版本 + capability）。
+3. **拉起**：`app_process` + `setsid` daemon 化 → `localabstract:pilotdroid_agent` 监听 → host `adb forward` 建立 → 握手（协议版本 + capability）。
 4. **服务**：单连接复用；控制帧与媒体帧同 socket 分流（逻辑 channel）。
 5. **回收**：host 断开不杀 agent（重连友好）；显式 `agent.stop` 或设备重启后重新部署。
 

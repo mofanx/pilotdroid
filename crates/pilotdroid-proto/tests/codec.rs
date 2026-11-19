@@ -146,7 +146,7 @@ fn opcode_table_covers_every_variant() {
 fn payload_msgpack_roundtrip_all_types() {
     let hello = HelloAck {
         agent: "pilotdroid/0.1".into(),
-        caps: caps::INJECT_IM | caps::UIAUTOMATION | caps::SCREENSHOT,
+        caps: caps::INJECT | caps::DUMP | caps::SHOT,
     };
     assert_eq!(decode::<HelloAck>(&encode(&hello).unwrap()).unwrap(), hello);
 
@@ -186,4 +186,18 @@ fn payload_msgpack_roundtrip_all_types() {
 #[test]
 fn payload_decode_rejects_garbage() {
     assert!(decode::<HelloAck>(&[0xFF, 0xFF, 0xFF]).is_err());
+}
+
+#[test]
+fn caps_bits_are_the_wire_contract() {
+    // Normative bitmap — Java Agent CAP_* must match (t4 review found the
+    // two sides had diverged; caps=0x7 on the wire = INJECT|DUMP|SHOT).
+    assert_eq!(caps::INJECT, 0x01);
+    assert_eq!(caps::DUMP, 0x02);
+    assert_eq!(caps::SHOT, 0x04);
+    assert_eq!(caps::QUERY, 0x08);
+    assert_eq!(caps::BATCH, 0x10);
+    assert_eq!(caps::STREAM, 0x20);
+    assert_eq!(caps::TEXT, 0x40);
+    assert_eq!(caps::INJECT | caps::DUMP | caps::SHOT, 0x07);
 }

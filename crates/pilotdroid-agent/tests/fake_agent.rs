@@ -106,7 +106,7 @@ fn dispatch_fake(req: &Frame) -> Frame {
             OpCode::HelloAck as u16,
             encode(&HelloAck {
                 agent: "fake-agent/0.1".into(),
-                caps: caps::INJECT_IM | caps::UIAUTOMATION | caps::SCREENSHOT,
+                caps: caps::INJECT | caps::DUMP | caps::SHOT,
             })
             .unwrap(),
         ),
@@ -168,7 +168,7 @@ async fn client_full_rpc_path() {
 
     let ack = c.hello().unwrap();
     assert_eq!(ack.agent, "fake-agent/0.1");
-    assert!(ack.caps & caps::UIAUTOMATION != 0);
+    assert!(ack.caps & caps::DUMP != 0);
 
     let inj = c.tap(700.0, 1600.0, true).unwrap();
     assert!(inj.ok);
@@ -214,6 +214,9 @@ struct FakeAdb {
     shells: Vec<(String, String)>,
     pushes: Vec<(String, String, String)>,
     forwards: Vec<(String, String, String)>,
+    /// Append-only log of forward() calls (removed entries stay here so
+    /// tests can assert the forward spec even after forward_remove).
+    forward_calls: Vec<(String, String, String)>,
 }
 
 impl AdbTransport for FakeAdb {
@@ -240,8 +243,13 @@ impl AdbTransport for FakeAdb {
         Ok(())
     }
     fn forward(&mut self, serial: &str, local: &str, remote: &str) -> AdbResult<()> {
-        self.forwards
-            .push((serial.into(), local.into(), remote.into()));
+        let rec = (serial.into(), local.into(), remote.into());
+        self.forward_calls.push(rec.clone());
+        self.forwards.push(rec);
+        Ok(())
+    }
+    fn forward_remove(&mut self, _s: &str, local: &str) -> AdbResult<()> {
+        self.forwards.retain(|(_, l, _)| l != local);
         Ok(())
     }
 }
@@ -279,7 +287,32 @@ fn manager_connect_forwards_to_localabstract() {
     let mut m = AgentManager::new(&mut adb);
     let res = m.connect("fake0", Some(19731));
     assert!(res.is_err()); // nothing listening on 127.0.0.1:19731
-    assert_eq!(adb.forwards.len(), 1);
-    assert_eq!(adb.forwards[0].1, "tcp:19731");
-    assert_eq!(adb.forwards[0].2, "localabstract:pilotdroid");
+    assert_eq!(adb.forward_calls.len(), 1);
+    assert_eq!(adb.forward_calls[0].1, "tcp:19731");
+    assert_eq!(adb.forward_calls[0].2, "localabstract:pilotdroid_agent");
+    // ...but a failed dial must clean the rule up again.
+    assert!(adb.forwards.is_empty(), "leaked: {:?}", adb.forwards);
+}
+
+#[test]
+fn repeated_connect_disconnect_leaves_no_forward_rules() {
+    // t4 review found ~95 leaked `adb forward` rules on the server — every
+    // connect() must be paired with disconnect().
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    std::thread::spawn(move || {
+        while let Ok((s, _)) = listener.accept() {
+            drop(s);
+        }
+    });
+
+    let mut adb = FakeAdb::default();
+    {
+        let mut m = AgentManager::new(&mut adb);
+        for _ in 0..5 {
+            let (_client, port) = m.connect("fake0", Some(addr.port())).unwrap();
+            m.disconnect("fake0", port).unwrap();
+        }
+    }
+    assert!(adb.forwards.is_empty(), "leaked rules: {:?}", adb.forwards);
 }

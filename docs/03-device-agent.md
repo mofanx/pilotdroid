@@ -8,7 +8,7 @@
 - **单个 dex jar** 推到 `/data/local/tmp/pilotdroid/agent.jar`（spike 实测 4KB dex 即可注入；完整版预估 <200KB）。
 - 构建：`javac --release 8 -classpath <sdk>/android-XX/android.jar` → `d8 --min-api <min>`。**d8/SDK 仅为开发期依赖**，设备端零依赖。
 - 运行：`CLASSPATH=/data/local/tmp/pilotdroid/agent.jar setsid app_process /data/local/tmp/pilotdroid pilotdroid.Agent <args>`，以 shell（uid 2000, `u:r:shell:s0`）身份常驻。
-- 监听 `localabstract:pilotdroid`（unix socket，免端口冲突，scrcpy 同款）。
+- 监听 `localabstract:pilotdroid_agent`（unix socket，免端口冲突，scrcpy 同款）。
 
 ## 2. 能力探测（启动自测 → capability bitmap）
 
