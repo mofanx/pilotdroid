@@ -1,0 +1,80 @@
+{
+  "assertions": "see stdout",
+  "bench": {
+    "hello_ms": {
+      "mean": 6.78,
+      "p50": 7.62,
+      "p95": 8.44,
+      "min": 4.28,
+      "max": 8.44
+    },
+    "ping_ms": {
+      "mean": 30.32,
+      "p50": 41.97,
+      "p95": 43.15,
+      "min": 1.07,
+      "max": 45.16
+    },
+    "inject_tap_ms": {
+      "mean": 32.43,
+      "p50": 45.0,
+      "p95": 48.02,
+      "min": 4.26,
+      "max": 48.06
+    },
+    "inject_tap_dev_ms": {
+      "mean": 2.76,
+      "p50": 2.71,
+      "p95": 3.98,
+      "min": 1.79,
+      "max": 4.01
+    },
+    "inject_tap_last": {
+      "ok": true,
+      "events": 2,
+      "cost_ns": 2540261
+    },
+    "inject_swipe_ms": {
+      "mean": 27.85,
+      "p50": 11.52,
+      "p95": 54.96,
+      "min": 9.87,
+      "max": 54.96
+    },
+    "inject_swipe_dev_ms": {
+      "mean": 9.32,
+      "p50": 8.84,
+      "p95": 11.45,
+      "min": 7.71,
+      "max": 11.45
+    },
+    "inject_swipe_last": {
+      "ok": true,
+      "events": 11,
+      "cost_ns": 8697292
+    },
+    "dump_ms": {
+      "mean": 53.21,
+      "p50": 49.93,
+      "p95": 67.99,
+      "min": 12.62,
+      "max": 114.77
+    },
+    "dump_dev_ms": {
+      "mean": 11.78,
+      "p50": 7.05,
+      "p95": 25.36,
+      "min": 4.61,
+      "max": 71.91
+    },
+    "dump_bytes": 10575,
+    "shot_ms": {
+      "mean": 98.53,
+      "p50": 100.11,
+      "p95": 107.68,
+      "min": 91.56,
+      "max": 107.68
+    },
+    "shot_bytes": 137728
+  }
+}

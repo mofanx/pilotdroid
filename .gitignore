@@ -40,3 +40,5 @@ Thumbs.db
 .env
 .env.*
 spike/apk/*.idsig
+agent/build/
+agent/agent.jar

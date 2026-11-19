@@ -1,165 +1,564 @@
 package pilotdroid;
 
-import android.hardware.input.InputManager;
+import android.app.UiAutomation;
+import android.graphics.Bitmap;
+import android.graphics.Rect;
 import android.net.LocalServerSocket;
 import android.net.LocalSocket;
+import android.os.Build;
+import android.os.Looper;
 import android.os.SystemClock;
+import android.view.InputDevice;
 import android.view.InputEvent;
 import android.view.MotionEvent;
+import android.view.accessibility.AccessibilityNodeInfo;
 
-import java.io.BufferedReader;
-import java.io.IOException;
-import java.io.InputStreamReader;
-import java.io.OutputStream;
+import java.io.ByteArrayOutputStream;
+import java.io.DataInputStream;
+import java.io.DataOutputStream;
+import java.lang.reflect.Constructor;
 import java.lang.reflect.Method;
-import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
 
 /**
- * pilotdroid device agent — skeleton for HELLO + INJECT only.
+ * pilotdroid device agent — M1: single app_process, all capabilities.
  *
- * <p>Design: docs/01-architecture.md, docs/03-device-agent.md.
- * Launch: {@code CLASSPATH=/data/local/tmp/pilotdroid/agent.jar setsid \
- *         app_process /data/local/tmp/pilotdroid pilotdroid.Agent serve}
+ * <p>Serve: localabstract:pilotdroid_agent, PD01 18-byte frames (docs/02 §2),
+ * msgpack payloads. Opcodes: HELLO/PING/INJECT/DUMP/SCREENSHOT/AGENT_STOP.
  *
- * <p>This is a PLACEHOLDER transport: line-based commands over
- * localabstract:pilotdroid, until the binary framing protocol
- * (docs/02-protocol.md) lands in M2.
+ * <p>Launch:
+ * <pre>
+ *   CLASSPATH=/data/local/tmp/pilotdroid/agent.jar setsid \
+ *     app_process /data/local/tmp/pilotdroid pilotdroid.Agent
+ * </pre>
  *
- * <p>Proven on-device (spike/RESULTS.md §4, Mi 11 / Android 14):
- * InputManagerGlobal.injectInputEvent → 30/30 ok, p50 ≈ 3 ms.
+ * <p>Proven on-device (spike-2, RESULTS-2.md): UiAutomation constructible
+ * under plain app_process; resident dump ~2ms; InputManagerGlobal inject ~4ms;
+ * takeScreenshot ~24ms. All five capabilities coexist in ONE process.
  */
 public final class Agent {
-    private static final String SOCKET_NAME = "pilotdroid";
+    private static final String SOCKET_NAME = "pilotdroid_agent";
+    private static final String AGENT_VER = "0.1.0";
+    private static final int PROTO_VER = 0;
+
+    // capability bitmap (docs/02 §3)
+    private static final int CAP_INJECT = 1, CAP_DUMP = 2, CAP_SHOT = 4,
+            CAP_QUERY = 8, CAP_BATCH = 16, CAP_STREAM = 32, CAP_TEXT = 64;
+
+    // opcodes
+    private static final int T_HELLO = 0x0001, T_HELLO_ACK = 0x0002,
+            T_PING = 0x0003, T_PONG = 0x0004, T_INJECT = 0x0010,
+            T_INJECT_RESULT = 0x0011, T_DUMP = 0x0020, T_SHOT = 0x0030,
+            T_STOP = 0x00F0;
+    private static final int F_RESP = 0x0001, F_ERR = 0x0004;
 
     private Agent() {}
 
     public static void main(String[] args) throws Exception {
+        try {
+            Looper.prepareMainLooper();
+        } catch (Throwable ignore) {
+        }
+        UiAutomation uia = connectUiAutomation();
         Injector injector = new Injector();
-        if (args.length >= 1 && args[0].equals("inject") && args.length >= 3) {
-            // one-shot: app_process ... Agent inject <x> <y>
-            float x = Float.parseFloat(args[1]);
-            float y = Float.parseFloat(args[2]);
-            long t = System.nanoTime();
-            boolean ok = injector.tap(x, y);
-            System.out.println("inject_ok=" + ok + " ms=" + (System.nanoTime() - t) / 1e6);
-            return;
-        }
-        serve(injector);
-    }
+        Dumper dumper = new Dumper(uia);
 
-    /** Line-protocol server: one client at a time (see docs/03 §5 concurrency). */
-    private static void serve(Injector injector) throws IOException {
-        LocalServerSocket server = new LocalServerSocket(SOCKET_NAME);
-        System.out.println("pilotdroid-agent listening on localabstract:" + SOCKET_NAME);
+        LocalServerSocket srv = new LocalServerSocket(SOCKET_NAME);
+        System.out.println("pilotdroid-agent " + AGENT_VER + " listening localabstract:"
+                + SOCKET_NAME);
         for (;;) {
-            LocalSocket client = server.accept();
+            LocalSocket c = srv.accept();
             try {
-                handleClient(injector, client);
+                new Session(c, uia, injector, dumper).run();
+            } catch (Throwable t) {
+                System.out.println("session ended: " + t);
             } finally {
-                client.close();
+                try { c.close(); } catch (Throwable ignore) {}
             }
         }
     }
 
-    private static void handleClient(Injector injector, LocalSocket client) throws IOException {
-        BufferedReader in = new BufferedReader(
-                new InputStreamReader(client.getInputStream(), StandardCharsets.UTF_8));
-        OutputStream out = client.getOutputStream();
-        String line;
-        while ((line = in.readLine()) != null) {
-            String resp = dispatch(injector, line.trim());
-            out.write((resp + "\n").getBytes(StandardCharsets.UTF_8));
+    // ---------- infra -------------------------------------------------------
+
+    private static UiAutomation connectUiAutomation() throws Exception {
+        Class<?> connCls = Class.forName("android.app.UiAutomationConnection");
+        Object conn = connCls.getDeclaredConstructor().newInstance();
+        Constructor<UiAutomation> ctor = UiAutomation.class.getDeclaredConstructor(
+                Looper.class, Class.forName("android.app.IUiAutomationConnection"));
+        ctor.setAccessible(true);
+        UiAutomation u = ctor.newInstance(Looper.getMainLooper(), conn);
+        Method connect = UiAutomation.class.getDeclaredMethod("connect", int.class);
+        connect.setAccessible(true);
+        connect.invoke(u, 1); // FLAG_DONT_SUPPRESS_ACCESSIBILITY_SERVICES
+        return u;
+    }
+
+    /** One client connection: frame in -> dispatch -> frame out. */
+    private static final class Session {
+        private final DataInputStream in;
+        private final DataOutputStream out;
+        private final UiAutomation uia;
+        private final Injector injector;
+        private final Dumper dumper;
+        private volatile boolean stop;
+
+        Session(LocalSocket s, UiAutomation uia, Injector inj, Dumper dmp)
+                throws Exception {
+            this.in = new DataInputStream(s.getInputStream());
+            this.out = new DataOutputStream(s.getOutputStream());
+            this.uia = uia;
+            this.injector = inj;
+            this.dumper = dmp;
+        }
+
+        void run() throws Exception {
+            byte[] magic = new byte[4];
+            while (!stop) {
+                in.readFully(magic);
+                if (magic[0] != 'P' || magic[1] != 'D' || magic[2] != '0' || magic[3] != '1') {
+                    return; // not our protocol — drop
+                }
+                int ver = in.readUnsignedByte();
+                int ch = in.readUnsignedByte();
+                int type = in.readUnsignedShort();
+                int flags = in.readUnsignedShort();
+                long reqId = in.readInt() & 0xffffffffL;
+                int plen = in.readInt();
+                if (plen < 0 || plen > 64 * 1024 * 1024) return;
+                byte[] payload = new byte[plen];
+                in.readFully(payload);
+                Object req = Msgpack.read(payload);
+                respond(type, reqId, req);
+            }
+        }
+
+        private void respond(int reqType, long reqId, Object req) throws Exception {
+            int rtype;
+            Object payload;
+            boolean err = false;
+            try {
+                switch (reqType) {
+                    case T_HELLO:   rtype = T_HELLO_ACK;      payload = hello();      break;
+                    case T_PING:    rtype = T_PONG;           payload = map("ts", SystemClock.uptimeMillis()); break;
+                    case T_INJECT:  rtype = T_INJECT_RESULT;  payload = inject(req);  break;
+                    case T_DUMP:    rtype = T_DUMP;           payload = dumper.xml(); break;
+                    case T_SHOT:    rtype = T_SHOT;           payload = shot(req);    break;
+                    case T_STOP:    rtype = T_STOP;
+                        payload = map("bye", true); stop = true; break;
+                    default:
+                        rtype = reqType; err = true;
+                        payload = map("error", "unsupported opcode 0x" + Integer.toHexString(reqType));
+                }
+            } catch (Throwable t) {
+                rtype = reqType; err = true;
+                payload = map("error", String.valueOf(t));
+            }
+            out.write("PD01".getBytes("US-ASCII"));
+            out.writeByte(PROTO_VER);
+            out.writeByte(0); // control channel
+            out.writeShort(rtype);
+            out.writeShort(F_RESP | (err ? F_ERR : 0));
+            out.writeInt((int) reqId);
+            byte[] body = Msgpack.write(payload);
+            out.writeInt(body.length);
+            out.write(body);
             out.flush();
-            if (line.trim().equals("QUIT")) {
-                return;
+            if (stop) System.exit(0);
+        }
+
+        private Map<String, Object> hello() {
+            Map<String, Object> m = new LinkedHashMap<>();
+            Rect b = dumper.displayBounds();
+            m.put("agent", "pilotdroid");
+            m.put("ver", AGENT_VER);
+            m.put("proto", PROTO_VER);
+            m.put("sdk", Build.VERSION.SDK_INT);
+            m.put("abi", Build.SUPPORTED_ABIS.length > 0 ? Build.SUPPORTED_ABIS[0] : "?");
+            List<Object> disp = new ArrayList<>();
+            disp.add(b.width()); disp.add(b.height());
+            m.put("display", disp);
+            m.put("caps", CAP_INJECT | CAP_DUMP | CAP_SHOT);
+            return m;
+        }
+
+        private Map<String, Object> inject(Object req) throws Exception {
+            Map<?, ?> r = req instanceof Map ? (Map<?, ?>) req : new LinkedHashMap<>();
+            String op = str(r.get("op"), "tap");
+            boolean waitFinish = bool(r.get("wait_finish"), false);
+            long t0 = System.nanoTime();
+            int events;
+            boolean ok;
+            if ("swipe".equals(op)) {
+                events = injector.swipe(
+                        (float) num(r.get("x1"), 0), (float) num(r.get("y1"), 0),
+                        (float) num(r.get("x2"), 0), (float) num(r.get("y2"), 0),
+                        (int) num(r.get("duration_ms"), 300),
+                        (int) num(r.get("steps"), 10), waitFinish);
+                ok = events > 0;
+            } else {
+                events = injector.tap((float) num(r.get("x"), 0),
+                        (float) num(r.get("y"), 0), waitFinish);
+                ok = events == 2;
             }
+            Map<String, Object> m = new LinkedHashMap<>();
+            m.put("ok", ok);
+            m.put("events", events);
+            m.put("cost_ns", System.nanoTime() - t0);
+            return m;
+        }
+
+        private Map<String, Object> shot(Object req) {
+            Map<?, ?> r = req instanceof Map ? (Map<?, ?>) req : new LinkedHashMap<>();
+            int quality = (int) num(r.get("quality"), 80);
+            Bitmap bmp = uia.takeScreenshot();
+            if (bmp == null) throw new IllegalStateException("takeScreenshot null");
+            ByteArrayOutputStream bos = new ByteArrayOutputStream(1 << 16);
+            bmp.compress(Bitmap.CompressFormat.JPEG, quality, bos);
+            Map<String, Object> m = new LinkedHashMap<>();
+            m.put("format", "jpeg");
+            m.put("w", bmp.getWidth());
+            m.put("h", bmp.getHeight());
+            m.put("data", bos.toByteArray());
+            bmp.recycle();
+            return m;
         }
     }
 
-    private static String dispatch(Injector injector, String line) {
-        String[] tok = line.split("\\s+");
-        switch (tok[0]) {
-            case "HELLO":
-                // capability bitmap, v0 textual form — binary HELLO_ACK in M2
-                return "OK HELLO agent=skeleton inject=" + (injector.available() ? 1 : 0)
-                        + " dump=TODO query=TODO screenshot=TODO";
-            case "TAP":
+    // ---------- input injection ----------------------------------------------
+
+    /** InputManagerGlobal.injectInputEvent — fast path (spike-2: ~4ms/tap). */
+    private static final class Injector {
+        private final Object im;
+        private final Method inject;
+
+        Injector() throws Exception {
+            Object im = null;
+            for (String n : new String[]{
+                    "android.hardware.input.InputManagerGlobal",
+                    "android.hardware.input.InputManager"}) {
                 try {
-                    float x = Float.parseFloat(tok[1]);
-                    float y = Float.parseFloat(tok[2]);
-                    long t = System.nanoTime();
-                    boolean ok = injector.tap(x, y);
-                    return "OK inject=" + ok + " ms=" + (System.nanoTime() - t) / 1e6;
-                } catch (RuntimeException e) {
-                    return "ERR bad TAP args";
+                    Class<?> c = Class.forName(n);
+                    Method g = c.getDeclaredMethod("getInstance");
+                    g.setAccessible(true);
+                    im = g.invoke(null);
+                    break;
+                } catch (Throwable ignore) {
                 }
-            case "PING":
-                return "PONG";
-            case "DUMP":
-                // TODO(spike-2): resident UiAutomation dump — gated on spike-2
-                // process-model decision (docs/04, docs/05 M1).
-                return "ERR unsupported: DUMP pending spike-2";
-            case "QUERY":
-                // TODO(spike-2): selector/xpath over resident UI tree.
-                return "ERR unsupported: QUERY pending spike-2";
-            case "QUIT":
-                return "BYE";
-            default:
-                return "ERR unknown op: " + tok[0];
-        }
-    }
-
-    /**
-     * MotionEvent injection via hidden APIs — the proven path from the spike.
-     * Fallback chain (docs/03 §3): InputManagerGlobal → InputManager.
-     */
-    static final class Injector {
-        private Object inputManager;   // InputManagerGlobal or InputManager singleton
-        private Method injectMethod;   // injectInputEvent(InputEvent, int)
-
-        Injector() {
-            try {
-                Class<?> cls;
-                try {
-                    cls = Class.forName("android.hardware.input.InputManagerGlobal");
-                } catch (ClassNotFoundException e) {
-                    cls = InputManager.class; // pre-API-31 singleton lives here
-                }
-                Method getInstance = cls.getDeclaredMethod("getInstance");
-                inputManager = getInstance.invoke(null);
-                injectMethod = cls.getDeclaredMethod(
-                        "injectInputEvent", InputEvent.class, int.class);
-                injectMethod.setAccessible(true);
-            } catch (ReflectiveOperationException e) {
-                inputManager = null;
-                injectMethod = null;
             }
+            if (im == null) throw new IllegalStateException("no InputManager");
+            this.im = im;
+            this.inject = im.getClass().getDeclaredMethod("injectInputEvent",
+                    InputEvent.class, int.class);
+            inject.setAccessible(true);
         }
 
-        boolean available() {
-            return inputManager != null && injectMethod != null;
+        private boolean put(MotionEvent ev, int mode) throws Exception {
+            boolean r = Boolean.TRUE.equals(inject.invoke(im, ev, mode));
+            ev.recycle();
+            return r;
         }
 
-        /** mode 2 = wait_for_finish; returns the dispatch result. */
-        boolean inject(MotionEvent ev) {
-            if (!available()) return false;
-            try {
-                return (Boolean) injectMethod.invoke(inputManager, ev, 2);
-            } catch (ReflectiveOperationException | ClassCastException e) {
-                return false;
-            } finally {
-                ev.recycle();
-            }
-        }
-
-        boolean tap(float x, float y) {
+        /** @return number of events injected (2 = down+up) */
+        int tap(float x, float y, boolean waitFinish) throws Exception {
             long now = SystemClock.uptimeMillis();
-            MotionEvent down = MotionEvent.obtain(
-                    now, now, MotionEvent.ACTION_DOWN, x, y, 0);
-            MotionEvent up = MotionEvent.obtain(
-                    now, now, MotionEvent.ACTION_UP, x, y, 0);
-            boolean ok = inject(down) && inject(up);
+            int ok = 0;
+            for (int a : new int[]{MotionEvent.ACTION_DOWN, MotionEvent.ACTION_UP}) {
+                MotionEvent ev = MotionEvent.obtain(now, now, a, x, y, 0);
+                ev.setSource(InputDevice.SOURCE_TOUCHSCREEN);
+                if (put(ev, waitFinish ? 2 : 0)) ok++;
+            }
             return ok;
         }
+
+        /** @return number of events injected */
+        int swipe(float x1, float y1, float x2, float y2, int durMs, int steps,
+                  boolean waitFinish) throws Exception {
+            long t0 = SystemClock.uptimeMillis();
+            int ok = 0;
+            for (int i = 0; i <= steps; i++) {
+                int action = i == 0 ? MotionEvent.ACTION_DOWN
+                        : i == steps ? MotionEvent.ACTION_UP : MotionEvent.ACTION_MOVE;
+                float f = (float) i / steps;
+                MotionEvent ev = MotionEvent.obtain(t0, t0 + (long) (durMs * f),
+                        action, x1 + (x2 - x1) * f, y1 + (y2 - y1) * f, 0);
+                ev.setSource(InputDevice.SOURCE_TOUCHSCREEN);
+                int mode = (waitFinish && i == steps) ? 2 : 0;
+                if (put(ev, mode)) ok++;
+            }
+            return ok;
+        }
+    }
+
+    // ---------- UI tree dump ---------------------------------------------------
+
+    private static final class Dumper {
+        private final UiAutomation uia;
+
+        Dumper(UiAutomation uia) { this.uia = uia; }
+
+        Rect displayBounds() {
+            AccessibilityNodeInfo root = uia.getRootInActiveWindow();
+            if (root == null) return new Rect();
+            Rect r = new Rect();
+            root.getBoundsInScreen(r);
+            root.recycle();
+            return r;
+        }
+
+        /** u2-compatible hierarchy XML. */
+        Map<String, Object> xml() {
+            long t0 = System.nanoTime();
+            AccessibilityNodeInfo root = uia.getRootInActiveWindow();
+            StringBuilder sb = new StringBuilder(64 * 1024);
+            sb.append("<?xml version='1.0' encoding='UTF-8' standalone='yes' ?>");
+            int[] count = {0};
+            if (root != null) {
+                sb.append("<hierarchy rotation=\"0\">");
+                write(root, sb, 0, count);
+                sb.append("</hierarchy>");
+                root.recycle();
+            }
+            Map<String, Object> m = new LinkedHashMap<>();
+            m.put("format", "xml");
+            m.put("nodes", count[0]);
+            m.put("cost_ns", System.nanoTime() - t0);
+            m.put("data", sb.toString());
+            return m;
+        }
+
+        private void write(AccessibilityNodeInfo n, StringBuilder sb, int idx, int[] count) {
+            if (count[0] > 4096) return; // pathological trees
+            count[0]++;
+            Rect b = new Rect();
+            n.getBoundsInScreen(b);
+            sb.append("<node index=\"").append(idx).append('"')
+                    .append(" text=\"").append(esc(n.getText())).append('"')
+                    .append(" resource-id=\"").append(esc(n.getViewIdResourceName())).append('"')
+                    .append(" class=\"").append(esc(n.getClassName())).append('"')
+                    .append(" package=\"").append(esc(n.getPackageName())).append('"')
+                    .append(" content-desc=\"").append(esc(n.getContentDescription())).append('"')
+                    .append(" checkable=\"").append(n.isCheckable()).append('"')
+                    .append(" checked=\"").append(n.isChecked()).append('"')
+                    .append(" clickable=\"").append(n.isClickable()).append('"')
+                    .append(" enabled=\"").append(n.isEnabled()).append('"')
+                    .append(" focusable=\"").append(n.isFocusable()).append('"')
+                    .append(" focused=\"").append(n.isFocused()).append('"')
+                    .append(" scrollable=\"").append(n.isScrollable()).append('"')
+                    .append(" long-clickable=\"").append(n.isLongClickable()).append('"')
+                    .append(" password=\"").append(n.isPassword()).append('"')
+                    .append(" selected=\"").append(n.isSelected()).append('"')
+                    .append(" bounds=\"").append('[').append(b.left).append(',').append(b.top)
+                    .append("][").append(b.right).append(',').append(b.bottom).append(']').append('"');
+            int kids = n.getChildCount();
+            if (kids == 0) {
+                sb.append("/>");
+                return;
+            }
+            sb.append('>');
+            for (int i = 0; i < kids; i++) {
+                AccessibilityNodeInfo ch = n.getChild(i);
+                if (ch != null) {
+                    write(ch, sb, i, count);
+                    ch.recycle();
+                }
+            }
+            sb.append("</node>");
+        }
+
+        private static String esc(CharSequence s) {
+            if (s == null) return "";
+            String v = s.toString();
+            StringBuilder b = new StringBuilder(v.length());
+            for (int i = 0; i < v.length(); i++) {
+                char c = v.charAt(i);
+                switch (c) {
+                    case '&': b.append("&amp;"); break;
+                    case '<': b.append("&lt;"); break;
+                    case '>': b.append("&gt;"); break;
+                    case '"': b.append("&quot;"); break;
+                    case '\'': b.append("&apos;"); break;
+                    default: b.append(c < 0x20 && c != '\n' && c != '\t' ? ' ' : c);
+                }
+            }
+            return b.toString();
+        }
+    }
+
+    // ---------- minimal msgpack codec (map/array/str/bin/int/float/bool/nil) ---
+
+    static final class Msgpack {
+        static Object read(byte[] d) {
+            return new Reader(d).val();
+        }
+
+        static byte[] write(Object o) throws Exception {
+            ByteArrayOutputStream bos = new ByteArrayOutputStream();
+            writeTo(bos, o);
+            return bos.toByteArray();
+        }
+
+        private static void writeTo(ByteArrayOutputStream o, Object v) throws Exception {
+            if (v == null) { o.write(0xc0); return; }
+            if (v instanceof Boolean) { o.write((Boolean) v ? 0xc3 : 0xc2); return; }
+            if (v instanceof Number) {
+                Number n = (Number) v;
+                if (v instanceof Float || v instanceof Double) {
+                    o.write(0xcb);
+                    long bits = Double.doubleToLongBits(n.doubleValue());
+                    for (int i = 7; i >= 0; i--) o.write((int) (bits >>> (8 * i)) & 0xff);
+                    return;
+                }
+                long x = n.longValue();
+                if (x >= 0 && x < 128) { o.write((int) x); return; }
+                if (x >= -32 && x < 0) { o.write(0xe0 | (int) (x & 0x1f)); return; }
+                if (x >= 0 && x <= 0xff) { o.write(0xcc); o.write((int) x); return; }
+                if (x >= 0 && x <= 0xffff) { o.write(0xcd); o.write((int) (x >> 8)); o.write((int) x); return; }
+                if (x >= 0 && x <= 0xffffffffL) {
+                    o.write(0xce);
+                    for (int i = 3; i >= 0; i--) o.write((int) (x >>> (8 * i)) & 0xff);
+                    return;
+                }
+                o.write(0xd3);
+                for (int i = 7; i >= 0; i--) o.write((int) (x >>> (8 * i)) & 0xff);
+                return;
+            }
+            if (v instanceof byte[]) {
+                byte[] b = (byte[]) v;
+                if (b.length < 256) { o.write(0xc4); o.write(b.length); }
+                else if (b.length < 65536) { o.write(0xc5); o.write(b.length >> 8); o.write(b.length); }
+                else { o.write(0xc6); i32(o, b.length); }
+                o.write(b, 0, b.length);
+                return;
+            }
+            if (v instanceof String || v instanceof CharSequence) {
+                byte[] b = v.toString().getBytes("UTF-8");
+                if (b.length < 32) { o.write(0xa0 | b.length); }
+                else if (b.length < 256) { o.write(0xd9); o.write(b.length); }
+                else if (b.length < 65536) { o.write(0xda); o.write(b.length >> 8); o.write(b.length); }
+                else { o.write(0xdb); i32(o, b.length); }
+                o.write(b, 0, b.length);
+                return;
+            }
+            if (v instanceof List) {
+                List<?> l = (List<?>) v;
+                if (l.size() < 16) o.write(0x90 | l.size());
+                else { o.write(0xdc); o.write(l.size() >> 8); o.write(l.size()); }
+                for (Object e : l) writeTo(o, e);
+                return;
+            }
+            if (v instanceof Map) {
+                Map<?, ?> m = (Map<?, ?>) v;
+                if (m.size() < 16) o.write(0x80 | m.size());
+                else { o.write(0xde); o.write(m.size() >> 8); o.write(m.size()); }
+                for (Map.Entry<?, ?> e : m.entrySet()) {
+                    writeTo(o, String.valueOf(e.getKey()));
+                    writeTo(o, e.getValue());
+                }
+                return;
+            }
+            writeTo(o, String.valueOf(v));
+        }
+
+        private static void i32(ByteArrayOutputStream o, int x) {
+            for (int i = 3; i >= 0; i--) o.write((x >>> (8 * i)) & 0xff);
+        }
+
+        private static final class Reader {
+            private final byte[] d;
+            private int p;
+
+            Reader(byte[] d) { this.d = d; }
+
+            Object val() {
+                if (p >= d.length) return null;
+                int b = d[p++] & 0xff;
+                if (b <= 0x7f) return b;                       // +fixint
+                if (b >= 0xe0) return b - 256;                 // -fixint
+                if (b >= 0xa0 && b <= 0xbf) return str(b & 0x1f);
+                if (b >= 0x90 && b <= 0x9f) return arr(b & 0x0f);
+                if (b >= 0x80 && b <= 0x8f) return map(b & 0x0f);
+                switch (b) {
+                    case 0xc0: return null;
+                    case 0xc2: return false;
+                    case 0xc3: return true;
+                    case 0xc4: return bin(u8());
+                    case 0xc5: return bin(u16());
+                    case 0xc6: return bin(i32());
+                    case 0xca:
+                        return Float.intBitsToFloat(i32());
+                    case 0xcb:
+                        return Double.longBitsToDouble(i64());
+                    case 0xcc: return u8();
+                    case 0xcd: return u16();
+                    case 0xce: return i32() & 0xffffffffL;
+                    case 0xcf: return i64();
+                    case 0xd0: return (byte) u8();
+                    case 0xd1: return (short) u16();
+                    case 0xd2: return i32();
+                    case 0xd3: return i64();
+                    case 0xd9: return str(u8());
+                    case 0xda: return str(u16());
+                    case 0xdb: return str(i32());
+                    case 0xdc: return arr(u16());
+                    case 0xdd: return arr(i32());
+                    case 0xde: return map(u16());
+                    case 0xdf: return map(i32());
+                    default: throw new IllegalArgumentException("msgpack 0x" + Integer.toHexString(b));
+                }
+            }
+
+            private int u8() { return d[p++] & 0xff; }
+            private int u16() { return (u8() << 8) | u8(); }
+            private int i32() { return (u8() << 24) | (u8() << 16) | (u8() << 8) | u8(); }
+            private long i64() { return ((long) i32() << 32) | (i32() & 0xffffffffL); }
+
+            private Object str(int n) {
+                String s = new String(d, p, n, java.nio.charset.StandardCharsets.UTF_8);
+                p += n;
+                return s;
+            }
+
+            private Object bin(int n) {
+                byte[] b = new byte[n];
+                System.arraycopy(d, p, b, 0, n);
+                p += n;
+                return b;
+            }
+
+            private Object arr(int n) {
+                List<Object> l = new ArrayList<>(n);
+                for (int i = 0; i < n; i++) l.add(val());
+                return l;
+            }
+
+            private Object map(int n) {
+                Map<String, Object> m = new LinkedHashMap<>();
+                for (int i = 0; i < n; i++) m.put(String.valueOf(val()), val());
+                return m;
+            }
+        }
+    }
+
+    // ---------- tiny helpers ---------------------------------------------------
+
+    private static Map<String, Object> map(Object... kv) {
+        Map<String, Object> m = new LinkedHashMap<>();
+        for (int i = 0; i + 1 < kv.length; i += 2) m.put(String.valueOf(kv[i]), kv[i + 1]);
+        return m;
+    }
+
+    private static String str(Object o, String def) {
+        return o == null ? def : String.valueOf(o);
+    }
+
+    private static double num(Object o, double def) {
+        return o instanceof Number ? ((Number) o).doubleValue() : def;
+    }
+
+    private static boolean bool(Object o, boolean def) {
+        return o instanceof Boolean ? (Boolean) o : def;
     }
 }
