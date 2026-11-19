@@ -1,0 +1,14 @@
+[package]
+name = "pilotdroid-agent"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "Host-side client + lifecycle manager for the on-device pilotdroid agent (docs/01, docs/03)"
+
+[dependencies]
+pilotdroid-adb = { workspace = true }
+pilotdroid-proto = { workspace = true }
+thiserror = "2"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "net", "rt", "rt-multi-thread", "time", "io-util"] }

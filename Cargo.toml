@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "crates/pilotdroid-adb",
     "crates/pilotdroid-cli",
+    "crates/pilotdroid-agent",
     "crates/pilotdroid-proto",
 ]
 
@@ -13,4 +14,5 @@ rust-version = "1.74"
 
 [workspace.dependencies]
 pilotdroid-adb = { path = "crates/pilotdroid-adb" }
+pilotdroid-agent = { path = "crates/pilotdroid-agent" }
 pilotdroid-proto = { path = "crates/pilotdroid-proto" }
