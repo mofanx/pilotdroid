@@ -1,0 +1,13 @@
+# SpikeAgent all — Xiaomi Mi 11 (star) Android 14 SDK34 Enforcing, 2026-11-19
+ctor_ms=10.4 connect_ms=27.9 flags=1
+dump_first_ms=15.80
+dump_nodes=9
+dump_stats_ms=mean=2.77 p50=2.39 p95=4.36 min=1.26 max=15.80
+uia_inject_ok=30/30
+uia_inject_stats_ms=mean=42.48 p50=48.90 p95=50.71 min=31.41 max=63.24
+im_inject_ok=30/30
+im_inject_stats_ms=mean=5.84 p50=4.94 p95=11.57 min=3.96 max=16.29
+uia_shot=1440x3200
+uia_shot_stats_ms=mean=31.52 p50=24.19 p95=126.82 min=10.84 max=126.82
+sc_screenshot_fail=NoSuchMethodException: android.view.SurfaceControl.screenshot [class android.graphics.Rect, int]
+sc_captureDisplay_fail=ClassNotFoundException: android.hardware.display.DisplayCaptureArgs

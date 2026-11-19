@@ -1,0 +1,9 @@
+# MIUI adb install interception — Mi 11 Android 14
+adb install (manifest-only apk): dialog AdbInstallActivity "USB安装提示" 10s countdown
+  -> timeout auto-reject: INSTALL_FAILED_USER_RESTRICTED: Install canceled by user
+pm install via shell: same INSTALL_FAILED_USER_RESTRICTED
+adb install + inject-tap on 继续安装 (480,2970 @1440x3200):
+  -> dialog dismissed, progressed to package scan: INSTALL_FAILED_INVALID_APK "code is missing"
+  (proves inject-confirm works; our test apk lacked classes.dex)
+uiautomator2 v3.7.1 init: pushes u2.jar to /data/local/tmp, runs app_process com.wetest.uia2.Main
+  -> NO apk install attempted at all (dex-only delivery like our design)

@@ -1,0 +1,13 @@
+# SpikeAgent all — Redmi 2602BRT18C (dash) Android 17 SDK37 Enforcing, 2026-11-19
+ctor_ms=99.8 connect_ms=15.1 flags=1
+dump_first_ms=7.49
+dump_nodes=23
+dump_stats_ms=mean=2.68 p50=1.24 p95=7.49 min=0.31 max=27.61
+uia_inject_ok=30/30
+uia_inject_stats_ms=mean=25.00 p50=24.94 p95=26.07 min=23.99 max=26.58
+im_inject_ok=30/30
+im_inject_stats_ms=mean=3.76 p50=3.59 p95=5.22 min=2.34 max=6.46
+uia_shot=1280x2772
+uia_shot_stats_ms=mean=101.15 p50=78.54 p95=342.19 min=50.23 max=342.19
+sc_screenshot_fail=NoSuchMethodException
+sc_captureDisplay_fail=ClassNotFoundException: android.hardware.display.DisplayCaptureArgs
