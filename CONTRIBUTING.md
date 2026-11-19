@@ -22,3 +22,16 @@
 
 - 架构/协议/里程碑见 `docs/`；争议性选型先写 spike 实测，再更新 `docs/adr/`。
 - 里程碑验收一律以真机实测为准（`docs/05-roadmap.md`），不接受"本地能跑"作为验收依据。
+
+## 磁盘与 worktree 约定
+
+- 磁盘曾两次 100% 占满（每个 worktree 的 `target/` 独立编译产物）。**worktree 合并完成后立即在其内跑 `cargo clean`**；长期约定建议 `CARGO_TARGET_DIR` 指向共享目录（如 `~/.cargo-target/pilotdroid`），cargo 自带锁可安全并发——多 worktree 共用一份 target 可省数 GB。
+- `cargo clean` 只影响编译产物，不会丢源码/worktree 元数据。
+
+## Known limitations（对拍与测试前必读）
+
+- **UiAutomation 单持有者**：我方 agent 与 u2 `AutomatorServiceImpl` 互斥（见 ADR-005）。跑 u2 对拍脚本前必须 `pilotdroid agent stop`，反之亦然。
+- **`adb tcpip` 会重启 adbd** 并杀死设备上所有 app_process daemon——WiFi 模式与本 agent 不兼容，daemon 须重部署。
+- **摊销口径声明规则**：对拍数据必须注明口径——我方 session 摊销（持久连接）vs u2 per-invocation。bench n≥10 的摊销数字不得直接对比 u2 单发数字而不注明。
+- **verify-agent.sh logcat 断言已知竞态**：MIUIInput marker 异步落盘，读取采用 settle 轮询（≤3s）。`logcat -d` 后立即 grep 的写法勿复用。
+- **MIUI 系统 buffer**：`MIUIInput` 标记写 system buffer 而非 main，`logcat` 须带 `-b all`。
