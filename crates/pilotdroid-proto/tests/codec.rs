@@ -625,3 +625,113 @@ fn shot_ack_take_enc_ns_split_fields() {
         .collect();
     assert!(!keys2.contains(&"take_ns".to_string()), "{keys2:?}");
 }
+
+// ---- M4 media-channel payloads (docs/02 §4.8, ADR-006) ----------------------
+
+#[test]
+fn stream_ctrl_req_start_wire_shape() {
+    let req = StreamCtrlReq {
+        op: StreamOp::Start,
+        fps: Some(10),
+        scale: Some(0.5),
+        quality: Some(70),
+        format: None,
+    };
+    let bytes = encode(&req).unwrap();
+    let back: StreamCtrlReq = decode(&bytes).unwrap();
+    assert_eq!(back, req);
+    // Wire keys per §4.8; "format" omitted when unset (defaults to jpeg).
+    let map = rmpv::decode::read_value(&mut &bytes[..]).unwrap();
+    let m = map.as_map().unwrap();
+    let keys: Vec<String> = m
+        .iter()
+        .map(|(k, _)| k.as_str().unwrap().to_string())
+        .collect();
+    assert!(keys.contains(&"op".to_string()));
+    assert!(keys.contains(&"fps".to_string()));
+    assert!(keys.contains(&"scale".to_string()));
+    assert!(keys.contains(&"quality".to_string()));
+    assert!(!keys.contains(&"format".to_string()));
+    // op serializes as the spec'd string.
+    assert_eq!(m[0].1.as_str().unwrap(), "start");
+}
+
+#[test]
+fn stream_ctrl_req_stop_minimal() {
+    let req = StreamCtrlReq {
+        op: StreamOp::Stop,
+        fps: None,
+        scale: None,
+        quality: None,
+        format: None,
+    };
+    let bytes = encode(&req).unwrap();
+    let map = rmpv::decode::read_value(&mut &bytes[..]).unwrap();
+    // Only {"op":"stop"} goes on the wire — tuning fields are start-only.
+    assert_eq!(map.as_map().unwrap().len(), 1);
+    let back: StreamCtrlReq = decode(&bytes).unwrap();
+    assert_eq!(back.op, StreamOp::Stop);
+}
+
+#[test]
+fn stream_acks_roundtrip() {
+    let start = StreamStartAck {
+        ok: true,
+        socket: "pilotdroid_agent_media".into(),
+        effective_fps_hint: Some(5.0),
+    };
+    assert_eq!(
+        decode::<StreamStartAck>(&encode(&start).unwrap()).unwrap(),
+        start
+    );
+    let stop = StreamStopAck {
+        ok: true,
+        frames_sent: 312,
+        dropped: 4,
+    };
+    assert_eq!(
+        decode::<StreamStopAck>(&encode(&stop).unwrap()).unwrap(),
+        stop
+    );
+}
+
+#[test]
+fn media_frame_payload_roundtrip() {
+    let f = MediaFrame {
+        format: "jpeg".into(),
+        w: 540,
+        h: 1200,
+        ts_ns: 1_700_000_000_000,
+        take_ns: Some(30_000_000),
+        enc_ns: Some(40_000_000),
+        dropped: 3,
+        data: vec![0xFF, 0xD8, 0xFF, 0xD9].into(),
+    };
+    let bytes = encode(&f).unwrap();
+    let back: MediaFrame = decode(&bytes).unwrap();
+    assert_eq!(back, f);
+    assert_eq!(&back.data[..], &[0xFF, 0xD8, 0xFF, 0xD9]);
+}
+
+#[test]
+fn media_frame_header_is_ch1_frame_stream_more() {
+    // §4.8: every FRAME lives on ch=1 as msg_type 0x0001 with STREAM_MORE
+    // set; req_id doubles as the monotonic seq for gap detection.
+    let hdr = FrameHeader::new(
+        Channel::Media,
+        MediaType::Frame as u16,
+        flags::STREAM_MORE,
+        42,
+        100,
+    );
+    let mut buf = Vec::new();
+    hdr.encode(&mut buf).unwrap();
+    let back = decode_header_bytes(&buf.try_into().unwrap()).unwrap();
+    assert_eq!(back.channel, Channel::Media);
+    assert_eq!(
+        MediaType::try_from(back.msg_type).unwrap(),
+        MediaType::Frame
+    );
+    assert_ne!(back.flags & flags::STREAM_MORE, 0);
+    assert_eq!(back.req_id, 42);
+}

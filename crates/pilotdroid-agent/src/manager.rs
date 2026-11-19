@@ -17,6 +17,9 @@ pub const AGENT_JAR_REMOTE: &str = "/data/local/tmp/pilotdroid/agent.jar";
 pub const AGENT_MAIN_CLASS: &str = "pilotdroid.Agent";
 /// The localabstract socket name the agent listens on.
 pub const AGENT_SOCKET: &str = "pilotdroid_agent";
+/// The localabstract socket name the media channel listens on (docs/02
+/// §4.8) — bound at agent start, accepts one stream session at a time.
+pub const MEDIA_SOCKET: &str = "pilotdroid_agent_media";
 
 const AGENT_LOG: &str = "/data/local/tmp/pilotdroid/agent.log";
 
@@ -96,6 +99,33 @@ impl<'a, T: AdbTransport> AgentManager<'a, T> {
             }
         };
         Ok((client, port))
+    }
+
+    /// forward `tcp:{port}` → `localabstract:{MEDIA_SOCKET}` and connect a
+    /// [`MediaClient`](crate::MediaClient). No HELLO — the media socket is
+    /// a one-directional frame pipe (docs/02 §4.8).
+    pub fn connect_media(
+        &mut self,
+        serial: &str,
+        port: Option<u16>,
+        socket: &str,
+    ) -> Result<(crate::MediaClient, u16)> {
+        let port = match port {
+            Some(p) => p,
+            None => Self::free_port()?,
+        };
+        self.adb.forward(
+            serial,
+            &format!("tcp:{port}"),
+            &format!("localabstract:{socket}"),
+        )?;
+        match crate::MediaClient::connect(agent_addr(port), DEFAULT_TIMEOUT) {
+            Ok(c) => Ok((c, port)),
+            Err(e) => {
+                let _ = self.adb.forward_remove(serial, &format!("tcp:{port}"));
+                Err(e)
+            }
+        }
     }
 
     /// Remove the `tcp:{port}` forward created by

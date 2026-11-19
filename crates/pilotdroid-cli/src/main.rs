@@ -145,6 +145,28 @@ enum AgentCmd {
         #[command(flatten)]
         conn: ConnectOpts,
     },
+    /// Media-channel frame stream (docs/02 §4.8): STREAM_CTRL start, recv
+    /// JPEG frames on the second socket until --duration or stream end,
+    /// then stop. Prints stats JSON; --out also writes frames to disk.
+    Stream {
+        /// Target fps (agent default 5).
+        #[arg(long)]
+        fps: Option<u8>,
+        /// Downscale factor (0,1] (agent default 0.5).
+        #[arg(long)]
+        scale: Option<f32>,
+        /// JPEG quality 1-100 (agent default 70).
+        #[arg(long)]
+        quality: Option<u8>,
+        /// Max seconds to receive (default 10).
+        #[arg(long, default_value_t = 10)]
+        duration: u64,
+        /// Directory to write `frame_{seq}.jpg` into (omit = stats only).
+        #[arg(long)]
+        out: Option<PathBuf>,
+        #[command(flatten)]
+        conn: ConnectOpts,
+    },
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
@@ -332,6 +354,38 @@ fn main() -> Result<()> {
                         agent::percentile(&ms, 50.0),
                         agent::percentile(&ms, 95.0),
                         agent::percentile(&ms, 0.0),
+                    );
+                }
+                AgentCmd::Stream {
+                    fps,
+                    scale,
+                    quality,
+                    duration,
+                    out,
+                    conn,
+                } => {
+                    let (mut client, port) = connect_opts(&mut adb, &serial, conn)?;
+                    let opts = agent::StreamOpts {
+                        fps: *fps,
+                        scale: *scale,
+                        quality: *quality,
+                        duration: std::time::Duration::from_secs(*duration),
+                        out: out.clone(),
+                    };
+                    let res = agent::stream_session(&mut adb, &serial, &mut client, &opts);
+                    let disc = agent::disconnect(&mut adb, &serial, port);
+                    let rep = res?;
+                    disc?;
+                    let fps_actual =
+                        rep.stats.frames as f64 / rep.elapsed.as_secs_f64().max(f64::EPSILON);
+                    println!(
+                        "{{\"op\":\"stream\",\"frames\":{},\"elapsed_ms\":{:.0},\"fps_actual\":{fps_actual:.1},\"bytes\":{},\"seq_gaps\":{},\"dropped\":{},\"frames_sent\":{}}}",
+                        rep.stats.frames,
+                        rep.elapsed.as_secs_f64() * 1e3,
+                        rep.stats.bytes,
+                        rep.stats.seq_gaps,
+                        rep.stats.dropped,
+                        rep.frames_sent,
                     );
                 }
             }
