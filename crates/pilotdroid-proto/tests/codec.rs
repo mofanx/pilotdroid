@@ -43,7 +43,13 @@ fn rejects_truncated_header() {
 
 #[test]
 fn rejects_truncated_payload() {
-    let frame = Frame::new(Channel::Control, OpCode::Dump as u16, 0, 1, vec![1, 2, 3, 4]);
+    let frame = Frame::new(
+        Channel::Control,
+        OpCode::Dump as u16,
+        0,
+        1,
+        vec![1, 2, 3, 4],
+    );
     let mut buf = Vec::new();
     frame.write_to(&mut buf).unwrap();
     buf.truncate(HEADER_LEN + 2); // payload incomplete
@@ -89,7 +95,13 @@ fn rejects_invalid_channel() {
 #[test]
 fn payload_len_boundary_max_ok() {
     // Max-size payload must roundtrip.
-    let hdr = FrameHeader::new(Channel::Media, MediaType::Frame as u16, 0, 1, MAX_PAYLOAD_LEN);
+    let hdr = FrameHeader::new(
+        Channel::Media,
+        MediaType::Frame as u16,
+        0,
+        1,
+        MAX_PAYLOAD_LEN,
+    );
     let mut buf = Vec::new();
     hdr.encode(&mut buf).unwrap();
     // append the full payload (64 MiB) — heavy but honest boundary test
@@ -100,7 +112,13 @@ fn payload_len_boundary_max_ok() {
 
 #[test]
 fn payload_len_boundary_max_plus_one_rejected() {
-    let hdr = FrameHeader::new(Channel::Media, MediaType::Frame as u16, 0, 1, MAX_PAYLOAD_LEN + 1);
+    let hdr = FrameHeader::new(
+        Channel::Media,
+        MediaType::Frame as u16,
+        0,
+        1,
+        MAX_PAYLOAD_LEN + 1,
+    );
     let mut buf = Vec::new();
     hdr.encode(&mut buf).unwrap();
     assert!(matches!(
@@ -135,8 +153,18 @@ fn payload_msgpack_roundtrip_all_types() {
     let inj = InjectReq {
         kind: InjectKind::Tap,
         points: vec![
-            MotionPoint { action: 0, x: 700.0, y: 1600.0, t_ms: 0 },
-            MotionPoint { action: 1, x: 700.0, y: 1600.0, t_ms: 15 },
+            MotionPoint {
+                action: 0,
+                x: 700.0,
+                y: 1600.0,
+                t_ms: 0,
+            },
+            MotionPoint {
+                action: 1,
+                x: 700.0,
+                y: 1600.0,
+                t_ms: 15,
+            },
         ],
         wait_finish: true,
     };

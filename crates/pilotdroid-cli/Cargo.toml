@@ -9,3 +9,5 @@ description = "pilotdroid command-line interface"
 anyhow = "1.0.104"
 clap = { version = "4.5.61", features = ["derive"] }
 pilotdroid-adb = { version = "0.1.0", path = "../pilotdroid-adb" }
+pilotdroid-agent = { workspace = true }
+pilotdroid-proto = { workspace = true }

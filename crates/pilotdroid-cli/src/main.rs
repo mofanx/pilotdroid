@@ -1,8 +1,14 @@
+mod agent;
+
+#[cfg(test)]
+mod agent_smoke;
+
 use std::path::PathBuf;
 
 use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
 use pilotdroid_adb::{AdbClient, AdbTransport};
+use pilotdroid_agent::AgentManager;
 
 /// pilotdroid — independent Android automation (docs/ for design).
 #[derive(Parser)]
@@ -55,6 +61,63 @@ enum Cmd {
         remote: String,
         /// Local destination path.
         local: PathBuf,
+    },
+
+    /// Manage and use the on-device agent (dex daemon over localabstract).
+    Agent {
+        #[command(subcommand)]
+        cmd: AgentCmd,
+    },
+}
+
+#[derive(Subcommand)]
+enum AgentCmd {
+    /// Push the agent jar to the device (/data/local/tmp/pilotdroid/agent.jar).
+    Install {
+        /// Local agent.jar (dex) built from agent/java.
+        jar: PathBuf,
+    },
+    /// Launch the agent daemon (setsid + app_process, survives shell exit).
+    Start,
+    /// Kill the agent daemon (pkill by class name).
+    Stop,
+    /// Tap at (x, y) through the agent — forward + HELLO + INJECT.
+    Tap {
+        x: f32,
+        y: f32,
+        /// Don't wait for the inject to finish on the device (async).
+        #[arg(long)]
+        nowait: bool,
+        /// Local tcp port for the forward (default: auto-pick a free one).
+        #[arg(long)]
+        port: Option<u16>,
+        /// Agent's localabstract socket name.
+        #[arg(long, default_value = "pilotdroid_agent")]
+        socket: String,
+    },
+    /// Dump the UI hierarchy XML through the agent.
+    Dump {
+        /// Local tcp port for the forward (default: auto-pick).
+        #[arg(long)]
+        port: Option<u16>,
+        /// Agent's localabstract socket name.
+        #[arg(long, default_value = "pilotdroid_agent")]
+        socket: String,
+    },
+    /// Take a screenshot through the agent and save it.
+    Shot {
+        /// Output path for the image.
+        #[arg(short, long, default_value = "pilotdroid-shot.jpg")]
+        output: PathBuf,
+        /// JPEG quality 1-100.
+        #[arg(long, default_value_t = 80)]
+        quality: u8,
+        /// Local tcp port for the forward (default: auto-pick).
+        #[arg(long)]
+        port: Option<u16>,
+        /// Agent's localabstract socket name.
+        #[arg(long, default_value = "pilotdroid_agent")]
+        socket: String,
     },
 }
 
@@ -134,6 +197,64 @@ fn main() -> Result<()> {
             adb.pull(&serial, remote, local)
                 .with_context(|| format!("pulling {} -> {}", remote, local.display()))?;
             eprintln!("pulled {}:{} -> {}", serial, remote, local.display());
+        }
+        Cmd::Agent { cmd } => {
+            let serial = resolve_serial(&cli, &mut adb)?;
+            match cmd {
+                AgentCmd::Install { jar } => {
+                    AgentManager::new(&mut adb).install(&serial, jar)?;
+                    eprintln!(
+                        "installed {} -> {}:{}",
+                        jar.display(),
+                        serial,
+                        pilotdroid_agent::AGENT_JAR_REMOTE
+                    );
+                }
+                AgentCmd::Start => {
+                    AgentManager::new(&mut adb).start(&serial)?;
+                    eprintln!("agent daemon launched on {serial} (log: /data/local/tmp/pilotdroid/agent.log)");
+                }
+                AgentCmd::Stop => {
+                    AgentManager::new(&mut adb).stop(&serial)?;
+                    eprintln!("agent daemon stopped on {serial}");
+                }
+                AgentCmd::Tap {
+                    x,
+                    y,
+                    nowait,
+                    port,
+                    socket,
+                } => {
+                    let (mut client, _) = agent::connect(&mut adb, &serial, *port, socket)?;
+                    let (ack, ms) = agent::tap(&mut client, *x, *y, !nowait)?;
+                    println!(
+                        "{{\"op\":\"tap\",\"x\":{x},\"y\":{y},\"ok\":{},\"events\":{},\"device_ms\":{},\"rtt_ms\":{ms:.1}}}",
+                        ack.ok, ack.events, ack.ms
+                    );
+                }
+                AgentCmd::Dump { port, socket } => {
+                    let (mut client, _) = agent::connect(&mut adb, &serial, *port, socket)?;
+                    let (xml, ms) = agent::dump(&mut client)?;
+                    print!("{xml}");
+                    eprintln!("dump rtt_ms={ms:.1}");
+                }
+                AgentCmd::Shot {
+                    output,
+                    quality,
+                    port,
+                    socket,
+                } => {
+                    let (mut client, _) = agent::connect(&mut adb, &serial, *port, socket)?;
+                    let (fmt, bytes, ms) = agent::shot(&mut client, "jpeg", *quality)?;
+                    std::fs::write(output, &bytes)
+                        .with_context(|| format!("writing {}", output.display()))?;
+                    println!(
+                        "{{\"op\":\"shot\",\"format\":\"{fmt}\",\"bytes\":{},\"rtt_ms\":{ms:.1},\"path\":\"{}\"}}",
+                        bytes.len(),
+                        output.display()
+                    );
+                }
+            }
         }
     }
     Ok(())
