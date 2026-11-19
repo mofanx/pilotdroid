@@ -201,3 +201,210 @@ fn caps_bits_are_the_wire_contract() {
     assert_eq!(caps::TEXT, 0x40);
     assert_eq!(caps::INJECT | caps::DUMP | caps::SHOT, 0x07);
 }
+
+// ---- M2 contract tests (docs/02-protocol.md §4, written red-first) ----------
+
+#[test]
+fn noack_flag_is_bit3() {
+    assert_eq!(flags::NOACK, 0x0008);
+}
+
+#[test]
+fn selector_roundtrip_and_sparse_wire() {
+    let req = WaitUntilReq {
+        selector: Selector {
+            text: Some("确定".into()),
+            id: Some("com.pkg:id/ok".into()),
+            ..Default::default()
+        },
+        timeout_ms: 5000,
+        poll_ms: Some(20),
+    };
+    assert_eq!(decode::<WaitUntilReq>(&encode(&req).unwrap()).unwrap(), req);
+
+    // Optional selector fields must be absent on the wire, not nil.
+    let sparse = WaitUntilReq {
+        selector: Selector {
+            text: Some("x".into()),
+            ..Default::default()
+        },
+        timeout_ms: 100,
+        poll_ms: None,
+    };
+    let v: rmpv::Value = rmp_serde::from_slice(&encode(&sparse).unwrap()).unwrap();
+    let sel = &v.as_map().unwrap()[0].1;
+    assert_eq!(sel.as_map().unwrap().len(), 1);
+}
+
+#[test]
+fn wait_until_defaults_match_spec() {
+    // Minimal wire payload {selector:{}} → timeout_ms=5000, poll_ms absent (§4.3).
+    let raw = rmpv::Value::Map(vec![(
+        rmpv::Value::from("selector"),
+        rmpv::Value::Map(vec![]),
+    )]);
+    let req: WaitUntilReq = decode(&rmp_serde::to_vec_named(&raw).unwrap()).unwrap();
+    assert_eq!(req.timeout_ms, 5000);
+    assert_eq!(req.poll_ms, None);
+}
+
+#[test]
+fn batch_op_encodes_as_single_key_map() {
+    // §4.1: each op is a one-key map — {"inject": {...}}, {"wait_until": {...}}…
+    let cases: Vec<(BatchOp, &str)> = vec![
+        (
+            BatchOp::Inject(InjectReq {
+                kind: InjectKind::Tap,
+                points: vec![],
+                wait_finish: false,
+            }),
+            "inject",
+        ),
+        (
+            BatchOp::WaitUntil(WaitUntilReq {
+                selector: Selector::default(),
+                timeout_ms: 100,
+                poll_ms: None,
+            }),
+            "wait_until",
+        ),
+        (
+            BatchOp::Query(QueryReq {
+                selector: Selector::default(),
+                attrs: None,
+            }),
+            "query",
+        ),
+        (
+            BatchOp::Dump(DumpReq {
+                format: "xml".into(),
+            }),
+            "dump",
+        ),
+        (
+            BatchOp::Screenshot(ShotReq {
+                format: "jpeg".into(),
+                quality: 80,
+                scale: Some(0.5),
+            }),
+            "screenshot",
+        ),
+        (
+            BatchOp::Text(TextReq {
+                text: "hi".into(),
+                clear: None,
+            }),
+            "text",
+        ),
+    ];
+    for (op, key) in cases {
+        let v: rmpv::Value = rmp_serde::from_slice(&encode(&op).unwrap()).unwrap();
+        let m = v.as_map().unwrap();
+        assert_eq!(m.len(), 1, "{op:?}");
+        assert_eq!(m[0].0.as_str(), Some(key), "{op:?}");
+        assert_eq!(decode::<BatchOp>(&encode(&op).unwrap()).unwrap(), op);
+    }
+}
+
+#[test]
+fn batch_req_defaults_and_fail_policy_names() {
+    // fail_policy wire names per §4.1.
+    for (p, s) in [
+        (FailPolicy::Stop, "stop"),
+        (FailPolicy::Continue, "continue"),
+    ] {
+        let v: rmpv::Value = rmp_serde::from_slice(&encode(&p).unwrap()).unwrap();
+        assert_eq!(v.as_str(), Some(s));
+    }
+    // omitted fields → defaults (stop / no deadline / no poll_ms).
+    let raw = rmpv::Value::Map(vec![(rmpv::Value::from("ops"), rmpv::Value::Array(vec![]))]);
+    let req: BatchReq = decode(&rmp_serde::to_vec_named(&raw).unwrap()).unwrap();
+    assert_eq!(req.fail_policy, FailPolicy::Stop);
+    assert_eq!(req.deadline_ms, None);
+    assert_eq!(req.poll_ms, None);
+}
+
+#[test]
+fn batch_ack_decodes_per_op_results() {
+    let ack = BatchAck {
+        results: vec![
+            OpResult {
+                index: 0,
+                code: "OK".into(),
+                message: String::new(),
+                cost_ns: 1_234_000,
+                data: None,
+            },
+            OpResult {
+                index: 1,
+                code: "TIMEOUT".into(),
+                message: "selector not found".into(),
+                cost_ns: 5_000_000_000,
+                data: None,
+            },
+            OpResult {
+                index: 2,
+                code: "OK".into(),
+                message: String::new(),
+                cost_ns: 10,
+                data: Some(rmpv::Value::from(true)),
+            },
+        ],
+        total_ns: 5_001_244_000,
+    };
+    assert_eq!(decode::<BatchAck>(&encode(&ack).unwrap()).unwrap(), ack);
+}
+
+#[test]
+fn shot_req_scale_omitted_when_none() {
+    // M1 backward compat: scale must not appear on the wire when unset.
+    let req = ShotReq {
+        format: "jpeg".into(),
+        quality: 80,
+        scale: None,
+    };
+    let v: rmpv::Value = rmp_serde::from_slice(&encode(&req).unwrap()).unwrap();
+    assert_eq!(v.as_map().unwrap().len(), 2);
+    let scaled = ShotReq {
+        scale: Some(0.5),
+        ..req
+    };
+    let v: rmpv::Value = rmp_serde::from_slice(&encode(&scaled).unwrap()).unwrap();
+    assert_eq!(v.as_map().unwrap().len(), 3);
+    assert_eq!(
+        decode::<ShotReq>(&encode(&scaled).unwrap()).unwrap(),
+        scaled
+    );
+}
+
+#[test]
+fn query_and_text_payloads_roundtrip() {
+    let q = QueryReq {
+        selector: Selector {
+            id: Some("ok".into()),
+            ..Default::default()
+        },
+        attrs: Some(vec!["text".into(), "bounds".into()]),
+    };
+    assert_eq!(decode::<QueryReq>(&encode(&q).unwrap()).unwrap(), q);
+
+    let qa = QueryAck {
+        found: true,
+        node: Some(NodeInfo {
+            text: "OK".into(),
+            id: "com.pkg:id/ok".into(),
+            desc: String::new(),
+            bounds: [1, 2, 3, 4],
+            class: "android.widget.Button".into(),
+            clickable: true,
+            enabled: true,
+        }),
+    };
+    assert_eq!(decode::<QueryAck>(&encode(&qa).unwrap()).unwrap(), qa);
+
+    let t = TextReq {
+        text: "你好".into(),
+        clear: Some(true),
+    };
+    assert_eq!(decode::<TextReq>(&encode(&t).unwrap()).unwrap(), t);
+}

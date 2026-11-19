@@ -137,7 +137,7 @@ fn cli_agent_ops_against_fake() -> io::Result<()> {
     let (xml, _ms) = agent::dump(&mut client).unwrap();
     assert_eq!(xml, "<hierarchy/>");
 
-    let (fmt, bytes, _ms) = agent::shot(&mut client, "jpeg", 80).unwrap();
+    let (fmt, bytes, _ms) = agent::shot(&mut client, "jpeg", 80, None).unwrap();
     assert_eq!(fmt, "jpeg");
     assert_eq!(bytes, vec![0xFF, 0xD8]);
 
