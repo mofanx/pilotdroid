@@ -111,6 +111,8 @@ pub enum ProtocolError {
     InvalidType(u16),
     #[error("payload_len {0} exceeds MAX_PAYLOAD_LEN")]
     PayloadTooLarge(u32),
+    #[error("payload codec error: {0}")]
+    Codec(String),
 }
 
 /// Fixed-size frame header. Payload follows as msgpack bytes (M2; the serde
@@ -231,4 +233,177 @@ mod tests {
         assert_eq!(OpCode::AgentStop as u16, 0x00F0);
         assert_eq!(OpCode::try_from(0x0060).unwrap(), OpCode::Text);
     }
+}
+
+// ---- M1 codec additions -----------------------------------------------------
+
+/// Media-channel message types (docs/02-protocol.md §3, ch=1).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u16)]
+pub enum MediaType {
+    Frame = 0x0001,
+    UiEvent = 0x0002,
+}
+
+impl TryFrom<u16> for MediaType {
+    type Error = ProtocolError;
+
+    fn try_from(v: u16) -> Result<Self, Self::Error> {
+        Ok(match v {
+            0x0001 => Self::Frame,
+            0x0002 => Self::UiEvent,
+            other => return Err(ProtocolError::InvalidType(other)),
+        })
+    }
+}
+
+impl OpCode {
+    /// Every control-channel opcode, for coverage assertions.
+    pub const ALL: [Self; 14] = [
+        Self::Hello,
+        Self::HelloAck,
+        Self::Ping,
+        Self::Pong,
+        Self::Inject,
+        Self::InjectResult,
+        Self::Dump,
+        Self::Query,
+        Self::Screenshot,
+        Self::Batch,
+        Self::BatchResult,
+        Self::StreamCtrl,
+        Self::Text,
+        Self::AgentStop,
+    ];
+}
+
+/// A complete wire frame: 18-byte header + `payload_len` msgpack bytes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Frame {
+    pub header: FrameHeader,
+    pub payload: Vec<u8>,
+}
+
+impl Frame {
+    pub fn new(channel: Channel, msg_type: u16, flags: u16, req_id: u32, payload: Vec<u8>) -> Self {
+        let header = FrameHeader::new(channel, msg_type, flags, req_id, payload.len() as u32);
+        Self { header, payload }
+    }
+
+    /// Serialize header + payload to `w`.
+    pub fn write_to(&self, w: &mut impl Write) -> io::Result<()> {
+        self.header.encode(w)?;
+        w.write_all(&self.payload)?;
+        w.flush()
+    }
+
+    /// Read one frame from `r` (header then exactly `payload_len` bytes).
+    pub fn read_from(r: &mut impl Read) -> Result<Self, ProtocolError> {
+        let header = FrameHeader::decode(r)?;
+        let mut payload = vec![0u8; header.payload_len as usize];
+        r.read_exact(&mut payload)?;
+        Ok(Self { header, payload })
+    }
+}
+
+/// msgpack payload schemas shared with the device agent (docs/02 §3).
+/// Field names below ARE the wire contract — the Java agent must match.
+pub mod payload {
+    use serde::{Deserialize, Serialize};
+    use serde_bytes::ByteBuf;
+
+    use crate::ProtocolError;
+
+    #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+    pub struct HelloReq {
+        pub proto: u8,
+    }
+
+    #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+    pub struct HelloAck {
+        pub agent: String,
+        pub caps: u32,
+    }
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+    pub enum InjectKind {
+        Tap,
+        Swipe,
+        Key,
+    }
+
+    /// One point of a MotionEvent sequence (action = MotionEvent.ACTION_*).
+    #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+    pub struct MotionPoint {
+        pub action: u8,
+        pub x: f32,
+        pub y: f32,
+        /// eventTime offset from first point, ms.
+        pub t_ms: u64,
+    }
+
+    #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+    pub struct InjectReq {
+        pub kind: InjectKind,
+        pub points: Vec<MotionPoint>,
+        pub wait_finish: bool,
+    }
+
+    #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+    pub struct InjectAck {
+        pub ok: bool,
+        pub events: u32,
+        pub ms: f64,
+    }
+
+    #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+    pub struct DumpReq {
+        /// "xml" for M1; structured node tree is a later option.
+        pub format: String,
+    }
+
+    #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+    pub struct DumpAck {
+        pub xml: String,
+    }
+
+    #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+    pub struct ShotReq {
+        pub format: String,
+        pub quality: u8,
+    }
+
+    #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+    pub struct ShotAck {
+        pub format: String,
+        pub data: ByteBuf,
+    }
+
+    /// ERROR-flagged response payload.
+    #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+    pub struct ErrorAck {
+        pub code: String,
+        pub message: String,
+    }
+
+    pub fn encode<T: Serialize>(v: &T) -> Result<Vec<u8>, ProtocolError> {
+        rmp_serde::to_vec_named(v).map_err(|e| ProtocolError::Codec(e.to_string()))
+    }
+
+    pub fn decode<'a, T: Deserialize<'a>>(bytes: &'a [u8]) -> Result<T, ProtocolError> {
+        rmp_serde::from_slice(bytes).map_err(|e| ProtocolError::Codec(e.to_string()))
+    }
+}
+
+/// Capability bitmap bits (docs/03-device-agent.md §2).
+pub mod caps {
+    pub const INJECT_IM: u32 = 1 << 0;
+    pub const INJECT_UIA: u32 = 1 << 1;
+    pub const UIAUTOMATION: u32 = 1 << 2;
+    pub const SCREENSHOT: u32 = 1 << 3;
+    pub const DEV_INPUT_READ: u32 = 1 << 4;
+    pub const DEV_INPUT_WRITE: u32 = 1 << 5;
+    pub const VIRTUAL_DISPLAY: u32 = 1 << 6;
+    pub const IME: u32 = 1 << 7;
+    pub const SHELL_INJECT: u32 = 1 << 8;
 }
