@@ -44,10 +44,12 @@ impl<'a, T: AdbTransport> AgentManager<'a, T> {
 
     /// `agent start`: launch the dex detached so it survives this shell
     /// session (daemon model, docs/03 §5). Mirrors deploy-agent.sh:
-    /// `nohup setsid sh -c 'CLASSPATH=… app_process …' </dev/null >log 2>&1 &`
+    /// `nohup setsid env CLASSPATH=… app_process … </dev/null >log 2>&1 &`
+    /// — `env` sets CLASSPATH without a `sh -c` wrapper, so app_process is
+    /// the session leader's direct child (M2 left a stray sh parent).
     pub fn start(&mut self, serial: &str) -> Result<()> {
         let cmd = format!(
-            "nohup setsid sh -c 'CLASSPATH={AGENT_JAR_REMOTE} app_process {AGENT_DIR} {AGENT_MAIN_CLASS}' </dev/null >{AGENT_LOG} 2>&1 &"
+            "nohup setsid env CLASSPATH={AGENT_JAR_REMOTE} app_process {AGENT_DIR} {AGENT_MAIN_CLASS} </dev/null >{AGENT_LOG} 2>&1 &"
         );
         self.run_shell(serial, &cmd)
     }
@@ -104,42 +106,96 @@ impl<'a, T: AdbTransport> AgentManager<'a, T> {
         Ok(self.adb.forward_remove(serial, &format!("tcp:{port}"))?)
     }
 
-    /// Watchdog connect (M2): forward + dial + HELLO; on any failure run the
-    /// recovery ladder — stop (best effort), reinstall `jar`, relaunch,
-    /// settle — and retry the whole sequence **once**. Returns the client,
-    /// its port, and the HELLO ack of whichever attempt succeeded.
+    /// Watchdog connect — graded recovery ladder (M3):
+    /// 1. forward + dial + HELLO;
+    /// 2. zero-copy restart: stop (best effort) → start → settle → retry —
+    ///    the on-device jar survives a dead daemon, so no push is needed;
+    /// 3. install fallback: `test -f` probes the remote jar — push `jar`
+    ///    only when the remote copy is missing, or when `jar` is supplied
+    ///    as a forced reflash after restart failed too.
+    ///
+    /// `jar = None` makes the watchdog fully usable without a local jar;
+    /// it is required only if the remote jar turned out to be absent.
     pub fn connect_recover(
         &mut self,
         serial: &str,
         port: Option<u16>,
         socket: &str,
-        jar: &Path,
+        jar: Option<&Path>,
     ) -> Result<(AgentClient, u16, pilotdroid_proto::payload::HelloAck)> {
+        let first_err = match self.connect_hello(serial, port, socket) {
+            ok @ Ok(_) => return ok,
+            Err(e) => e,
+        };
+        // Stage 2: zero-copy restart.
+        self.restart(serial).map_err(|e| AgentError::Recover {
+            stage: "restart",
+            detail: e.to_string(),
+        })?;
         match self.connect_hello(serial, port, socket) {
             ok @ Ok(_) => ok,
-            Err(first) => {
-                self.recover(serial, jar).map_err(|e| AgentError::Recover {
-                    stage: "ladder",
-                    detail: e.to_string(),
-                })?;
-                self.connect_hello(serial, port, socket)
-                    .map_err(|second| AgentError::Recover {
+            Err(second) => {
+                let remote_present = self.remote_jar_exists(serial).unwrap_or(false);
+                match jar {
+                    // Reflash: covers both "remote jar missing" and the
+                    // caller's explicit forced reflash via --jar.
+                    Some(local) => {
+                        self.recover(serial, local).map_err(|e| AgentError::Recover {
+                            stage: "install",
+                            detail: e.to_string(),
+                        })?;
+                        self.connect_hello(serial, port, socket).map_err(|third| {
+                            AgentError::Recover {
+                                stage: "retry",
+                                detail: format!(
+                                    "first: {first_err}; restart: {second}; reinstall: {third}"
+                                ),
+                            }
+                        })
+                    }
+                    None if !remote_present => Err(AgentError::Recover {
+                        stage: "jar-missing",
+                        detail: format!(
+                            "remote {AGENT_JAR_REMOTE} absent and no --jar supplied                              (first: {first_err}; restart: {second})"
+                        ),
+                    }),
+                    None => Err(AgentError::Recover {
                         stage: "retry",
-                        detail: format!("first: {first}; after recover: {second}"),
-                    })
+                        detail: format!("first: {first_err}; restart: {second}"),
+                    }),
+                }
             }
         }
     }
 
-    /// Recovery ladder: stop any half-dead agent → reinstall `jar` → relaunch
-    /// → settle while app_process binds localabstract. Best-effort stop: a
-    /// dead/absent agent must not fail the ladder.
+    /// Zero-copy restart: stop any half-dead agent → relaunch → settle while
+    /// app_process binds localabstract. The on-device jar is untouched.
+    /// Best-effort stop: a dead/absent agent must not fail the ladder.
+    pub fn restart(&mut self, serial: &str) -> Result<()> {
+        let _ = self.stop(serial);
+        self.start(serial)?;
+        std::thread::sleep(RECOVER_SETTLE);
+        Ok(())
+    }
+
+    /// Install ladder: stop → reinstall `jar` → relaunch → settle. Used when
+    /// the remote jar is missing or a forced reflash is requested.
     pub fn recover(&mut self, serial: &str, jar: &Path) -> Result<()> {
         let _ = self.stop(serial);
         self.install(serial, jar)?;
         self.start(serial)?;
         std::thread::sleep(RECOVER_SETTLE);
         Ok(())
+    }
+
+    /// `test -f` on the on-device jar — false also when the shell itself
+    /// fails closed? No: transport errors propagate; only a non-zero
+    /// exit_code means "absent".
+    pub fn remote_jar_exists(&mut self, serial: &str) -> Result<bool> {
+        let out = self
+            .adb
+            .shell(serial, &format!("test -f {AGENT_JAR_REMOTE}"))?;
+        Ok(out.exit_code == Some(0))
     }
 
     /// forward + dial + HELLO handshake (undoes the forward on any failure).

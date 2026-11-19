@@ -173,6 +173,9 @@ fn payload_msgpack_roundtrip_all_types() {
             },
         ],
         wait_finish: true,
+        keycode: None,
+        meta: None,
+        backend: None,
     };
     assert_eq!(decode::<InjectReq>(&encode(&inj).unwrap()).unwrap(), inj);
 
@@ -266,6 +269,9 @@ fn batch_op_encodes_as_single_key_map() {
                 kind: InjectKind::Tap,
                 points: vec![],
                 wait_finish: false,
+                keycode: None,
+                meta: None,
+                backend: None,
             }),
             "inject",
         ),
@@ -494,4 +500,76 @@ fn hello_and_inject_acks_carry_agent_extras() {
         backend: Some("uia".into()),
     };
     assert_eq!(decode::<InjectAck>(&encode(&inj).unwrap()).unwrap(), inj);
+}
+
+// ---- M3 §4.7: KEY / event-sequence / backend force field -------------------
+
+#[test]
+fn inject_req_key_carries_keycode_omits_points() {
+    // kind=Key: keycode on the wire, empty points skipped entirely (§4.7).
+    let key = InjectReq {
+        kind: InjectKind::Key,
+        points: vec![],
+        wait_finish: false,
+        keycode: Some(4), // KEYCODE_BACK
+        meta: None,
+        backend: None,
+    };
+    let v: rmpv::Value = rmp_serde::from_slice(&encode(&key).unwrap()).unwrap();
+    let keys: Vec<String> = v
+        .as_map()
+        .unwrap()
+        .iter()
+        .filter_map(|(k, _)| k.as_str().map(str::to_string))
+        .collect();
+    assert!(keys.contains(&"keycode".to_string()), "{keys:?}");
+    assert!(!keys.contains(&"points".to_string()), "{keys:?}");
+    assert!(!keys.contains(&"meta".to_string()), "{keys:?}");
+    assert_eq!(decode::<InjectReq>(&encode(&key).unwrap()).unwrap(), key);
+}
+
+#[test]
+fn inject_req_backend_force_field() {
+    // backend="uia" forces the backend; absent = probe fallback chain.
+    let forced = InjectReq {
+        kind: InjectKind::Tap,
+        points: vec![MotionPoint {
+            action: 0,
+            x: 1.0,
+            y: 2.0,
+            t_ms: 0,
+        }],
+        wait_finish: false,
+        keycode: None,
+        meta: None,
+        backend: Some("uia".into()),
+    };
+    let v: rmpv::Value = rmp_serde::from_slice(&encode(&forced).unwrap()).unwrap();
+    let map = v.as_map().unwrap();
+    let backend = map
+        .iter()
+        .find(|(k, _)| k.as_str() == Some("backend"))
+        .map(|(_, v)| v.as_str().unwrap());
+    assert_eq!(backend, Some("uia"));
+    assert_eq!(
+        decode::<InjectReq>(&encode(&forced).unwrap()).unwrap(),
+        forced
+    );
+}
+
+#[test]
+fn inject_req_m2_wire_shape_still_decodes() {
+    // M2-era wire {kind,points,wait_finish} (no M3 fields) must decode —
+    // new fields all default to None.
+    let raw = rmpv::Value::Map(vec![
+        (rmpv::Value::from("kind"), rmpv::Value::from("Tap")),
+        (rmpv::Value::from("points"), rmpv::Value::Array(vec![])),
+        (rmpv::Value::from("wait_finish"), rmpv::Value::from(true)),
+    ]);
+    let req: InjectReq = decode(&rmp_serde::to_vec_named(&raw).unwrap()).unwrap();
+    assert_eq!(req.kind, InjectKind::Tap);
+    assert_eq!(req.keycode, None);
+    assert_eq!(req.meta, None);
+    assert_eq!(req.backend, None);
+    assert!(req.wait_finish);
 }

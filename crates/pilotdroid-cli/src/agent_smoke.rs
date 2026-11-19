@@ -139,7 +139,8 @@ fn cli_agent_ops_against_fake() -> io::Result<()> {
     let (addr, seen) = spawn_fake();
     let mut adb = NoopAdb;
     let (mut client, port) =
-        agent::connect(&mut adb, "fake0", Some(addr.port()), "pilotdroid").unwrap();
+        agent::connect_or_recover(&mut adb, "fake0", Some(addr.port()), "pilotdroid", None)
+            .unwrap();
     assert_eq!(port, addr.port());
 
     let (ack, _ms) = agent::tap(&mut client, 700.0, 1600.0, true).unwrap();
