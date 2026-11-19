@@ -1,0 +1,61 @@
+{
+ "engine": "shim",
+ "serial": "ba0d072d",
+ "same_scope_note": "shim=one session socket; u2=JSON-RPC HTTP per call",
+ "total_ms": {
+  "n": 20,
+  "mean": 1942.04,
+  "p50": 1955.8,
+  "p95": 2011.33
+ },
+ "per_op_ms": {
+  "app_start_settings": {
+   "n": 20,
+   "mean": 87.26,
+   "p50": 88.18,
+   "p95": 99.68
+  },
+  "swipe": {
+   "n": 20,
+   "mean": 14.23,
+   "p50": 14.29,
+   "p95": 19.81
+  },
+  "app_start_search": {
+   "n": 20,
+   "mean": 77.83,
+   "p50": 77.38,
+   "p95": 92.28
+  },
+  "sel_click": {
+   "n": 20,
+   "mean": 58.32,
+   "p50": 54.01,
+   "p95": 95.92
+  },
+  "set_text": {
+   "n": 20,
+   "mean": 91.23,
+   "p50": 92.19,
+   "p95": 123.17
+  },
+  "exists": {
+   "n": 20,
+   "mean": 41.99,
+   "p50": 48.06,
+   "p95": 58.96
+  },
+  "screenshot": {
+   "n": 20,
+   "mean": 111.17,
+   "p50": 111.64,
+   "p95": 126.16
+  },
+  "press_back": {
+   "n": 20,
+   "mean": 4.12,
+   "p50": 3.84,
+   "p95": 8.74
+  }
+ }
+}
