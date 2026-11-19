@@ -286,19 +286,23 @@ pub struct Frame {
 
 impl Frame {
     pub fn new(channel: Channel, msg_type: u16, flags: u16, req_id: u32, payload: Vec<u8>) -> Self {
-        unimplemented!("TDD: implemented in next commit")
+        let header = FrameHeader::new(channel, msg_type, flags, req_id, payload.len() as u32);
+        Self { header, payload }
     }
 
     /// Serialize header + payload to `w`.
     pub fn write_to(&self, w: &mut impl Write) -> io::Result<()> {
-        let _ = w;
-        unimplemented!("TDD: implemented in next commit")
+        self.header.encode(w)?;
+        w.write_all(&self.payload)?;
+        w.flush()
     }
 
     /// Read one frame from `r` (header then exactly `payload_len` bytes).
     pub fn read_from(r: &mut impl Read) -> Result<Self, ProtocolError> {
-        let _ = r;
-        unimplemented!("TDD: implemented in next commit")
+        let header = FrameHeader::decode(r)?;
+        let mut payload = vec![0u8; header.payload_len as usize];
+        r.read_exact(&mut payload)?;
+        Ok(Self { header, payload })
     }
 }
 
@@ -383,13 +387,11 @@ pub mod payload {
     }
 
     pub fn encode<T: Serialize>(v: &T) -> Result<Vec<u8>, ProtocolError> {
-        let _ = v;
-        unimplemented!("TDD: implemented in next commit")
+        rmp_serde::to_vec_named(v).map_err(|e| ProtocolError::Codec(e.to_string()))
     }
 
     pub fn decode<'a, T: Deserialize<'a>>(bytes: &'a [u8]) -> Result<T, ProtocolError> {
-        let _ = bytes;
-        unimplemented!("TDD: implemented in next commit")
+        rmp_serde::from_slice(bytes).map_err(|e| ProtocolError::Codec(e.to_string()))
     }
 }
 
