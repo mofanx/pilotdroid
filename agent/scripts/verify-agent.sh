@@ -108,11 +108,14 @@ BB=$($CLI inject-tap 700 1600 bogus 2>&1) || true
 echo "$BB" | grep -q "ERR_BACKEND" \
   && ok "backend_bogus_err" || bad "backend_bogus_err" "resp=$BB"
 
-echo "== M2: setup deterministic editable field (Settings search) =="
+echo "== M2: setup deterministic editable field =="
+# android:id/input is a STATIC TextView hint on MainSettings — no tap
+# needed for the id-based assertions (an older version tapped a fixed
+# coordinate which navigated away depending on layout -> flaky).
+adb -s "$DEV" shell 'input keyevent KEYCODE_HOME' >/dev/null 2>&1
+sleep 0.6
 adb -s "$DEV" shell 'am start -n com.android.settings/.MainSettings' >/dev/null 2>&1
 sleep 1.2
-$CLI inject-tap 720 650 >/dev/null 2>&1   # tap search stub -> EditText gains focus
-sleep 0.8
 
 echo "== M2-A8 QUERY found + structured node =="
 Q=$($CLI query '{"id":"android:id/input"}' 2>&1) || true
@@ -141,10 +144,17 @@ W=$($CLI wait '{"text":"__pd_no_such_node__"}' 500 2>&1) || true
 echo "$W" | grep -q '"code": *"TIMEOUT"' && ok "wait_until_timeout" || bad "wait_until_timeout" "$W"
 
 echo "== M2-A11 TEXT -> text becomes visible in tree =="
+# quicksearchbox's query_text EditText auto-focuses — deterministic
+# editable target for the TEXT op (Settings search tap was layout-fragile).
+adb -s "$DEV" shell 'am start -n com.android.quicksearchbox/.SearchActivityTransparent' >/dev/null 2>&1
+sleep 1.2
 $CLI text "pdtest" >/dev/null 2>&1 || true
 sleep 0.4
 Q=$($CLI query '{"text":"pdtest"}' 2>&1) || true
 echo "$Q" | grep -q '"found": *true' && ok "text_visible" || bad "text_visible" "$Q"
+# restore MainSettings so id=input assertions below still hold
+adb -s "$DEV" shell 'am start -n com.android.settings/.MainSettings' >/dev/null 2>&1
+sleep 1.0
 
 echo "== M2-A12 BATCH per-op results =="
 B=$($CLI batch '[{"inject":{"kind":"Tap","points":[{"action":0,"x":700,"y":1400,"t_ms":0},{"action":1,"x":700,"y":1400,"t_ms":75}],"wait_finish":false}},{"query":{"selector":{"id":"android:id/input"}}}]' 2>&1) || true

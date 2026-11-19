@@ -435,6 +435,14 @@ pub mod payload {
         /// unscaled).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub scale: Option<f32>,
+        /// Device-side capture+scale time (ns) — M3 agent emits this timing
+        /// split for SHOT bottleneck attribution (spike/e2e/m3-experiments).
+        /// Absent on older agents.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub take_ns: Option<u64>,
+        /// Device-side JPEG encode time (ns); same provenance as `take_ns`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub enc_ns: Option<u64>,
     }
 
     // ---- M2 payloads (docs/02-protocol.md §4) -------------------------------

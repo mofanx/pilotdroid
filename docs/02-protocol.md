@@ -104,11 +104,11 @@ Selector = { text?: string, id?: string, desc?: string, index?: u32 }
 
 - `QueryReq = { selector: Selector, attrs?: string[] }` → `{ found: bool, node?: { text,id,desc,bounds:[l,t,r,b], class, clickable, enabled } }`；exists 语义即 `found`。`attrs` 是**可选裁剪参数**：给定 `["text","bounds"]` 时 agent 只回该属性子集；省略时回全量 node。host 侧必须容忍多余字段（serde named-map 天然如此）。
 - `TextReq = { text: string, clear?: bool }` → 设备端 `AccessibilityNodeInfo.ACTION_SET_TEXT` 作用于当前焦点节点（非 ASCII 同路径）；无焦点节点 → `code:"NO_FOCUS"`；应答 `{ok, chars, cost_ns}`（chars 为写入字符数）。
-- `ShotReq`/`ShotAck`：请求 `{format, quality: 0-100 = 80, scale: (0,1] = 1.0}`；应答含 `{format, w, h, scale, data}`——w/h/scale 为缩放后实际几何与生效倍率的回显。
+- `ShotReq`/`ShotAck`：请求 `{format, quality: 0-100 = 80, scale: (0,1] = 1.0}`；应答含 `{format, w, h, scale, data}`——w/h/scale 为缩放后实际几何与生效倍率的回显；`take_ns`（capture+scale 耗时）与 `enc_ns`（JPEG 编码耗时）为可选观测字段（M3 归因计时拆分，spike/e2e/m3-experiments 消费）。
 
 ### 4.7 INJECT 事件序列与 KEY（M3）
 
-`InjectReq = { kind: "Tap"|"Swipe"|"Key", points?: MotionPoint[], wait_finish?: bool, keycode?: u32, backend?: "im"|"uia" }`
+`InjectReq = { kind: "Tap"|"Swipe"|"Key", points?: MotionPoint[], wait_finish?: bool, keycode?: u32, meta?: u32, backend?: "im"|"uia" }`
 
 - **MotionPoint = { action: u8, x: f32, y: f32, t_ms: u64 }**：`action` 为 `MotionEvent.ACTION_*`（0=DOWN、1=UP、2=MOVE），`t_ms` 为相对首点的 eventTime 偏移。`points` 按序构成手势：tap = [DOWN, UP(+~60ms)]；**swipe = DOWN + N×MOVE + UP**（MOVE 点密度即路径采样）。`wait_finish` 缺省 false。
 - **kind="Key"**：`keycode`（`android.view.KeyEvent.KEYCODE_*`，back=4/home=3/recent=187，任意 keycode 合法）走同一 `injectInputEvent` 通道构造 `KeyEvent`（DOWN+UP）；`points` 此时省略。可选 `meta`（metaState，缺省 0）。

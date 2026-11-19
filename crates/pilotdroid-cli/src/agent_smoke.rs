@@ -65,6 +65,8 @@ fn spawn_fake() -> (SocketAddr, mpsc::Receiver<u16>) {
                             w: None,
                             h: None,
                             scale: None,
+                            take_ns: None,
+                            enc_ns: None,
                         })
                         .unwrap(),
                     ),

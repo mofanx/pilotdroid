@@ -70,6 +70,13 @@
 - [ ] 非 ASCII 文本输入可用（至少 broadcast 路径）。
 - [ ] P1 设备集（Pixel/类原生 + A10-12）矩阵行填齐，无 P0 级能力缺失。
 
+**M3 已交付（feature/m3-compat，实测 `spike/e2e/RESULTS-M3.md`）**
+- [x] **u2 兼容 shim v0**（host 侧翻译层，ADR-005）：`compat/u2shim.py` 顶层 API（connect/click/d(text|resourceId).click|exists|wait/dump/screenshot/set_text/app_start/press/swipe）——同一脚本零改动跑通两侧，n=20 对拍：**device-ops 小计 212ms vs u2 2140ms = 10.1×**；序列总 1956 vs 4085ms = 2.1×（app_start/screenshot 固定成本摊薄，如实记录）；swipe 79×、press 42×、sel_click 9.6×。
+- [x] KEY op（任意 keycode）、INJECT 事件序列、backend 强制字段、SHOT quality/take_ns-enc_ns 分段——verify 21/21。
+- [x] 仲裁实验：SHOT 固定成本主导（enc 随像素非 quality）；backend A/B IM 快 21ms 维持默认；keep-alive 负结果（~43ms 尾=adbd 连续请求批量量子）；dash 2602BRT18C/SDK37 矩阵行 caps=95。
+- [x] watchdog 分级恢复：kill -9 后无 --jar 调用 1.15s 自动恢复。
+- 剩余：xpath fixture 对拍、帧流、Unicode IME、P1 矩阵扩展。
+
 ## 明确的排序依据
 
 1. **先对拍工具（M0）再写功能**——避免"更优"沦为口号。
