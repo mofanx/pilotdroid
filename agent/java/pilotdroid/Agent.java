@@ -21,8 +21,10 @@ import java.lang.reflect.Constructor;
 import java.lang.reflect.Method;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * pilotdroid device agent — M2: single app_process, BATCH/wait_until/QUERY/
@@ -266,10 +268,17 @@ public final class Agent {
             Map<String, Object> m = new LinkedHashMap<>();
             m.put("found", hit != null);
             if (hit != null) {
-                m.put("node", Dumper.nodeInfo(hit));
+                m.put("node", Dumper.nodeInfo(hit, attrs(r.get("attrs"))));
                 hit.recycle();
             }
             return m;
+        }
+
+        private static Set<String> attrs(Object o) {
+            if (!(o instanceof List)) return null;
+            Set<String> s = new LinkedHashSet<>();
+            for (Object a : (List<?>) o) s.add(String.valueOf(a));
+            return s;
         }
 
         private Map<String, Object> text(Object req) throws Exception {
@@ -666,6 +675,11 @@ public final class Agent {
 
         /** Structured node info for QUERY/wait_until results. */
         static Map<String, Object> nodeInfo(AccessibilityNodeInfo n) {
+            return nodeInfo(n, null);
+        }
+
+        /** @param attrs when non-null, prune the result to just these keys. */
+        static Map<String, Object> nodeInfo(AccessibilityNodeInfo n, Set<String> attrs) {
             Rect b = new Rect();
             n.getBoundsInScreen(b);
             Map<String, Object> m = new LinkedHashMap<>();
@@ -680,6 +694,7 @@ public final class Agent {
             m.put("class", n.getClassName() == null ? "" : n.getClassName().toString());
             m.put("clickable", n.isClickable());
             m.put("enabled", n.isEnabled());
+            if (attrs != null) m.keySet().retainAll(attrs);
             return m;
         }
 
