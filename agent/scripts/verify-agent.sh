@@ -35,6 +35,10 @@ print("OK "+json.dumps(p) if not miss else "MISS:"+",".join(miss))' > /tmp/hello
   || echo "PARSE_FAIL $HELLO" > /tmp/hello.res
 grep -q "^OK" /tmp/hello.res && ok "hello_ack_fields" || bad "hello_ack_fields" "$(cat /tmp/hello.res)"
 
+echo "== A1b CAPS bitmap == normative spec: proto caps INJECT=1 DUMP=2 SHOT=4 =="
+CAPS=$(echo "$HELLO" | python3 -c 'import json,sys; print(json.load(sys.stdin)["payload"]["caps"])' 2>/dev/null || echo "?")
+[ "$CAPS" = "7" ] && ok "caps_bits" || bad "caps_bits" "caps=$CAPS expected 7 (INJECT|DUMP|SHOT)"
+
 echo "== A2 INJECT tap result + logcat side-effect =="
 adb -s "$DEV" shell 'logcat -c' 2>/dev/null
 INJ=$($CLI inject-tap 700 1600 2>&1) || true
@@ -68,6 +72,24 @@ $CLI ping 2>/dev/null | grep -qE "\"type\": *4" && ok "ping_pong" \
 
 echo "== latency bench =="
 $CLI bench 30 > "$OUT/verify-$DEV.json" 2>/dev/null && cat "$OUT/verify-$DEV.json" || true
+
+echo "== A7 AGENT_STOP: CLI stop exit==0 and process gone =="
+ROOT="$(cd "$HERE/../.." && pwd)"; RCLI="$ROOT/target/debug/pilotdroid-cli"
+if [ -x "$RCLI" ]; then
+  "$RCLI" -s "$DEV" agent stop >/dev/null 2>&1; STOP_EXIT=$?
+else
+  # fallback: AGENT_STOP opcode via dev client (agent exits itself)
+  $CLI stop >/dev/null 2>&1; STOP_EXIT=$?
+fi
+sleep 0.5
+ALIVE=$(adb -s "$DEV" shell 'ps -A -o ARGS' | grep -c "pilotdroid\.Agent" || true)
+[ "$STOP_EXIT" = "0" ] && [ "$ALIVE" = "0" ] \
+  && ok "stop_exit_clean" || bad "stop_exit_clean" "exit=$STOP_EXIT alive=$ALIVE"
+
+# leave the device usable: relaunch the daemon for the next run
+[ -x "$RCLI" ] && "$RCLI" -s "$DEV" agent start >/dev/null 2>&1 \
+  || adb -s "$DEV" shell "nohup setsid env CLASSPATH=/data/local/tmp/pilotdroid/agent.jar app_process /data/local/tmp/pilotdroid pilotdroid.Agent </dev/null >/dev/null 2>&1 &"
+sleep 1
 
 echo "== summary: $PASS pass / $FAIL fail =="
 python3 - "$OUT/verify-$DEV.json" <<'EOF'
