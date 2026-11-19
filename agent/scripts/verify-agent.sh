@@ -189,6 +189,99 @@ echo "$NA" | grep -q "OK: no response" && [ "$LC" -ge 1 ] \
 # restore a neutral screen for subsequent runs
 adb -s "$DEV" shell 'input keyevent KEYCODE_HOME' >/dev/null 2>&1 || true
 
+echo "== M4 STREAM (§4.8: one owner session held for start->frames->stop) =="
+adb -s "$DEV" forward tcp:17933 localabstract:pilotdroid_agent_media >/dev/null 2>&1
+STREAM_OUT=$(python3 - "$HERE" "$PORT" 17933 <<'PYEOF' 2>&1
+import sys, time, json
+sys.path.insert(0, sys.argv[1])
+import agent_client as ac
+PORT, MPORT = int(sys.argv[2]), int(sys.argv[3])
+
+def rep(name, ok_, detail=""):
+    print(f"{name}|{'PASS' if ok_ else 'FAIL'}|{str(detail)[:300]}")
+
+a = ac.Agent(PORT).connect()
+
+# A1 start ack: ok + media socket name
+try:
+    p = a.stream_start(5, 0.5, 70)["payload"]
+    rep("stream_start", p.get("ok") is True
+        and "pilotdroid_agent_media" in str(p.get("socket")), json.dumps(p))
+except Exception as e:
+    rep("stream_start", False, e)
+
+# A2 frames on ch=1: >=4 frames, type=FRAME, monotonic seq, jpeg payload
+ms = None
+try:
+    ms = ac.media_connect(MPORT); ms.settimeout(15)
+    frames, t0 = [], time.time()
+    while len(frames) < 5 and time.time() - t0 < 15:
+        f = ac.read_frame(ms)
+        if f is None:
+            break
+        frames.append(f)
+    seqs = [f[3] for f in frames]
+    jpg = all(len(f[4].get("data") or b"") > 100 and
+              f[4].get("w") > 0 and f[4].get("h") > 0 for f in frames)
+    rep("stream_frames",
+        len(frames) >= 4 and all(f[0] == 1 and f[1] == 1 for f in frames)
+        and seqs == sorted(seqs) and jpg,
+        f"n={len(frames)} seqs={seqs} wall={round(time.time()-t0,1)}s")
+except Exception as e:
+    rep("stream_frames", False, e)
+
+# A3 busy: start on a second control session -> ERR_STREAM_BUSY
+try:
+    b = ac.Agent(PORT).connect()
+    rb = b.stream_start()
+    rep("stream_busy", "ERR_STREAM_BUSY" in rb["raw_payload"].decode("utf8", "replace"),
+        json.dumps(rb["payload"]))
+    b.close()
+except Exception as e:
+    rep("stream_busy", False, e)
+
+# A4 stop: ok + counters; then media conn EOF (socket closed)
+try:
+    p = a.stream_stop()["payload"]
+    rep("stream_stop", p.get("ok") is True and p.get("frames_sent", 0) >= 1,
+        json.dumps(p))
+except Exception as e:
+    rep("stream_stop", False, e)
+try:
+    if ms is None:
+        raise Exception("no media conn")
+    ms.settimeout(5)
+    rep("stream_eof", ac.read_frame(ms) is None, "eof expected")
+    ms.close()
+except Exception as e:
+    rep("stream_eof", False, e)
+
+# A5 fps throttle: fps=2 for ~4s -> effective fps in [1..5]
+try:
+    a.stream_start(2, 0.5, 70)
+    ms2 = ac.media_connect(MPORT); ms2.settimeout(10)
+    n, t0 = 0, time.time()
+    while time.time() - t0 < 4:
+        if ac.read_frame(ms2) is None:
+            break
+        n += 1
+    wall = time.time() - t0
+    a.stream_stop()
+    ms2.close()
+    fps = n / wall if wall else 0
+    rep("stream_fps", 1 <= fps <= 5 and n >= 3,
+        f"n={n} wall={round(wall,1)}s fps={round(fps,1)}")
+except Exception as e:
+    rep("stream_fps", False, e)
+
+a.close()
+PYEOF
+)
+while IFS='|' read -r _name _st _det; do
+  [ -z "$_name" ] && continue
+  [ "$_st" = "PASS" ] && ok "$_name" || bad "$_name" "$_det"
+done <<< "$STREAM_OUT"
+
 echo "== A7 AGENT_STOP: CLI stop exit==0 and process gone =="
 ROOT="$(cd "$HERE/../.." && pwd)"; RCLI="$ROOT/target/debug/pilotdroid-cli"
 if [ -x "$RCLI" ]; then

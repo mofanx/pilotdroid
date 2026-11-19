@@ -41,7 +41,8 @@ import java.util.Set;
  */
 public final class Agent {
     private static final String SOCKET_NAME = "pilotdroid_agent";
-    private static final String AGENT_VER = "0.2.0";
+    private static final String MEDIA_SOCKET = "pilotdroid_agent_media";
+    private static final String AGENT_VER = "0.3.0";
     private static final int PROTO_VER = 0;
 
     // capability bitmap — normative spec is pilotdroid-proto `caps` (bit-for-bit)
@@ -53,8 +54,11 @@ public final class Agent {
             T_PING = 0x0003, T_PONG = 0x0004, T_INJECT = 0x0010,
             T_INJECT_RESULT = 0x0011, T_DUMP = 0x0020, T_QUERY = 0x0021,
             T_SHOT = 0x0030, T_BATCH = 0x0040, T_BATCH_RESULT = 0x0041,
+            T_STREAM = 0x0050, T_FRAME = 0x0001,
             T_TEXT = 0x0060, T_STOP = 0x00F0;
-    private static final int F_RESP = 0x0001, F_ERR = 0x0004, F_NOACK = 0x0008;
+    private static final int CH_MEDIA = 1;
+    private static final int F_RESP = 0x0001, F_MORE = 0x0002,
+            F_ERR = 0x0004, F_NOACK = 0x0008;
 
     private Agent() {}
 
@@ -68,29 +72,83 @@ public final class Agent {
         Injector injector = new Injector(uia);
 
         LocalServerSocket srv = new LocalServerSocket(SOCKET_NAME);
+        // media channel (§4.8): second localabstract, isolated from control
+        try {
+            final LocalServerSocket msrv = new LocalServerSocket(MEDIA_SOCKET);
+            new Thread(() -> {
+                for (;;) {
+                    try {
+                        Streamer.attach(msrv.accept());
+                    } catch (Throwable t) {
+                        return;
+                    }
+                }
+            }, "pd-media-accept").start();
+        } catch (Throwable t) {
+            System.out.println("media socket unavailable: " + t);
+        }
         System.out.println("pilotdroid-agent " + AGENT_VER + " listening localabstract:"
                 + SOCKET_NAME);
-        for (;;) {
-            LocalSocket c = srv.accept();
-            try {
-                new Session(c, uia, injector, dumper).run();
-            } catch (Throwable t) {
-                System.out.println("session ended: " + t);
-            } finally {
-                try { c.close(); } catch (Throwable ignore) {}
+        // takeScreenshot only works on the thread that owns the UiAutomation
+        // connection (main). Sessions + accept run on workers; main loops to
+        // marshal capture calls (shotSync).
+        mainHandler = new android.os.Handler(Looper.getMainLooper());
+        new Thread(() -> {
+            for (;;) {
+                try {
+                    final LocalSocket c = srv.accept();
+                    new Thread(() -> {
+                        try {
+                            new Session(c, uia, injector, dumper).run();
+                        } catch (Throwable t) {
+                            System.out.println("session ended: " + t);
+                        } finally {
+                            try { c.close(); } catch (Throwable ignore) {}
+                        }
+                    }, "pd-session").start();
+                } catch (Throwable t) {
+                    return;
+                }
             }
-        }
+        }, "pd-accept").start();
+        Looper.loop();
+    }
+
+    private static android.os.Handler mainHandler;
+
+    /** takeScreenshot bound to the connection thread (main); marshal when
+     *  called from a worker (session op thread or stream producer). */
+    private static Bitmap shotSync(final UiAutomation uia) {
+        if (Looper.myLooper() == Looper.getMainLooper())
+            return uia.takeScreenshot();
+        final Bitmap[] out = new Bitmap[1];
+        final java.util.concurrent.CountDownLatch done =
+                new java.util.concurrent.CountDownLatch(1);
+        mainHandler.post(() -> {
+            try { out[0] = uia.takeScreenshot(); }
+            catch (Throwable t) { System.out.println("cap on main threw: " + t); }
+            done.countDown();
+        });
+        boolean ok;
+        try { ok = done.await(3, java.util.concurrent.TimeUnit.SECONDS); }
+        catch (InterruptedException e) { return null; }
+        if (!ok) System.out.println("cap: main marshal timeout");
+        return out[0];
     }
 
     // ---------- infra -------------------------------------------------------
 
     private static UiAutomation connectUiAutomation() throws Exception {
+        return connectUiAutomation(Looper.getMainLooper());
+    }
+
+    private static UiAutomation connectUiAutomation(Looper l) throws Exception {
         Class<?> connCls = Class.forName("android.app.UiAutomationConnection");
         Object conn = connCls.getDeclaredConstructor().newInstance();
         Constructor<UiAutomation> ctor = UiAutomation.class.getDeclaredConstructor(
                 Looper.class, Class.forName("android.app.IUiAutomationConnection"));
         ctor.setAccessible(true);
-        UiAutomation u = ctor.newInstance(Looper.getMainLooper(), conn);
+        UiAutomation u = ctor.newInstance(l, conn);
         Method connect = UiAutomation.class.getDeclaredMethod("connect", int.class);
         connect.setAccessible(true);
         connect.invoke(u, 1); // FLAG_DONT_SUPPRESS_ACCESSIBILITY_SERVICES
@@ -122,8 +180,9 @@ public final class Agent {
         }
 
         void run() throws Exception {
-            byte[] magic = new byte[4];
-            while (!stop) {
+            try {
+                byte[] magic = new byte[4];
+                while (!stop) {
                 in.readFully(magic);
                 if (magic[0] != 'P' || magic[1] != 'D' || magic[2] != '0' || magic[3] != '1') {
                     return; // not our protocol — drop
@@ -140,6 +199,10 @@ public final class Agent {
                 in.readFully(payload);
                 Object req = Msgpack.read(payload);
                 respond(type, flags, reqId, req);
+                }
+            } finally {
+                // §4.8 session binding: control disconnect = implicit stop
+                Streamer.ctrlClosed(this);
             }
         }
 
@@ -167,6 +230,7 @@ public final class Agent {
                     case T_SHOT:    rtype = T_SHOT;           payload = shot(req);        break;
                     case T_TEXT:    rtype = T_TEXT;           payload = text(req);        break;
                     case T_BATCH:   rtype = T_BATCH_RESULT;   payload = batch(req);       break;
+                    case T_STREAM:  rtype = T_STREAM;         payload = streamCtrl(req);  break;
                     case T_STOP:    rtype = T_STOP;
                         payload = map("bye", true); stop = true;                          break;
                     default:
@@ -331,7 +395,7 @@ public final class Agent {
             float scale = (float) num(r.get("scale"), 1.0);
             if (scale <= 0f || scale > 1f) scale = 1f;
             long s0 = System.nanoTime();
-            Bitmap bmp = uia.takeScreenshot();
+            Bitmap bmp = shotSync(uia);
             if (bmp == null) throw new IllegalStateException("takeScreenshot null");
             Bitmap outBmp = bmp;
             if (scale < 1f) {
@@ -354,6 +418,19 @@ public final class Agent {
             outBmp.recycle();
             if (outBmp != bmp) bmp.recycle();
             return m;
+        }
+
+        private Map<String, Object> streamCtrl(Object req) throws Exception {
+            Map<?, ?> r = req instanceof Map ? (Map<?, ?>) req : new LinkedHashMap<>();
+            String op = str(r.get("op"), "start");
+            if ("stop".equals(op)) return Streamer.stop(this);
+            String fmt = str(r.get("format"), "jpeg");
+            if (!"jpeg".equals(fmt))
+                throw new OpError("ERR_STREAM_FMT", "format " + fmt + " not in v0 (jpeg only)");
+            return Streamer.start(this, uia,
+                    (int) num(r.get("fps"), 5),
+                    (float) num(r.get("scale"), 0.5),
+                    (int) num(r.get("quality"), 70));
         }
 
         // ---------- BATCH (docs/02 §4) -------------------------------------
@@ -498,6 +575,206 @@ public final class Agent {
 
         public String toString() {
             return "{text=" + text + ",id=" + id + ",desc=" + desc + ",index=" + index + "}";
+        }
+    }
+
+    // ---------- media channel frame stream (§4.8) ----------------------------
+
+    /** JPEG frame pusher on the second localabstract socket. Producer
+     *  captures+encodes into a capacity-1 queue; a writer thread drains it
+     *  to the media conn — a slow reader can never stall capture or the
+     *  control channel (backpressure = drop). */
+    private static final class Streamer {
+        private static LocalSocket pendSock;
+        private static DataOutputStream pendOut;
+        private static volatile Session owner;
+        private static volatile boolean running;
+        private static Thread producer, writer;
+        private static java.util.concurrent.ArrayBlockingQueue<byte[]> queue;
+        private static int frames, dropped, seq;
+        private static LocalSocket curSock;
+        private static DataOutputStream curOut;
+        private static int sFps, sQuality;
+        private static float sScale;
+        private static boolean nullWarned;
+
+        /** New media connection: becomes pending (pre-start) or is
+         *  rejected — at most one media conn at a time. */
+        static synchronized void attach(LocalSocket s) throws Exception {
+            if (running && curSock == null) {          // stream waiting for a reader
+                curSock = s;
+                curOut = new DataOutputStream(s.getOutputStream());
+                return;
+            }
+            if (pendSock != null) {
+                try { pendSock.close(); } catch (Throwable ignore) {}
+            }
+            if (running) {                             // already serving one conn
+                try { s.close(); } catch (Throwable ignore) {}
+                return;
+            }
+            pendSock = s;
+            pendOut = new DataOutputStream(s.getOutputStream());
+        }
+
+        static synchronized Map<String, Object> start(
+                Session o, UiAutomation uia, int fps, float scale, int quality)
+                throws Exception {
+            if (running) throw new OpError("ERR_STREAM_BUSY", "stream already running");
+            owner = o; running = true; frames = 0; dropped = 0; seq = 0;
+            nullWarned = false;
+            sFps = Math.max(1, Math.min(30, fps));
+            sScale = scale; sQuality = quality;
+            queue = new java.util.concurrent.ArrayBlockingQueue<>(1);
+            // §4.8 order is start-ack -> media connect; a pre-start pending
+            // conn may already be dead (can't be probed without IO) — drop
+            // it rather than promote a corpse that kills the new stream.
+            if (pendSock != null) {
+                try { pendSock.close(); } catch (Throwable ignore) {}
+                pendSock = null; pendOut = null;
+            }
+            producer = new Thread(() -> produce(uia), "pd-stream-prod");
+            writer = new Thread(Streamer::writeLoop, "pd-stream-wr");
+            producer.start(); writer.start();
+            Map<String, Object> m = new LinkedHashMap<>();
+            m.put("ok", true);
+            m.put("socket", MEDIA_SOCKET);
+            m.put("effective_fps_hint", sFps);
+            return m;
+        }
+
+        static synchronized Map<String, Object> stop(Session caller)
+                throws Exception {
+            if (running && caller != null && owner != null && caller != owner)
+                throw new OpError("ERR_STREAM_BUSY", "stream owned by another session");
+            halt();
+            Map<String, Object> m = new LinkedHashMap<>();
+            m.put("ok", true);
+            m.put("frames_sent", frames);
+            m.put("dropped", dropped);
+            return m;
+        }
+
+        /** control session ended -> implicit stop (session binding). */
+        static synchronized void ctrlClosed(Session s) {
+            if (running && s == owner) {
+                try { halt(); } catch (Throwable ignore) {}
+            }
+        }
+
+        /** media conn write failed -> client gone -> stop per §4.8. */
+        static synchronized void mediaDead() {
+            if (running) {
+                try { halt(); } catch (Throwable ignore) {}
+            }
+        }
+
+        private static void halt() {
+            running = false;
+            if (producer != null) producer.interrupt();
+            // closing the socket also unblocks a writer stuck in write()
+            try { if (curSock != null) curSock.close(); } catch (Throwable ignore) {}
+            curSock = null; curOut = null;
+            joinQuiet(producer); joinQuiet(writer);
+            producer = writer = null; owner = null;
+        }
+
+        private static void joinQuiet(Thread t) {
+            if (t == null) return;
+            try { t.join(2000); } catch (Throwable ignore) {}
+        }
+
+
+
+        private static void produce(UiAutomation uia) {
+            long intervalNs = 1_000_000_000L / sFps;
+            ByteArrayOutputStream bos = new ByteArrayOutputStream(1 << 16);
+            while (running) {
+                long t0 = System.nanoTime();
+                byte[] f;
+                try {
+                    Bitmap bmp = shotSync(uia);
+                    if (bmp == null) {
+                        if (seq == 0 && !nullWarned) {
+                            nullWarned = true;
+                            System.out.println("cap: null bitmap");
+                        }
+                        try { Thread.sleep(50); } catch (InterruptedException e) { return; }
+                        continue;
+                    }
+                    long t1 = System.nanoTime();
+                    Bitmap outBmp = bmp;
+                    if (sScale < 1f) {
+                        outBmp = Bitmap.createScaledBitmap(bmp,
+                                Math.max(1, Math.round(bmp.getWidth() * sScale)),
+                                Math.max(1, Math.round(bmp.getHeight() * sScale)), true);
+                    }
+                    long t2 = System.nanoTime();
+                    bos.reset();
+                    outBmp.compress(Bitmap.CompressFormat.JPEG, sQuality, bos);
+                    long t3 = System.nanoTime();
+                    Map<String, Object> p = new LinkedHashMap<>();
+                    p.put("format", "jpeg");
+                    p.put("w", outBmp.getWidth());
+                    p.put("h", outBmp.getHeight());
+                    p.put("ts_ns", t0);
+                    p.put("take_ns", t2 - t0);   // capture+scale
+                    p.put("enc_ns", t3 - t2);    // jpeg encode
+                    p.put("dropped", dropped);
+                    p.put("data", bos.toByteArray());
+                    f = frame(++seq, p);
+                    outBmp.recycle();
+                    if (outBmp != bmp) bmp.recycle();
+                } catch (Throwable t) {
+                    System.out.println("produce err: " + t);
+                    continue;
+                }
+                if (!queue.offer(f)) dropped++;          // backpressure: drop
+                long rest = intervalNs - (System.nanoTime() - t0);
+                if (rest > 1_000_000L) {
+                    try { Thread.sleep(rest / 1_000_000L); }
+                    catch (InterruptedException e) { return; }
+                }
+            }
+        }
+
+        private static void writeLoop() {
+            while (running || (queue != null && !queue.isEmpty())) {
+                byte[] f;
+                try { f = queue.take(); }
+                catch (InterruptedException e) { return; }
+                DataOutputStream o;
+                synchronized (Streamer.class) { o = curOut; }
+                if (o == null) {
+                    synchronized (Streamer.class) { dropped++; }
+                    continue;
+                }
+                try {
+                    o.write(f);
+                    o.flush();
+                    synchronized (Streamer.class) { frames++; }
+                } catch (Throwable t) {
+                    mediaDead();
+                    return;
+                }
+            }
+        }
+
+        /** ch=1 FRAME frame: flags STREAM_MORE, req_id = seq (§4.8). */
+        private static byte[] frame(long s, Map<String, Object> p) throws Exception {
+            byte[] body = Msgpack.write(p);
+            ByteArrayOutputStream b = new ByteArrayOutputStream(18 + body.length);
+            DataOutputStream w = new DataOutputStream(b);
+            w.write("PD01".getBytes("US-ASCII"));
+            w.writeByte(PROTO_VER);
+            w.writeByte(CH_MEDIA);
+            w.writeShort(T_FRAME);
+            w.writeShort(F_MORE);
+            w.writeInt((int) s);
+            w.writeInt(body.length);
+            w.write(body);
+            w.flush();
+            return b.toByteArray();
         }
     }
 

@@ -20,6 +20,7 @@ F_RESP, F_MORE, F_ERR, F_NOACK = 0x0001, 0x0002, 0x0004, 0x0008
 T = dict(HELLO=0x0001, HELLO_ACK=0x0002, PING=0x0003, PONG=0x0004,
          INJECT=0x0010, INJECT_RESULT=0x0011, DUMP=0x0020, QUERY=0x0021,
          SCREENSHOT=0x0030, BATCH=0x0040, BATCH_RESULT=0x0041,
+         STREAM_CTRL=0x0050, FRAME=0x0001,
          TEXT=0x0060, AGENT_STOP=0x00F0)
 
 
@@ -144,8 +145,45 @@ class Agent:
                          {"format": "jpeg", "quality": quality,
                           "scale": float(scale)})
 
+    def stream_start(self, fps=5, scale=0.5, quality=70, fmt="jpeg"):
+        return self.call(T["STREAM_CTRL"],
+                         {"op": "start", "fps": int(fps),
+                          "scale": float(scale), "quality": int(quality),
+                          "format": fmt})
+
+    def stream_stop(self):
+        return self.call(T["STREAM_CTRL"], {"op": "stop"})
+
     def stop(self):
         return self.call(T["AGENT_STOP"], {})
+
+
+def media_connect(port):
+    """Open the ch=1 media socket (second adb forward)."""
+    s = socket.create_connection(("127.0.0.1", port), timeout=10)
+    s.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+    return s
+
+
+def read_frame(sock):
+    """Read one PD01 frame; returns (ch, type, flags, seq, payload) or None on EOF."""
+    def recvn(n):
+        buf = b""
+        while len(buf) < n:
+            d = sock.recv(n - len(buf))
+            if not d:
+                return None
+            buf += d
+        return buf
+    rh = recvn(18)
+    if rh is None:
+        return None
+    assert rh[:4] == MAGIC, f"bad magic {rh[:4]!r}"
+    _ver, ch, rtype, flags, rid = struct.unpack(">BBHHI", rh[4:14])
+    plen = struct.unpack(">I", rh[14:18])[0]
+    data = recvn(plen) if plen else b""
+    return (ch, rtype, flags, rid,
+            msgpack.unpackb(data, raw=False) if data else {})
 
 
 def _timed(fn, n=1):
@@ -256,6 +294,36 @@ def main():
             p = r["payload"]
             p["data"] = f"<{len(p['data'])}B>"
             print(json.dumps(p, default=str))
+        elif cmd == "stream-start":  # stream-start [fps] [scale] [quality]
+            print(json.dumps(a.stream_start(
+                fps=args[1] if len(args) > 1 else 5,
+                scale=args[2] if len(args) > 2 else 0.5,
+                quality=args[3] if len(args) > 3 else 70), default=str))
+        elif cmd == "stream-stop":
+            print(json.dumps(a.stream_stop(), default=str))
+        elif cmd == "stream-recv":  # stream-recv MEDIA_PORT [n] [timeout_s]
+            import agent_client as _self  # noqa: F401
+            ms = media_connect(int(args[1]))
+            want = int(args[2]) if len(args) > 2 else 5
+            ms.settimeout(float(args[3]) if len(args) > 3 else 10)
+            t0 = time.time(); frames = []
+            while len(frames) < want:
+                try:
+                    f = read_frame(ms)
+                except socket.timeout:
+                    break
+                if f is None:
+                    frames.append({"eof": True}); break
+                ch, ty, fl, seq, p = f
+                p2 = dict(p)
+                if isinstance(p2.get("data"), (bytes, bytearray)):
+                    p2["jpeg"] = p2["data"][:2] == b"\xff\xd8"
+                    p2["bytes"] = len(p2["data"]); del p2["data"]
+                p2["seq"], p2["ch"], p2["type"], p2["flags"] = seq, ch, ty, fl
+                frames.append(p2)
+            ms.close()
+            print(json.dumps({"n": len(frames), "wall_s": round(time.time() - t0, 2),
+                              "frames": frames}, default=str))
         elif cmd == "stop":
             print(json.dumps(a.stop(), default=str))
         elif cmd == "bench":
