@@ -45,7 +45,7 @@ INJ=$($CLI inject-tap 700 1600 2>&1) || true
 sleep 0.5
 # MIUI logs `MIUIInput: Input event injection from package: null action ...`
 # for every injected event; on other ROMs grep generic injection markers.
-LC=$(adb -s "$DEV" shell 'logcat -d -t 400' | grep -cE "njection from package|injectInputEvent|Input event injection" || true)
+LC=$(adb -s "$DEV" shell 'logcat -d -b all -t 400' | grep -cE "njection from package|injectInputEvent|Input event injection" || true)
 echo "$INJ" | grep -q '"ok": *true\|"ok":true' && [ "$LC" -ge 1 ] \
   && ok "inject_tap_observable" || bad "inject_tap_observable" "resp=$INJ logcat_inject_lines=$LC"
 
@@ -87,6 +87,14 @@ assert p.get("found") is True, p
 n=p["node"]; assert "bounds" in n and len(n["bounds"])==4, n
 print("OK node bounds",n["bounds"])' >/dev/null 2>&1 \
   && ok "query_found" || bad "query_found" "$Q"
+
+echo "== M2-A8b QUERY attrs pruning: only requested fields returned =="
+Q=$($CLI batch '[{"query":{"selector":{"id":"android:id/input"},"attrs":["text","bounds"]}}]' 2>&1) || true
+echo "$Q" | python3 -c 'import json,sys
+p=json.load(sys.stdin)["payload"]; n=p["results"][0]["data"]["node"]
+assert set(n.keys())=={"text","bounds"}, f"node keys={sorted(n.keys())} expected [text,bounds]"
+print("OK pruned",n)' >/dev/null 2>&1 \
+  && ok "query_attrs" || bad "query_attrs" "$Q"
 
 echo "== M2-A9 wait_until hit (inside BATCH) =="
 W=$($CLI wait '{"id":"android:id/input"}' 3000 2>&1) || true
