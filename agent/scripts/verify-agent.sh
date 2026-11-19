@@ -79,6 +79,35 @@ $CLI ping 2>/dev/null | grep -qE "\"type\": *4" && ok "ping_pong" \
 echo "== latency bench =="
 $CLI bench 30 > "$OUT/verify-$DEV.json" 2>/dev/null && cat "$OUT/verify-$DEV.json" || true
 
+echo "== M3-A1 KEY op: back keycode=4 via injectInputEvent =="
+adb -s "$DEV" shell 'logcat -c' 2>/dev/null
+KEY=$($CLI inject-key 4 2>&1) || true
+sleep 0.5
+KLC=$(adb -s "$DEV" shell 'logcat -d -b all -t 400' | grep -cE "njection from package|injectInputEvent|Input event injection" || true)
+echo "$KEY" | grep -q '"ok": *true\|"ok":true' && echo "$KEY" | grep -q '"events": *2\|"events":2' \
+  && ok "key_back" || bad "key_back" "resp=$KEY logcat=$KLC"
+
+echo "== M3-A2 INJECT points sequence (kind=Swipe, 11 events) =="
+PTS=$($CLI swipe-pts 700 2000 700 1400 300 10 2>&1) || true
+echo "$PTS" | grep -q '"ok": *true\|"ok":true' && echo "$PTS" | grep -q '"events": *11\|"events":11' \
+  && ok "swipe_points" || bad "swipe_points" "resp=$PTS"
+
+echo "== M3-A3 SHOT quality affects bytes (30 < 80) =="
+S30=$($CLI shot-stat 1.0 30 2>&1) || true
+S80=$($CLI shot-stat 1.0 80 2>&1) || true
+B30=$(echo "$S30" | sed -n 's/.*<\([0-9]*\)B>.*/\1/p')
+B80=$(echo "$S80" | sed -n 's/.*<\([0-9]*\)B>.*/\1/p')
+[ -n "$B30" ] && [ -n "$B80" ] && [ "$B30" -lt "$B80" ] \
+  && ok "shot_quality" || bad "shot_quality" "q30=${B30:-?}B q80=${B80:-?}B"
+
+echo "== M3-A4 backend force: uia forced, bogus rejected =="
+BU=$($CLI inject-tap 700 1600 uia 2>&1) || true
+echo "$BU" | grep -q '"ok": *true\|"ok":true' && echo "$BU" | grep -q '"backend": *"uia"\|"backend":"uia"' \
+  && ok "backend_uia" || bad "backend_uia" "resp=$BU"
+BB=$($CLI inject-tap 700 1600 bogus 2>&1) || true
+echo "$BB" | grep -q "ERR_BACKEND" \
+  && ok "backend_bogus_err" || bad "backend_bogus_err" "resp=$BB"
+
 echo "== M2: setup deterministic editable field (Settings search) =="
 adb -s "$DEV" shell 'am start -n com.android.settings/.MainSettings' >/dev/null 2>&1
 sleep 1.2
