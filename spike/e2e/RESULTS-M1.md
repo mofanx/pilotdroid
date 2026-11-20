@@ -5,7 +5,7 @@
 - 链路: `pilotdroid-cli agent install → start → tap/dump/shot`（Rust CLI 全链路，每次调用独立 spawn → adb connect → forward → TCP → HELLO → op）
 - 采样: 每 opcode n=30，`rtt_ms` 为 client 内围绕 op 的计时；`device_ms` 为 agent 上报的 on-device 执行时间
 
-## 实测结果（spike/e2e/e2e-m1.json）
+## 实测结果（spike/e2e/m1.json）
 
 | op | 我方 e2e p50 | 设备内 p50 | u2 基线 p50 | 加速比 |
 |---|---|---|---|---|
@@ -54,6 +54,6 @@ cargo build --workspace
 agent/scripts/deploy-agent.sh ba0d072d            # 或 CLI agent install + start
 ./target/debug/pilotdroid-cli -s ba0d072d agent install agent/agent.jar
 ./target/debug/pilotdroid-cli -s ba0d072d agent start
-./spike/e2e/bench-e2e.sh ba0d072d 30               # -> spike/e2e/e2e-m1.json
+./spike/e2e/bench-e2e.sh ba0d072d 30               # -> spike/e2e/m1.json
 agent/scripts/verify-agent.sh ba0d072d 17932       # Java 侧 6/6 断言
 ```

@@ -27,7 +27,7 @@ PASS adb_on_path / device_ready / agent_jar / forward_dial(tcp:38433) / hello(ve
 | C app 生命周期+输入（app_stop/app_start/set_text/long_click/swipe/press×2） | 8 | 8 | 0 | 0 |
 | **合计** | **24** | **23** | **1** | **0** |
 
-机器可读：`e2e-m6-compat.json`。**结论：非 xpath 全支持，xpath 明确拒绝**（u2 xpath 本为可选插件）。
+机器可读：`m6-compat.json`。**结论：非 xpath 全支持，xpath 明确拒绝**（u2 xpath 本为可选插件）。
 
 ## 4. 多 serve 并发语义（`serve_multi.py`，6/6 PASS）
 

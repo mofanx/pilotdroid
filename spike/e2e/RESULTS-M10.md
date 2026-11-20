@@ -27,10 +27,10 @@ n=7/arm，全部 7/7 fired。
 
 | arm | 指标 | p50 ms | 数据文件 |
 |---|---|---|---|
-| device WATCH（元素已在场）| detect+act floor | **39** | e2e-m10-watch-device-watch-hot.json |
-| device WATCH（延迟弹窗）| trigger→acted（含 am 渲染 ~430ms）| 664 | e2e-m10-watch-device-watch.json |
-| shim host-poll @500ms | trigger→found | 812 | e2e-m10-watch-shim-poll.json |
-| 真 u2 watcher | appear→gone | **1788** | e2e-m10-watch-u2.json |
+| device WATCH（元素已在场）| detect+act floor | **39** | m10-watch-device-watch-hot.json |
+| device WATCH（延迟弹窗）| trigger→acted（含 am 渲染 ~430ms）| 664 | m10-watch-device-watch.json |
+| shim host-poll @500ms | trigger→found | 812 | m10-watch-shim-poll.json |
+| 真 u2 watcher | appear→gone | **1788** | m10-watch-u2.json |
 
 **引用口径**：同场景弹窗 appear→dismiss，u2 watcher ~1.79s（其 server
 轮询间隔主导）vs device WATCH 元素在场 detect+act **39ms**——架构性差异

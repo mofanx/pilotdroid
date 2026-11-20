@@ -50,7 +50,7 @@
 - TEXT（ASCII 注入 + broadcast 剪贴板 Unicode 兜底）。
 - **不做**独立规则引擎 DSL——wait_until + 条件参数化够用即停（需求实证后再评估）。
 
-**验收线**（实测见 `spike/e2e/RESULTS-M2.md` + `e2e-m2.json`，feature/m2-e2e）
+**验收线**（实测见 `spike/e2e/RESULTS-M2.md` + `m2.json`，feature/m2-e2e）
 - [x] 混合序列**往返数 = 1**：实测 tap→wait_until→tap 单帧 BATCH e2e p50=**58.5ms** vs u2 等价 **612.9ms**（**10.5×**）。
 - [x] 批量内相邻注入摊销 **≤ 5ms/次**：NOACK tap 单连接 n=100 p50=**0.0ms**（fire-and-forget）；带 ack tap p50=54.2ms 仍为传输抖动主导。
 - [x] wait_until 命中零主机往返：设备内 p50=**7ms**（poll 周期内），e2e 50ms 含传输。
@@ -112,7 +112,7 @@
 **范围**
 - shim 支持集推进至"几乎全部非 xpath"、Unicode 输入实证、真实 u2 脚本对拍矩阵、Python 包分发、TCP 传输矩阵。
 
-**M6 已交付（feature/m6-agent，实测 `spike/e2e/e2e-m6-compat.json`）**
+**M6 已交付（feature/m6-agent，实测 `spike/e2e/m6-compat.json`）**
 - [x] **packageName selector 全链路**：wire `pkg` 字段（§4.3）+ agent `getPackageName` 精确匹配 + shim `packageName=` 映射 + serve schema——非 xpath ValueError 类清零。
 - [x] **Unicode 文本实证**：`ACTION_SET_TEXT`（UTF-16 Bundle）原生支持中文，`text_unicode` 断言双机 PASS——区别于 u2 需 ADBKeyboard IME。
 - [x] **真实 u2 脚本对拍矩阵**：3 组官方风格场景（README quickstart / selector+scroll / app 生命周期+输入）零改动跑 shim：**24 op 中 23 ok / 1 unsupported（xpath plugin）/ 0 error**。

@@ -1,0 +1,64 @@
+{
+  "device": "ba0d072d",
+  "agent": "pilotdroid 0.1.0 (feature/m1-e2e merged)",
+  "click": {
+    "rtt": {
+      "n": 30,
+      "mean_ms": 38.25,
+      "p50_ms": 48.5,
+      "p95_ms": 50.9,
+      "min_ms": 8.2,
+      "max_ms": 50.9
+    },
+    "device_ms": {
+      "n": 30,
+      "mean_ms": 5.11,
+      "p50_ms": 4.89,
+      "p95_ms": 7.63,
+      "min_ms": 3.76,
+      "max_ms": 8.55
+    },
+    "ok_events": true
+  },
+  "dump": {
+    "rtt": {
+      "n": 30,
+      "mean_ms": 101.6,
+      "p50_ms": 104.0,
+      "p95_ms": 110.0,
+      "min_ms": 67.0,
+      "max_ms": 116.0
+    },
+    "nodes": 25,
+    "valid_xml": true
+  },
+  "shot": {
+    "rtt": {
+      "n": 30,
+      "mean_ms": 171.88,
+      "p50_ms": 171.3,
+      "p95_ms": 198.5,
+      "min_ms": 126.7,
+      "max_ms": 200.4
+    },
+    "jpeg_magic": true,
+    "bytes": 420679
+  },
+  "vs_u2": {
+    "click": {
+      "u2_p50": 249.0,
+      "ours_p50": 48.5,
+      "speedup": 5.1
+    },
+    "dump": {
+      "u2_p50": 330.16,
+      "ours_p50": 104.0,
+      "speedup": 3.2
+    },
+    "shot": {
+      "u2_p50": 176.52,
+      "ours_p50": 171.3,
+      "speedup": 1.0
+    }
+  }
+}

@@ -68,5 +68,15 @@ uiautomator2 `Device` 公共 API 的逐条标注。约定：**drop-in 只承诺�
 
 ## 实测数据
 
-- `spike/e2e/e2e-m6-compat.json`：24-op 对拍 **23 ok / 1 unsupported（xpath）/ 0 error**。
+- `spike/e2e/m6-compat.json`：24-op 对拍 **23 ok / 1 unsupported（xpath）/ 0 error**。
 - `spike/e2e/RESULTS-M7.md`：同脚本端到端双跑 wall-clock（shim vs 真 u2）。
+
+## Selector 环境敏感性（Themis 14 脚本对拍实证，M13/M14）
+
+`text`/`description` 选择器跟随**系统 locale**——zh-CN 设备上应用自身
+字符串即本地化（"More options"→"更多选项"、"OK"→"确定"、"SHUFFLE
+ALL"→"随机播放所有曲目"，均 dump 直证）。en 脚本在 zh 设备 miss 属
+预期行为，真 u2 同设备同 miss，非 shim 差异。
+
+`resourceId` 选择器**不**随 locale 变化——rid miss 的根因是流程态
+（首启 onboarding/许可证页挡住目标界面）或应用版本漂移，与语言无关。

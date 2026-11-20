@@ -1,0 +1,39 @@
+{
+  "engine": "u2",
+  "serial": "11.0.0.2:5555",
+  "n": 5,
+  "iter_total_ms": [
+    43039.4,
+    43874.1,
+    45290.9,
+    45168.1,
+    43121.7
+  ],
+  "total_ms_p50": 43874.1,
+  "per_op_ms_p50": {
+    "d.info": 174.7,
+    "d.app_current": 10888.8,
+    "d.click(x,y)": 299.0,
+    "d(text).exists": 0.1,
+    "d(class,index).click": 688.9,
+    "d.screenshot": 357.9,
+    "d.dump_hierarchy": 234.6,
+    "d.press(back)": 173.5,
+    "d(className).exists": 0.1,
+    "d(scrollable).scroll.forward": 1400.5,
+    "d(scrollable).scroll.toBeginning": 1107.7,
+    "d(packageName).exists": 0.1,
+    "d(resourceId).info": 325.8,
+    "d(description).exists": 0.1,
+    "d.app_stop": 183.3,
+    "d.app_start": 438.4,
+    "d.set_text(EditText)": 20217.8,
+    "d.long_click(x,y)": 853.2,
+    "d.swipe": 1200.0,
+    "d.press(home)": 1182.3,
+    "d.press(recent)": 374.8
+  },
+  "errors": {
+    "d.set_text(EditText)": "UiObjectNotFoundError: {'code': -32002, 'data': \"Selector [className='android.widget.EditText']\", 'm"
+  }
+}
