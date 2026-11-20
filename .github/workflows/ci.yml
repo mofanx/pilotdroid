@@ -60,6 +60,45 @@ jobs:
             exit 1
           fi
 
+  agent-jar-repro:
+    # Byte-level provenance: rebuild agent.jar from source and compare with
+    # the committed artifact (upgrades jar-sync from commit-ordering to
+    # byte-identity). Repro requires the SAME inputs as the local build:
+    # android-34 platform jar + build-tools d8 (pinned 37.0.0) + javac
+    # --release 8 + d8 --min-api 30. d8 output is deterministic (zip
+    # entries carry epoch timestamps).
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: android-actions/setup-android@v3
+      - name: install android-34 platform + build-tools 37.0.0
+        run: |
+          yes | sdkmanager --licenses >/dev/null
+          sdkmanager "platforms;android-34" "build-tools;37.0.0"
+      - name: rebuild agent.jar
+        run: |
+          SDK="${ANDROID_HOME:-$ANDROID_SDK_ROOT}"
+          mkdir -p /tmp/jarrepro/build
+          javac --release 8 -classpath "$SDK/platforms/android-34/android.jar" \
+            -d /tmp/jarrepro/build agent/java/pilotdroid/Agent.java
+          "$SDK/build-tools/37.0.0/d8" --min-api 30 \
+            --output /tmp/jarrepro/agent.jar /tmp/jarrepro/build/pilotdroid/Agent*.class
+          sha256sum agent/agent.jar /tmp/jarrepro/agent.jar
+      - name: committed jar must be byte-identical
+        run: |
+          if cmp -s agent/agent.jar /tmp/jarrepro/agent.jar; then
+            echo "REPRODUCIBLE: committed jar == rebuilt jar (byte-identical)"
+          else
+            echo "::error::agent.jar diverges from source rebuild — dex provenance unverifiable. See RESULTS-M14 for the divergence analysis."
+            sha256sum agent/agent.jar /tmp/jarrepro/agent.jar
+            unzip -l agent/agent.jar; unzip -l /tmp/jarrepro/agent.jar
+            exit 1
+          fi
+
   python:
     # u2 shim + protocol client: no pytest suite yet — syntax-compile every
     # shipped script, editable-install the package, and smoke the imports /

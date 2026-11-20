@@ -24,7 +24,7 @@
   |---|---|
   | Linux x86_64 | `pilotdroid-cli-linux-x86_64` |
   | macOS arm64 | `pilotdroid-cli-macos-arm64` |
-  | Windows x86_64 | `pilotdroid-cli-windows-x86_64.exe` |
+  | Windows x86_64 | `pilotdroid-cli-windows-x86_64.exe` ⚠️ compile-verified only |
 
   > **macOS 注意**：Release 二进制未签名，浏览器下载后首次运行会被
   > Gatekeeper 拦截——先执行 `xattr -d com.apple.quarantine pilotdroid-cli`
@@ -33,6 +33,8 @@
   > **Windows 注意**：`.exe` 未签名，首次运行会被 SmartScreen 拦截——
   > 点"更多信息 → 仍要运行"；命令行下载的可用 PowerShell
   > `Unblock-File pilotdroid-cli-windows-x86_64.exe` 解除标记。
+  > 该产物为 **compile-verified only**：CI 构建通过但尚未在 Windows
+  > 实机跑过，如遇运行问题请提 issue。
 
 - **Homebrew**（macOS）：
 
@@ -46,11 +48,8 @@
   pilotdroid-cli -s <serial> setup
   ```
 - **源码构建**：`cargo install --locked --path crates/pilotdroid-cli`（Rust 1.74+）。
-- **Python u2 shim**（PyPI 发布中，暂用 git 安装）：
-
-  ```
-  pip install "git+https://github.com/mofanx/pilotdroid#subdirectory=python"
-  ```
+- **Python u2 shim**：`pip install pilotdroid`（v0.6.0 publish 后生效；
+  此前用 git 安装 `pip install "git+https://github.com/mofanx/pilotdroid#subdirectory=python"`）
 
   仓库内可用 `pip install ./python`；随后 `from pilotdroid import u2shim`。
 - agent.jar 亦可单独取用：Release assets 或仓库 `agent/agent.jar`（与 CLI 内嵌字节一致）。
