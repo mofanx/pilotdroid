@@ -2,24 +2,78 @@
  "device": "ba0d072d (Mi 11, A14) + 2602BRT18C (dash, SDK37)",
  "agent_ver": "0.3.1",
  "merge_train": "m5-spec -> m5-agent-shim -> m5-host (1 data-file conflict, resolved)",
- "cargo": {"tests": 68, "fmt": "clean", "clippy": "clean"},
+ "cargo": {
+  "tests": 68,
+  "fmt": "clean",
+  "clippy": "clean"
+ },
  "verify": "30/30 PASS (incl. new agent_ver=0.3.1 pin)",
  "serve": {
   "handshake": "initialize -> serverInfo pilotdroid/0.1.0 proto 2024-11-05",
   "tools": 18,
-  "calls_ok": ["app_current","exists{class}","tap","stream_start/read/stop"],
-  "stream": {"to_dir": "4 jpg files written", "inline_b64": 2, "frames_sent": 6, "dropped": 0},
-  "serialization": "multi-call responses ordered by id, no interleave"
+  "calls_ok": [
+   "app_current",
+   "exists{class}",
+   "tap",
+   "stream_start/read/stop"
+  ],
+  "stream": {
+   "to_dir": "4 jpg files written",
+   "inline_b64": 2,
+   "frames_sent": 6,
+   "dropped": 0
+  },
+  "serialization": "multi-call responses ordered by id, no interleave",
+  "real_mcp_client": {
+   "client": "python mcp SDK 1.26.0 stdio_client+ClientSession",
+   "handshake": "initialize->notifications/initialized->tools/list->tools/call PASS",
+   "protocolVersion": "2025-11-25 (client-proposed, echoed)",
+   "calls": [
+    "app_current real result",
+    "tap ok=15.9ms",
+    "unknown->isError"
+   ],
+   "script": "spike/e2e/mcp_client_check.py"
+  }
  },
  "four_path_p50_ms": {
-  "cli":  {"tap": 139.3, "dump": 102.6, "exists": null, "shot": 270.7},
-  "lib":  {"tap": 54.0,  "dump": 56.0,  "exists": 47.9, "shot": 242.0},
-  "serve":{"tap": 54.2,  "dump": 63.6,  "exists": 49.1, "shot": 234.1},
-  "shim": {"tap": 51.9,  "dump": 54.0,  "exists": 48.0, "shot": 206.3},
+  "cli": {
+   "tap": 139.3,
+   "dump": 102.6,
+   "exists": null,
+   "shot": 270.7
+  },
+  "lib": {
+   "tap": 54.0,
+   "dump": 56.0,
+   "exists": 47.9,
+   "shot": 242.0
+  },
+  "serve": {
+   "tap": 54.2,
+   "dump": 63.6,
+   "exists": 49.1,
+   "shot": 234.1
+  },
+  "shim": {
+   "tap": 51.9,
+   "dump": 54.0,
+   "exists": 48.0,
+   "shot": 206.3
+  },
   "note": "cli fixed cost ~+85ms/call (fwd+connect+HELLO); wait_finish tap semantics"
  },
- "soak_check": {"verdict": "PASS", "fd": 59, "recoveries": "17/17",
-                "max_recovery_ms": 1156, "bench_fails": 0,
-                "rss_slope_kb_per_min": -0.7},
- "matrix_dash": {"sdk": 37, "caps": 127, "checks": "hello/dump/tap ok"}
+ "soak_check": {
+  "verdict": "PASS",
+  "fd": 59,
+  "recoveries": "17/17",
+  "max_recovery_ms": 1156,
+  "bench_fails": 0,
+  "rss_slope_kb_per_min": -0.7
+ },
+ "matrix_dash": {
+  "sdk": 37,
+  "caps": 127,
+  "checks": "hello/dump/tap ok"
+ }
 }

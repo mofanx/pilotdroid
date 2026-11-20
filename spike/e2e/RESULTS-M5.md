@@ -25,6 +25,11 @@ Second device: `11.0.0.2:5555` (2602BRT18C, Android 17/SDK37) — matrix row add
   `stream_stop` → `{frames_sent:6, dropped:0}` — lazy attach order honored ✓
 - MIUI edge documented: `dumpsys window` emits a leading `mCurrentFocus=null`
   line — both parsers skip it; `{}` during activity transitions is correct.
+- **Real MCP client (t6)**: official python `mcp` SDK 1.26.0 stdio_client +
+  ClientSession — full handshake PASS: serverInfo `pilotdroid/0.1.0`,
+  protocolVersion `2025-11-25` (client-proposed, echoed), caps `{tools}`,
+  `tools/list` 18, `call_tool(app_current)` real result, `call_tool(tap)` ok in
+  15.9ms, unknown tool → `isError` content. Script: `mcp_client_check.py`.
 
 ## 3. Four-path bench (same scenario, n=10/op, wait_finish taps)
 
