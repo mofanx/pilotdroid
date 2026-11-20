@@ -80,6 +80,9 @@ jobs:
           python -c "import pilotdroid, pilotdroid.u2shim, pilotdroid.agent_client"
           command -v pilotdroid-agent
 
+      - name: doc-drift (README tool count ↔ serve.rs, shim methods ↔ SUPPORTED.md)
+        run: python3 spike/e2e/doc-drift.py
+
   # The Java agent dex build needs an Android SDK platform jar + d8
   # (agent/README.md); it is intentionally out of scope for this workflow
   # until a dedicated job with SDK setup is added.

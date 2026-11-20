@@ -78,6 +78,12 @@ def main():
     rep("readme_subcommands_exist", not bad,
         f"mentioned={sorted(mentioned)} unknown={sorted(bad)}")
 
+    # 4. doc-drift: README tool count ↔ serve.rs, shim methods ↔ SUPPORTED.md.
+    dd = run([sys.executable, os.path.join(os.path.dirname(
+        os.path.abspath(__file__)), "doc-drift.py")])
+    rep("doc_drift", dd.returncode == 0,
+        (dd.stdout + dd.stderr).strip().splitlines()[-1])
+
     print("DOCS-SMOKE", "PASS" if not fails else "FAIL")
     sys.exit(0 if not fails else 1)
 

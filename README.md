@@ -6,7 +6,7 @@
 > **English**: a device-side Android automation stack — persistent binary
 > protocol + on-device batch execution, built to break uiautomator2's
 > per-call HTTP/JSON-RPC round-trip ceiling. Three surfaces over one device
-> backend: `pilotdroid-cli` (one-shot ops + stdio MCP server, 21 tools),
+> backend: `pilotdroid-cli` (one-shot ops + stdio MCP server, 27 tools),
 > a Rust facade (`pilotdroid-agent`), and a uiautomator2 drop-in Python shim
 > (`from pilotdroid import u2shim`; xpath explicitly out of scope).
 > Same-script wall-clock vs real u2 on retail devices: **8.8× USB /
@@ -86,7 +86,9 @@ MCP client 挂接（mcpServers 片段，二进制名 `pilotdroid-cli`，cargo in
 **一设备一 client**：agent 单 conn 顶替语义（ADR-007）——同一设备上第二个
 serve/shim/verify 连接会顶掉前一个；被顶替方下一次 op 显式报 io error，
 serve 会在下一 call 惰性重连夺权（M10 起），并在 stderr 打 conn-lost
-warn（M12 起；stdout 仍只有 JSON-RPC，不污染协议流）。
+warn（M12 起；stdout 仍只有 JSON-RPC，不污染协议流）。**两个 serve
+实例并存会来回夺权 ping-pong**（如同时开 Cursor+Claude Desktop 指向
+同一设备）——功能不丢但每次 call 多出重连延迟，请保持一设备一 serve。
 
 经官方 python `mcp` SDK 与 Devin CLI 实测握手通过（`spike/e2e/mcp_client_check.py`
 + `agent_e2e_transcript.txt`）；initialize 应答同时透出 `agentVer`（设备 jar 版本）。
