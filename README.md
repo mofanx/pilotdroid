@@ -3,20 +3,41 @@
 [![CI](https://github.com/mofanx/pilotdroid/actions/workflows/ci.yml/badge.svg)](https://github.com/mofanx/pilotdroid/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
+> **English**: a device-side Android automation stack — persistent binary
+> protocol + on-device batch execution, built to break uiautomator2's
+> per-call HTTP/JSON-RPC round-trip ceiling. Three surfaces over one device
+> backend: `pilotdroid-cli` (one-shot ops + stdio MCP server, 21 tools),
+> a Rust facade (`pilotdroid-agent`), and a uiautomator2 drop-in Python shim
+> (`from pilotdroid import u2shim`; xpath explicitly out of scope).
+> Same-script wall-clock vs real u2 on retail devices: **8.8× USB /
+> 4.7–7.4× adb-TCP** (op-mix sensitive, `spike/e2e/RESULTS-M7.md`). Details
+> in Chinese below; protocol contract: `docs/02-protocol.md`.
+
 用 Rust 独立开发的 Android 自动化控制库 / CLI。借鉴 uiautomator2-rs 与 scrcpy 的工程思路，但不照抄其架构——核心目标是通过**自研持久二进制协议 + 设备端批量执行**，突破「每条指令一次 HTTP/JSON-RPC 往返」的性能天花板（u2 实测 click ~263ms、exists ~26ms、screenshot ~186ms），拿到数量级的延迟改善。
 
 ## 安装
 
 - **预编译 CLI**（推荐）：从 [Releases](https://github.com/mofanx/pilotdroid/releases)
-  下载 `pilotdroid-cli-linux-x86_64`，`chmod +x` 入 PATH。CLI 已内嵌 agent.jar，
-  一条命令完成部署+八步自检，无需 `--jar`：
+  按平台下载，`chmod +x` 入 PATH：
+
+  | 平台 | 产物 |
+  |---|---|
+  | Linux x86_64 | `pilotdroid-cli-linux-x86_64` |
+  | macOS arm64 | `pilotdroid-cli-macos-arm64` |
+
+  CLI 已内嵌 agent.jar，一条命令完成部署+八步自检，无需 `--jar`：
 
   ```
   pilotdroid-cli -s <serial> setup
   ```
 - **源码构建**：`cargo install --locked --path crates/pilotdroid-cli`（Rust 1.74+）。
-- **Python u2 shim**：`pip install pilotdroid`（PyPI 发布中）或仓库内
-  `pip install ./python`，随后 `from pilotdroid import u2shim`。
+- **Python u2 shim**（PyPI 发布中，暂用 git 安装）：
+
+  ```
+  pip install "git+https://github.com/mofanx/pilotdroid#subdirectory=python"
+  ```
+
+  仓库内可用 `pip install ./python`；随后 `from pilotdroid import u2shim`。
 - agent.jar 亦可单独取用：Release assets 或仓库 `agent/agent.jar`（与 CLI 内嵌字节一致）。
 
 ## 定位
@@ -52,6 +73,9 @@ MCP client 挂接（mcpServers 片段，二进制名 `pilotdroid-cli`，cargo in
 ```
 
 多设备场景补 `-s`：`"args": ["serve", "-s", "<serial>"]`（`-s` 是 serve 子命令选项）。
+**一设备一 client**：agent 单 conn 顶替语义（ADR-007）——同一设备上第二个
+serve/shim/verify 连接会顶掉前一个；被顶替方下一次 op 显式报 io error，
+serve 会在下一 call 惰性重连夺权（M10 起）。
 
 经官方 python `mcp` SDK 与 Devin CLI 实测握手通过（`spike/e2e/mcp_client_check.py`
 + `agent_e2e_transcript.txt`）；initialize 应答同时透出 `agentVer`（设备 jar 版本）。

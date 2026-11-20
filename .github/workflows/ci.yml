@@ -39,6 +39,27 @@ jobs:
           cargo build -p pilotdroid-cli
           python3 spike/e2e/docs-smoke.py
 
+  agent-jar-sync:
+    # agent/agent.jar is committed AND embedded via include_bytes! — it must
+    # be rebuilt + recommitted whenever agent/java/** changes. Guard: the
+    # jar's last commit must not be older than the java sources' last commit.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: agent.jar must not be stale vs agent/java/**
+        run: |
+          java_ts=$(git log -1 --format=%ct -- agent/java)
+          jar_ts=$(git log -1 --format=%ct -- agent/agent.jar)
+          java_sha=$(git log -1 --format=%h -- agent/java)
+          jar_sha=$(git log -1 --format=%h -- agent/agent.jar)
+          echo "java last-change: $java_sha ($java_ts) | jar last-commit: $jar_sha ($jar_ts)"
+          if [ "$jar_ts" -lt "$java_ts" ]; then
+            echo "::error::agent/agent.jar is older than agent/java/** — rebuild with agent/scripts/deploy-agent.sh <serial> and 'git add agent/agent.jar'"
+            exit 1
+          fi
+
   python:
     # u2 shim + protocol client: no pytest suite yet — syntax-compile every
     # shipped script, editable-install the package, and smoke the imports /

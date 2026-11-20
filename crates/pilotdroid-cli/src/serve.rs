@@ -132,7 +132,16 @@ pub fn run<T: AdbTransport, R: std::io::BufRead, W: Write>(
                         }
                     },
                 };
-                write_resp(out, &call_tool(s, id, &name, args, &mut snapshot)?)?;
+                let (v, dead) = call_tool(s, id, &name, args, &mut snapshot);
+                // Dead control conn (e.g. replaced by a newer conn —
+                // ADR-007 last-connector-wins): drop it so the NEXT
+                // tools/call lazily reconnects and re-claims the agent,
+                // instead of this serve process erroring every call on a
+                // socket that can never recover.
+                if dead {
+                    session = None;
+                }
+                write_resp(out, &v)?;
                 continue;
             }
             _ => err(id, -32601, &format!("method not found: {method}")),
@@ -148,6 +157,17 @@ fn ok(id: Value, result: Value) -> Value {
 
 fn err(id: Value, code: i64, message: &str) -> Value {
     json!({"jsonrpc":"2.0","id":id,"error":{"code":code,"message":message}})
+}
+
+/// Transport-level dead conn: the socket went EOF/reset (incl. being
+/// replaced by a newer control conn — ADR-007). Deliberately does NOT
+/// include `AgentError::Timeout` — a slow read on a live session is
+/// transient, not fatal.
+fn is_dead_conn(e: &anyhow::Error) -> bool {
+    matches!(
+        e.downcast_ref::<pilotdroid_agent::AgentError>(),
+        Some(pilotdroid_agent::AgentError::Io(_))
+    )
 }
 
 fn tool_err(id: Value, e: anyhow::Error) -> Value {
@@ -220,13 +240,16 @@ fn check_snapshot<T: AdbTransport>(
     Ok(())
 }
 
+/// Returns the JSON-RPC response plus a "dead conn" flag — set when the
+/// op failed on a transport-level socket error (`AgentError::Io`), in
+/// which case the caller must drop the session so a later call reconnects.
 fn call_tool<T: AdbTransport>(
     s: &mut Session<T>,
     id: Value,
     name: &str,
     args: Value,
     snap: &mut Option<(Vec<pilotdroid_agent::ElemInfo>, u64, Option<String>)>,
-) -> Result<Value> {
+) -> (Value, bool) {
     let r: std::result::Result<Value, anyhow::Error> =
         (|| -> std::result::Result<Value, anyhow::Error> {
             match name {
@@ -413,8 +436,11 @@ fn call_tool<T: AdbTransport>(
             }
         })();
     match r {
-        Ok(v) => Ok(tool_ok(id, v)),
-        Err(e) => Ok(tool_err(id, e)),
+        Ok(v) => (tool_ok(id, v), false),
+        Err(e) => {
+            let dead = is_dead_conn(&e);
+            (tool_err(id, e), dead)
+        }
     }
 }
 
@@ -743,6 +769,85 @@ mod tests {
         addr
     }
 
+    /// Fake that kills its FIRST accepted conn right after the HELLO
+    /// handshake (simulating a newer conn taking over, ADR-007); later
+    /// conns get the normal fake — drives the dead-conn self-heal.
+    fn spawn_fake_kill_first() -> SocketAddr {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let first = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+        thread::spawn(move || {
+            while let Ok((mut sock, _)) = listener.accept() {
+                let kill_after_hello = first.swap(false, std::sync::atomic::Ordering::SeqCst);
+                let mut served_hello = false;
+                while let Ok(req) = Frame::read_from(&mut sock) {
+                    if kill_after_hello && served_hello {
+                        break; // drop conn 1 — next op on it hits EOF
+                    }
+                    let (ty, payload) = match OpCode::try_from(req.header.msg_type) {
+                        Ok(OpCode::Hello) => (
+                            OpCode::HelloAck as u16,
+                            encode(&HelloAck {
+                                agent: "fake/0".into(),
+                                caps: caps::INJECT | caps::QUERY,
+                                ver: Some("9.9.9-fake".into()),
+                                proto: None,
+                                sdk: None,
+                                abi: None,
+                                display: None,
+                                inject: None,
+                            })
+                            .unwrap(),
+                        ),
+                        Ok(OpCode::Inject) => (
+                            OpCode::InjectResult as u16,
+                            encode(&InjectAck {
+                                ok: true,
+                                events: 2,
+                                ms: 1.0,
+                                cost_ns: None,
+                                backend: None,
+                            })
+                            .unwrap(),
+                        ),
+                        _ => {
+                            let p = encode(&ErrorAck {
+                                code: "UNSUPPORTED".into(),
+                                message: "fake".into(),
+                            })
+                            .unwrap();
+                            let resp = Frame::new(
+                                req.header.channel,
+                                req.header.msg_type,
+                                flags::RESPONSE | flags::ERROR,
+                                req.header.req_id,
+                                p,
+                            );
+                            if resp.write_to(&mut sock).is_err() {
+                                break;
+                            }
+                            continue;
+                        }
+                    };
+                    let resp = Frame::new(
+                        req.header.channel,
+                        ty,
+                        flags::RESPONSE,
+                        req.header.req_id,
+                        payload,
+                    );
+                    if resp.write_to(&mut sock).is_err() {
+                        break;
+                    }
+                    if ty == OpCode::HelloAck as u16 {
+                        served_hello = true;
+                    }
+                }
+            }
+        });
+        addr
+    }
+
     fn serve_once(lines: &str) -> Vec<Value> {
         serve_once_at(lines, spawn_fake())
     }
@@ -909,6 +1014,46 @@ mod tests {
         assert_eq!(resps[0]["result"]["isError"], true);
         let text = resps[0]["result"]["content"][0]["text"].as_str().unwrap();
         assert!(text.contains("list_elements"), "got {text}");
+    }
+
+    #[test]
+    fn dead_conn_self_heals_next_call() {
+        // The fake kills conn 1 right after HELLO (a newer conn took over
+        // — ADR-007). Call 1 hits EOF mid-op → tool error; call 2 lazily
+        // reconnects and the op succeeds — serve survives being replaced.
+        let addr = spawn_fake_kill_first();
+        let mut out = Vec::new();
+        run(
+            BufReader::new(
+                [
+                    r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"tap","arguments":{"x":1,"y":2}}}"#,
+                    r#"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"tap","arguments":{"x":3,"y":4}}}"#,
+                ]
+                .join("\n")
+                .as_bytes(),
+            ),
+            &mut out,
+            // fresh transport per connect — exercises the reconnect path
+            move || {
+                Device::with_transport(TestAdb::default(), "fake0")
+                    .session_opts(Some(addr.port()), "pilotdroid_agent")
+                    .map_err(Into::into)
+            },
+        )
+        .unwrap();
+        let resps: Vec<Value> = String::from_utf8(out)
+            .unwrap()
+            .lines()
+            .map(|l| serde_json::from_str(l).unwrap())
+            .collect();
+        assert_eq!(resps.len(), 2);
+        assert_eq!(resps[0]["result"]["isError"], true);
+        assert_eq!(resps[1]["result"]["isError"], false);
+        let text = resps[1]["result"]["content"][0]["text"].as_str().unwrap();
+        assert!(
+            text.contains("\"ok\":true") || text.contains("ok"),
+            "got {text}"
+        );
     }
 
     #[test]

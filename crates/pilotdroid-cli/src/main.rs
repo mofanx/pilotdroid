@@ -83,7 +83,7 @@ enum Cmd {
         port: Option<u16>,
     },
 
-    /// Five-step doctor: adb → device → agent.jar → forward → HELLO.
+    /// Eight-step doctor: adb → device → agent.jar → forward → HELLO → u2/atx conflict → inject probe → forward hygiene.
     /// Exits 0 when all checks pass; each failure prints a hint.
     Setup {
         /// Agent's localabstract socket name.

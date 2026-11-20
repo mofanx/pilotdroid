@@ -120,3 +120,18 @@ AGENT_VER 0.5.0 起改为**单 client 顶替**（last-connector-wins）：
 `serve_multi.py` 8 断言复跑全过（dump 探活——`app_current` 走 adb shell
 不经 control conn，不能作活性探针）。stream 的 ERR_STREAM_BUSY 语义
 随之过期：现在**永远轮不到第二 owner**——连接层先被顶替。
+
+## 补注（M10 修订）· TOCTOU 窗口 + 被顶替方自愈
+
+**语义边界修正**：last-connector-wins 的保证是 **"accept 之后无交错"**，
+而非"TCP connect 之后无交错"。`connect()` 返回 ≠ 顶替完成——新 conn 先
+进内核 accept 队列，agent 的 `accept()` 异步处理后才关闭旧 conn；该
+TOCTOU 窗口内旧 conn 仍可完成 ~1 个 op（实测 adb-TCP + stream 负载下
+`ping` 滑窗 ~20%）。socket 层无法消除此窗口，**调用方不得假设
+connect 返回即刻独占**；依赖"我connect了所以对方已死"的代码是错的。
+
+**serve 自愈**：原"进程重启才能夺回"放宽——`serve` 的 `tools/call`
+命中 `AgentError::Io`（socket EOF/reset）时将 session 置空，**下一次
+call 惰性重连**并按 last-connector-wins 重新夺权。失败的那次 call 仍
+显式返回 tool error（不是静默重试）；两个活跃 serve 互相调用退化为
+per-call 夺权（语义仍安全——每 op 原子，代价是 ~一次 HELLO 开销）。

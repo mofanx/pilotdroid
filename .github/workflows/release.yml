@@ -2,9 +2,12 @@ name: release
 
 # Tag-triggered (v*) packaging. Produces a DRAFT GitHub Release — a human
 # reviews the notes and presses "Publish release" (which then fires pypi.yml).
+# workflow_dispatch runs the same build matrix WITHOUT creating a release —
+# use it to smoke-test packaging after workflow changes.
 #
-# Artifacts:
-#   - pilotdroid-cli-linux-x86_64   (cargo build --release)
+# Artifacts (per tag release):
+#   - pilotdroid-cli-linux-x86_64   (cargo build --release, ubuntu-latest)
+#   - pilotdroid-cli-macos-arm64    (cargo build --release, macos-latest)
 #   - agent.jar                     (committed dex — same bytes embedded in the
 #                                  CLI via include_bytes!, so no SDK needed)
 #   - pilotdroid-*.whl + .tar.gz    (python/ sdist+wheel, u2 shim + client)
@@ -13,12 +16,14 @@ name: release
 on:
   push:
     tags: ["v*"]
+  workflow_dispatch:
 
 permissions:
   contents: write
 
 jobs:
   verify-tag:
+    if: github.event_name == 'push'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -31,32 +36,62 @@ jobs:
           [ "$tag" = "$wv" ] || { echo "::error::tag $tag != workspace version $wv"; exit 1; }
           [ "$pv" = "$wv" ] || { echo "::error::python version $pv != workspace version $wv"; exit 1; }
 
-  build:
-    needs: verify-tag
-    runs-on: ubuntu-latest
+  cli:
+    strategy:
+      matrix:
+        include:
+          - { os: ubuntu-latest, suffix: linux-x86_64 }
+          - { os: macos-latest, suffix: macos-arm64 }
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.x"
 
       - name: build CLI (release)
         run: cargo build --release -p pilotdroid-cli
 
-      - name: build python dists
+      - name: stage + upload
+        run: |
+          mkdir -p dist
+          cp target/release/pilotdroid-cli "dist/pilotdroid-cli-${{ matrix.suffix }}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cli-${{ matrix.suffix }}
+          path: dist/
+
+  python-dist:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+      - name: build dists
         run: |
           python -m pip install --upgrade pip build
           (cd python && python -m build --outdir ../dist)
+      - uses: actions/upload-artifact@v4
+        with:
+          name: python-dist
+          path: dist/
 
-      - name: stage artifacts
+  release:
+    if: github.event_name == 'push'
+    needs: [verify-tag, cli, python-dist]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: "*"
+          path: dist
+          merge-multiple: true
+      - name: stage jar + checksums
         run: |
-          cp target/release/pilotdroid-cli dist/pilotdroid-cli-linux-x86_64
           cp agent/agent.jar dist/agent.jar
           (cd dist && sha256sum * > SHA256SUMS.txt)
           ls -la dist/
-
       - name: create draft release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
