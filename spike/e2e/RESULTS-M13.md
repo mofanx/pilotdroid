@@ -51,6 +51,87 @@ XML ground truth 对照）：
 - 插曲：本 worktree target 致磁盘满 → CARGO_TARGET_DIR 指向主 worktree
   共享（AGENTS.md 既定约定）
 
+## 6. t3 证据批（main 态）
+
+### 6a. drop-in 补齐（第三方用法驱动，~110 行 host-only）
+
+对 Themis 71 个真实 u2 脚本做 API 普查后补齐高频缺口（全部实测生效）：
+
+- `u2.connect("serial")` —— u2 位置参数是 serial 字符串，shim 原签名把
+  第一位当 port → **全部 70 个脚本此前连不上**。现在非数字 str → serial
+- `d.service("uiautomator")` —— 70/71 脚本 teardown 依赖；
+  `.running()/.stop()/.start()` 映射 agent 进程（pgrep/pkill/setsid
+  app_process），其他服务名 ValueError
+- `swipe_ext(dir,scale)`（23 处）`set_orientation(l|n|r|u)`（4 处）
+  `double_click(x,y,d)` `drag(fx..)` `.center()` `.gesture(4点双指针)`
+- 普查中仍 ❌：`d.xpath()`（13 脚本，非目标）、`d.service` 其他服务名
+
+### 6b. serve_multi 断言更新（self-heal 语义）→ **9/9 PASS**
+
+旧口径"kicked 永久 dead"已过时（M10 self-heal 变 ping-pong）。新断言：
+A kicked→A 自愈夺回→B 自愈夺回（双向）→owner 正常→owner 死后 A 两 call
+内夺回→fresh serve 接管。实测全部命中预期时序。
+
+### 6c. 第三方 u2 套件对拍（Themis benchmark, ESEC/FSE'21）
+
+`compat_u2_external.py`：14 脚本原样跑（唯一 seam =
+`sys.modules['uiautomator2']=u2shim`），sha256 留档，脚本入库
+`spike/e2e/themis/`（APK 不入库，manifest 记 repo 路径）。
+
+设备侧新坑（已解，记入方法学）：
+- MIUI `INSTALL_FAILED_USER_RESTRICTED` → `pm install
+  --bypass-low-target-sdk-block` + 弹窗点击
+- API34 拒 targetSdk<23 → 同上 flag
+- **babysitter 不能用 agent conn**——单 client 语义下第二 conn 与脚本
+  互踢（实测 ConnectionError ping-pong）。改为纯 adb：`dumpsys window`
+  焦点包检测 + `input tap` 固定坐标（仅限 installer/lbe 系统包，不碰
+  app 内弹窗——污染 bug-repro 语义）
+- `uiautomator dump` 在本机被 Killed（agent 独占 UiAutomation）——adb
+  侧拿不到层级，证实只能走 dumpsys 检测路线
+
+verdict 口径：ok=跑到底 / unsupported=撞上 shim 明示不支持 API /
+miss=LookupError（选择器未命中，环境态非 API 失败，同 u2
+UiObjectNotFoundError）/ timeout=超过 200s / error=其他异常。
+
+**实测结果（e2e-m13-themis.json）：14 脚本 — 0 ok / 0 unsupported /
+0 error / 11 miss / 3 timeout**。读法：
+
+- **API 面 14/14 零失败**——connect→app_start→app_current→selector→
+  click/set_text/swipe_ext/service 全部执行，无一撞 API 缺口。
+  这正是 drop-in 的主张（通过率口径是"复现 bug"，不是 API 完备）
+- miss 全为环境态：and-bible `d(text="OK")` 手动实证 = 应用正常前台
+  但按钮显示"确定"（zh locale，真 u2 同设备同 miss）；"Navigate
+  up"/"More options" 等 contentDescription 在 zh 系统本地化
+- timeout×3 = app 侧崩溃/权限流：APhotoManager logcat 抓到 MIUI
+  ThirdAppAssistant `problemName=JE_IAE`（app 启动即崩——恰是该
+  benchmark 要复现的 bug 类），脚本固有 stale-snapshot while-loop
+  （`current_app` 快照永不刷新）在 app 未上前台时必然死循环——
+  真 u2 同行为
+- 途中发现并修复真缺口：`_Selector.swipe(dir)` 元素内定向滑动
+  （ActivityDiary#285 真用法）+ `connect` serial 位置参数 + `service`
+- 安装侧修正：uninstall-first（API34 `-d` 不生效 →
+  INSTALL_FAILED_VERSION_DOWNGRADE）+ install stderr 留档
+
+### 6d. t1 后 compat 复跑留数
+
+28 ok / 1 unsupported(xpath) / 0 error——与 t1 合并前一致，新 drop-in
+块零回归。
+
+### 6e. soak watcher 臂
+
+soak-m4.sh bench 块加 watch_arm/disarm×50（action=none，不可命中
+selector，poll_ms=50），shell 侧 `/proc/<pid>/task/comm` 计 pd-watch
+残留进 `wres` 字段；soak-check.py 新 gate `watch_residue`（所有 bench
+样本 wres==0，旧日志无字段跳过），fd_abs 同门 ≤90 不变。
+精确性修正：wres 用 `pgrep -f pilotdroid.Agent` 取 pid（设备存在其他
+app_process，原 `pid_of` 的宽匹配可能错认）。
+
+**3min 实跑（26 cycles = 1300 次 arm/disarm + 1300 ops）**：
+fd_constant PASS(75) / fd_abs PASS / **watch_residue PASS（26 样本全 0）**
+/ bench_fails 0。rss_slope 报 FAIL(+2079kB/min)——3min 短窗内 RSS 是
+98→115MB GC 锯齿非单调增长，该门设计给 480min 长跑，短跑内为测量伪
+影（判读：wres/fd 两个泄漏直接指标全过，rss 非单调）。
+
 ## 6. dist/doc nit 批 + 发布准备（t2）
 
 | 项 | 落地 | 实证 |

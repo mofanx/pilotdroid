@@ -7,6 +7,8 @@ Asserts (exit 0 = PASS, prints verdict lines):
   - fd count constant across all bench samples
   - fd absolute ceiling <= 90 (SHOT/GC-deferred dmabuf spikes are
     bounded — a constant-only gate can't see a raised baseline)
+  - watch residue: every bench sample reports wres == 0 live pd-watch
+    threads (M13 watcher arm — absent field on old logs is skipped)
   - recoveries == kills, every recovery < 5s
   - bench_fails == 0
   - RSS linear-fit slope <= +50 kB/min (no monotonic leak)
@@ -36,6 +38,10 @@ def main(path):
     fds = [int(e["fd"]) for e in bench if str(e.get("fd", "")).isdigit()]
     rep("fd_abs", not fds or max(fds) <= 90,
         f"max={max(fds) if fds else '-'} (cap 90)")
+    wres = [e["wres"] for e in bench if str(e.get("wres", "")).isdigit()]
+    rep("watch_residue", not wres or max(int(w) for w in wres) == 0,
+        f"samples={len(wres)} max={max((int(w) for w in wres), default='-')}"
+        " (gate 0 live pd-watch)")
     rep("recoveries==kills", len(rec) == kills and not recf,
         f"{len(rec)}/{kills}, fails={len(recf)}")
     if rec:
