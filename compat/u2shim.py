@@ -18,14 +18,15 @@ d(text|resourceId|description|className|packageName|scrollable,index).click() /
 d(scrollable=True).scroll.(forward|backward|toEnd|toBeginning).
 (xpath still rejected with ValueError — see _SUPPORTED.)
 """
-import os, re, subprocess, sys, threading, time
+import os, re, socket, subprocess, sys, threading, time
 
 try:
-    from .agent_client import Agent  # installed `pilotdroid` package
+    from .agent_client import (Agent, media_connect,  # installed `pilotdroid` package
+                               read_frame)
 except ImportError:
     sys.path.insert(0, os.path.join(os.path.dirname(__file__),
                                     "..", "agent", "scripts"))
-    from agent_client import Agent  # noqa: E402
+    from agent_client import Agent, media_connect, read_frame  # noqa: E402
 
 _KEYCODES = {"home": 3, "back": 4, "recent": 187, "recents": 187,
              "power": 26, "volume_up": 24, "volume_down": 25,
@@ -117,9 +118,19 @@ class _Selector:
         if node is None:
             raise LookupError(f"selector {self.kw} found no node")
         l, t, r, b = node["bounds"]
-        cx, cy, half = (l + r) / 2, (t + b) / 2, (r - l) / 2
+        # MIUI dialogs can report bounds outside the display (e.g.
+        # [268,3312] on a 3200px-tall screen) — an unclamped center
+        # injects at coordinates nothing can receive.
+        w, h = self.dev.a.hello()["payload"]["display"]
+        cx = min(max((l + r) / 2, 0), w - 1)
+        cy = min(max((t + b) / 2, 0), h - 1)
+        half = (r - l) / 2
         edge = half * 0.9 * min(percent, 100) / 100.0
         r0, r1 = (half * 0.9, edge) if not outward else (edge, half * 0.9)
+        r0, r1 = min(r0, cx, w - 1 - cx), min(r1, cx, w - 1 - cx)
+        if r0 < 2 or r1 < 2:
+            raise LookupError(
+                f"node bounds {node['bounds']} outside display {w}x{h}")
         dur_ms = int(duration * 1000)
         pts = [{"action": 0, "pid": 0, "x": cx - r0, "y": cy, "t_ms": 0},
                {"action": 0, "pid": 1, "x": cx + r0, "y": cy, "t_ms": 10}]
@@ -246,12 +257,55 @@ class _Watcher:
         while not self._tick():
             time.sleep(self.interval)
 
+    def _run_async(self):
+        """CAP_WATCH_ASYNC path (agent 0.7.0+): arm each rule once, then
+        block on the media socket for WATCH_HIT frames — detection runs
+        inside the agent and the user's thread keeps the control conn
+        (u2 server-thread parity). New rules added while running are
+        armed on the next loop pass."""
+        armed = {}  # watch_id -> rule tuple
+        ms = None
+        try:
+            ms = media_connect(self.dev._media_forward())
+            ms.settimeout(0.5)
+            while self._rules:
+                for rule in list(self._rules):
+                    if rule not in armed.values():
+                        sel = _Selector(self.dev, **rule[0])._sel()
+                        r = self.dev.a.watch_arm(sel, "click",
+                                                 poll_ms=50)["payload"]
+                        armed[r["watch_id"]] = rule
+                try:
+                    fr = read_frame(ms)
+                except socket.timeout:
+                    continue
+                if fr is None:
+                    break
+                _ch, rtype, _flags, _rid, p = fr
+                rule = armed.pop(p.get("watch_id"), None) \
+                    if rtype == 0x0002 else None  # WATCH_HIT
+                if rule is not None and p.get("matched"):
+                    for i, r_ in enumerate(list(self._rules)):
+                        if r_ is rule:
+                            self._rules.pop(i)
+                            break
+        finally:
+            for wid in armed:
+                try:
+                    self.dev.a.watch_disarm(wid)
+                except Exception:
+                    pass
+            if ms:
+                ms.close()
+
     def start(self, interval=None):
         if interval:
             self.interval = interval
         if self._th and self._th.is_alive():
             return
-        self._th = threading.Thread(target=self.run, daemon=True)
+        target = self._run_async \
+            if getattr(self.dev, "caps", 0) & 0x200 else self.run
+        self._th = threading.Thread(target=target, daemon=True)
         self._th.start()
 
     def stop(self):
@@ -421,7 +475,13 @@ class Device:
         return self._sh(["adb", "shell", "am", "force-stop", pkg]) == 0
 
     def app_current(self):
-        """u2 app_current() -> {package, activity} via focused window."""
+        """u2 app_current() -> {package, activity}. Prefers the conn-side
+        APP_INFO op (CAP_APP_INFO — UiAutomation window read, ~ms) over a
+        dumpsys adb spawn (~300-600ms per call)."""
+        if self.caps & 0x400:
+            p = self.a.app_info()["payload"]
+            if p.get("pkg"):
+                return {"package": p["pkg"], "activity": p.get("activity")}
         out = subprocess.run(
             self._sh_cmd(["dumpsys", "window"]),
             capture_output=True, text=True).stdout
@@ -430,6 +490,16 @@ class Device:
         if not m:  # some ROMs only expose mFocusedApp
             m = re.search(r"([\w.]+)/([\w.$]+)\s", out)
         return {"package": m.group(1), "activity": m.group(2)} if m else {}
+
+    def _media_forward(self):
+        """adb forward for the ch=1 media socket (watch hits). Local port
+        = control port + 1, matching verify-agent.sh convention."""
+        port = self.a.port + 1
+        cmd = (["adb"] + (["-s", self.serial] if self.serial else [])
+               + ["forward", f"tcp:{port}",
+                  "localabstract:pilotdroid_agent_media"])
+        subprocess.run(cmd, capture_output=True, check=True)
+        return port
 
     def _sh_cmd(self, args):
         return (["adb"] + (["-s", self.serial] if self.serial else [])

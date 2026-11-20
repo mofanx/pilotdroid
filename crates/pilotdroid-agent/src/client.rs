@@ -319,6 +319,28 @@ impl AgentClient {
         Ok(decode(&f.payload)?)
     }
 
+    /// `WATCH_ARM` (§4.9 async): ack returns immediately; hits arrive as
+    /// ui_event frames on the media socket ([`MediaClient::recv_event`]).
+    pub fn watch_arm(&mut self, req: WatchArmReq) -> Result<WatchArmAck> {
+        let f = self.request(OpCode::WatchArm, encode(&req)?)?;
+        expect(&f, OpCode::WatchArm, "WATCH_ARM response")?;
+        Ok(decode(&f.payload)?)
+    }
+
+    pub fn watch_disarm(&mut self, watch_id: u32) -> Result<WatchDisarmAck> {
+        let f = self.request(OpCode::WatchDisarm, encode(&WatchDisarmReq { watch_id })?)?;
+        expect(&f, OpCode::WatchDisarm, "WATCH_DISARM response")?;
+        Ok(decode(&f.payload)?)
+    }
+
+    /// `APP_INFO` (CAP_APP_INFO): foreground pkg via UiAutomation — ~ms,
+    /// no `dumpsys` spawn. `activity` is always None by design.
+    pub fn app_info(&mut self) -> Result<AppInfoAck> {
+        let f = self.request(OpCode::AppInfo, encode(&AppInfoReq {})?)?;
+        expect(&f, OpCode::AppInfo, "APP_INFO response")?;
+        Ok(decode(&f.payload)?)
+    }
+
     /// Ask the agent to exit (AGENT_STOP). The agent may close the socket
     /// before/instead of replying, so a missing response is success too.
     pub fn stop(&mut self) -> Result<()> {

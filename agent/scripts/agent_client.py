@@ -8,7 +8,7 @@ Usage: agent_client.py [--port PORT] <cmd> [args]
   hello | ping | inject-tap X Y | inject-swipe X1 Y1 X2 Y2 MS | dump | shot OUT |
   stop | bench (all ops + latency JSON)
 """
-import json, socket, struct, sys, time
+import json, socket, struct, sys, threading, time
 
 import msgpack
 
@@ -20,8 +20,9 @@ F_RESP, F_MORE, F_ERR, F_NOACK = 0x0001, 0x0002, 0x0004, 0x0008
 T = dict(HELLO=0x0001, HELLO_ACK=0x0002, PING=0x0003, PONG=0x0004,
          INJECT=0x0010, INJECT_RESULT=0x0011, DUMP=0x0020, QUERY=0x0021,
          SCREENSHOT=0x0030, BATCH=0x0040, BATCH_RESULT=0x0041,
-         STREAM_CTRL=0x0050, FRAME=0x0001,
-         TEXT=0x0060, WATCH=0x0070, AGENT_STOP=0x00F0)
+         STREAM_CTRL=0x0050, FRAME=0x0001, WATCH_HIT=0x0002,
+         TEXT=0x0060, WATCH=0x0070, WATCH_ARM=0x0071,
+         WATCH_DISARM=0x0072, APP_INFO=0x0080, AGENT_STOP=0x00F0)
 
 
 class Agent:
@@ -29,6 +30,7 @@ class Agent:
         self.port = port
         self.sock = None
         self.req_id = 0
+        self._lock = threading.Lock()
 
     def connect(self):
         self.sock = socket.create_connection(("127.0.0.1", self.port), timeout=10)
@@ -49,6 +51,12 @@ class Agent:
         return buf
 
     def call(self, mtype, payload=None, flags=0):
+        # one control conn serializes all ops (a second conn would REPLACE
+        # this session) — lock so a watcher thread + user thread can share.
+        with self._lock:
+            return self._call_locked(mtype, payload, flags)
+
+    def _call_locked(self, mtype, payload=None, flags=0):
         self.req_id += 1
         body = msgpack.packb(payload or {}, use_bin_type=True)
         hdr = MAGIC + struct.pack(">BBHHI", VER, CH_CTRL, mtype, flags,
@@ -125,6 +133,24 @@ class Agent:
         if poll_ms:
             req["poll_ms"] = int(poll_ms)
         return self.call(T["WATCH"], req)
+
+    def watch_arm(self, selector, action="click", timeout_ms=0, poll_ms=None):
+        """WATCH_ARM (§4.9 async): arms a device-side poll thread — returns
+        immediately; hits arrive as WATCH_HIT frames on the media socket
+        (media_connect + read_frame, ch=1 type 0x0002)."""
+        req = {"selector": selector, "action": {"type": action},
+               "timeout_ms": int(timeout_ms)}
+        if poll_ms:
+            req["poll_ms"] = int(poll_ms)
+        return self.call(T["WATCH_ARM"], req)
+
+    def watch_disarm(self, watch_id):
+        return self.call(T["WATCH_DISARM"], {"watch_id": int(watch_id)})
+
+    def app_info(self):
+        """APP_INFO (CAP_APP_INFO): foreground pkg via UiAutomation — ~ms,
+        no dumpsys spawn."""
+        return self.call(T["APP_INFO"], {})
 
     def inject_tap_noack(self, x, y):
         return self.call(T["INJECT"],

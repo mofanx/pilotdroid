@@ -10,7 +10,10 @@ use std::time::Duration;
 use pilotdroid_adb::{AdbTransport, ShellOutput};
 use pilotdroid_proto::payload::*;
 
-use crate::{AgentClient, AgentError, AgentManager, MediaClient, Result, AGENT_SOCKET};
+use crate::{
+    AgentClient, AgentError, AgentManager, MediaClient, MediaEvent, Result, AGENT_SOCKET,
+    MEDIA_SOCKET,
+};
 
 /// MotionEvent action codes (same provenance as client.rs).
 const ACTION_DOWN: u8 = 0;
@@ -216,6 +219,49 @@ impl<T: AdbTransport> Session<T> {
             meta: None,
             backend: None,
         })
+    }
+
+    /// WATCH_ARM — async watcher (§4.9, CAP_WATCH_ASYNC): returns
+    /// immediately; the agent polls device-side and pushes `WATCH_HIT`
+    /// on the media socket. `watch_recv()` reads hits. The control conn
+    /// stays free — parallel ops while armed are the whole point.
+    pub fn watch_arm(
+        &mut self,
+        selector: Selector,
+        action: &str,
+        timeout_ms: Option<u64>,
+    ) -> Result<WatchArmAck> {
+        self.client.watch_arm(WatchArmReq {
+            selector,
+            action: Some(WatchAction {
+                r#type: action.to_string(),
+            }),
+            timeout_ms,
+            poll_ms: None,
+        })
+    }
+
+    pub fn watch_disarm(&mut self, watch_id: u32) -> Result<bool> {
+        Ok(self.client.watch_disarm(watch_id)?.disarmed)
+    }
+
+    /// Attach the media socket for watch events (no stream needed — the
+    /// agent holds it as the pre-start pending conn, §4.8).
+    pub fn watch_attach(&mut self) -> Result<()> {
+        self.attach_media()
+    }
+
+    /// Read the next media-channel event; a `MediaEvent::WatchHit` is the
+    /// armed watcher's result. Blocks up to the media read timeout.
+    pub fn watch_recv(&mut self) -> Result<MediaEvent> {
+        self.attach_media()?;
+        self.media.as_mut().unwrap().recv_event()
+    }
+
+    /// APP_INFO — foreground pkg inside UiAutomation (~ms), no adb spawn.
+    /// `activity` is None by design (CAP_APP_INFO).
+    pub fn app_info(&mut self) -> Result<AppInfoAck> {
+        self.client.app_info()
     }
 
     /// WATCH — device-side selector→action loop (CAP_WATCH, docs/02 §4.9).
@@ -514,7 +560,13 @@ impl<T: AdbTransport> Session<T> {
         if self.media.is_some() {
             return Ok(());
         }
-        let socket = self.media_socket.clone().unwrap_or_default();
+        // Watch attaches happen before any stream_start, when
+        // `media_socket` is still unset — fall back to the default name.
+        let socket = self
+            .media_socket
+            .clone()
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| MEDIA_SOCKET.to_string());
         let (m, port) = AgentManager::new(&mut self.adb).connect_media(
             &self.serial,
             self.media_port_hint,

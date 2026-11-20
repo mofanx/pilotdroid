@@ -52,6 +52,10 @@
 | 0x0041 | BATCH_RESULT | a→h | 每 op 的结果数组（stream-more 中间推送） |
 | 0x0050 | STREAM_CTRL | h→a | start/stop 帧流：fps、scale、quality、format(jpeg，h264 留位)、display_id——契约见 §4.8 |
 | 0x0060 | TEXT | h→a | 文本输入（ASCII 走注入；非 ASCII 走 IME 通道，见 03-device-agent §6） |
+| 0x0070 | WATCH | h→a | 阻塞式设备端 selector→action 闭环（§4.9，M10） |
+| 0x0071 | WATCH_ARM | h→a | 异步 watcher 注册，立即返回 watch_id（§4.9，M11） |
+| 0x0072 | WATCH_DISARM | h→a | 按 watch_id 撤除异步 watcher（§4.9，M11） |
+| 0x0080 | APP_INFO | h→a | 前台应用包名（UiAutomation 窗口读取，§4.10，M11） |
 | 0x00F0 | AGENT_STOP | h→a | 显式退出 |
 
 媒体通道（ch=1）独占 type：0x0001 FRAME（编码帧 + pts + display_id）、0x0002 UI_EVENT（可选，accessibility 变更通知）。
@@ -130,6 +134,8 @@ Selector = { text?: string, id?: string, desc?: string, class?: string, scrollab
 
 **单 client 顶替（M8, AGENT_VER≥0.5.0）**：agent 任一时刻只服务一条 control 会话——新连接 accept 时旧 socket `shutdownInput/Output`+close（`close()` 不打断阻塞 read，必须先 FIN）。**顶替非原子（TOCTOU）**：accept 与 shutdown 之间存在调度窗口，旧 conn 上在途 op 仍可正常完成；调用方应把"新 conn 建立后旧 conn 的下一 op 必败（≤~1s 内收敛）"作为可依赖语义，而非"建立瞬间即死"。被顶替方的 stream/elements 快照随 §4.8 会话绑定一并终结。
 
+**op 分层注记（M11）**：并非所有 u2/shim 操作都过本 conn——`shell`/`app_start`/`app_stop`/`app_current`（无 CAP_APP_INFO 时）/`app_list`/`orientation` 等是 host 侧 `adb shell` spawn，**不过 agent 会话**。推论：被顶替的 client 上 conn-op（exists/query/inject…）必败而 shell-op 仍成功——"半死"状态对调用方可见；会话自愈语义仅作用于 conn-op（M11 起 `app_current`/`app_info` 在有 CAP_APP_INFO 时优先走 conn，见 §4.10）。
+
 ### 4.8 媒体通道帧流（M4 契约，定稿——决策见 ADR-006）
 
 **传输**：media 帧走第二条独立 socket `localabstract:pilotdroid_agent_media`（第二条 `adb forward`），与 control socket 完全隔离——慢读者不可阻塞 control op。agent 启动时与 control socket 一并绑定，任一时刻至多一个流式会话。
@@ -141,7 +147,7 @@ Selector = { text?: string, id?: string, desc?: string, class?: string, scrollab
 - **背压**：写阻塞超过一个帧间隔 → 丢帧不阻塞，`dropped++`；media 积压绝不影响 control 通道。
 - **stop 清理**：`stop` / control 连接断开 / media 客户端断开 → 停采集循环、join 线程、关闭该流连接（socket 继续监听）；无残留线程。
 - **会话绑定**：流绑定发起它的 control 会话；control 断开即隐式 stop（防孤儿流）。
-- **编码**：v0 仅 `format:"jpeg"`（E1 归因：编码∝像素，quality 只省字节）；`"h264"` 留位待 MediaCodec 管线（M5）。`ui_event`（ch=1 type 0x0002）留作 accessibility 推送，本期不实现。
+- **编码**：v0 仅 `format:"jpeg"`（E1 归因：编码∝像素，quality 只省字节）；`"h264"` 留位待 MediaCodec 管线（M5）。`ui_event`（ch=1 type 0x0002）于 M11 起用为 **WATCH_HIT 推送**（§4.9）——写往活跃流连接，否则写往 start 前的 pending conn（watch 客户端在 armed 期间持有它）；无 media conn 则事件丢弃（动作已在设备内执行完）。
 
 ### 4.9 WATCH——设备端 selector→action 闭环（M10, CAP_WATCH=bit8）
 
@@ -149,7 +155,13 @@ Selector = { text?: string, id?: string, desc?: string, class?: string, scrollab
 
 - agent 在设备内轮询 `find(selector)`（每 poll_ms 一次 tree-walk），命中即按 `action` 执行（`click`=点 bounds 中心走同一注入链；`none`=仅检测）→ 应答 `{matched, waited_ms, action_ok?, node?}`。
 - 与 `wait_until` 的差别：wait_until 只等不做事；WATCH 把"出现→动作"收进**设备内单 op 闭环**，检测延迟=一次 tree-walk（u2 watcher 每轮一次 HTTP+dump 的 host 轮询没有等价物）。
-- 同步阻塞 op：占用本 control 会话直到 matched 或 timeout；需要并行监测多 selector 时用多条会话分别 WATCH（单 client 语义下=多个 serve/客户端轮流持有）或回退 host 轮询。
+- 同步阻塞 op：占用本 control 会话直到 matched 或 timeout；u2 watcher 对等语义请用下面的异步变体。
+
+**异步 watcher（M11, CAP_WATCH_ASYNC=bit9）**：`WATCH_ARM{selector, action?, timeout_ms?=0 不限, poll_ms?=100}` → 立即应答 `{armed, watch_id}`——agent 内 Watcher 线程轮询同一 selector，**不占用 control 会话**（armed 期间 ping/query/inject 照常，`Agent.call` 客户端需自行串行化 socket）。命中（或 timeout_ms>0 到时未命中）→ 经 media socket 推送 `WATCH_HIT` ui_event（ch=1 type 0x0002）`{watch_id, matched, waited_ms, action_ok?, node?}`；`WATCH_DISARM{watch_id}` → `{disarmed}`。fire-once；会话终结即全部撤除。**a11y 访问串行化**：watcher 的 find 与 session 的 QUERY/DUMP 共用 `synchronized(uia)` 全局锁——并发树访问在框架层有 ~秒级 stall 风险（目标应用主线程忙碌时 a11y IPC 排队）；锁把并发危险变成"至多一次 find 的排队"（实测窗口切换/弹窗拆除期偶发 ~2s 单次 stall，同场景真 u2 app_current ~5.6s，非本实现特有）。
+
+### 4.10 APP_INFO——conn 侧前台应用查询（M11, CAP_APP_INFO=bit10）
+
+`APP_INFO{}` → `{pkg, activity: null, display:[w,h], sdk}`。经 `UiAutomation.getWindows()` 取焦点窗口根节点包名——~ms 级，替代 host 侧 `adb shell dumpsys window` spawn（实测 ~300-600ms/次）。`activity` 恒为 `null`（accessibility 窗口不暴露 activity 名；u2 取它靠 dumpsys——本实现明确拒绝该成本）。shim `app_current()` 有本 cap 时走 conn，否则回退 dumpsys。
 
 ## 5. u2 JSON-RPC 兼容层
 

@@ -64,6 +64,9 @@ pub enum OpCode {
     StreamCtrl = 0x0050,
     Text = 0x0060,
     Watch = 0x0070,
+    WatchArm = 0x0071,
+    WatchDisarm = 0x0072,
+    AppInfo = 0x0080,
     AgentStop = 0x00F0,
 }
 
@@ -86,6 +89,9 @@ impl TryFrom<u16> for OpCode {
             0x0050 => Self::StreamCtrl,
             0x0060 => Self::Text,
             0x0070 => Self::Watch,
+            0x0071 => Self::WatchArm,
+            0x0072 => Self::WatchDisarm,
+            0x0080 => Self::AppInfo,
             0x00F0 => Self::AgentStop,
             other => return Err(ProtocolError::InvalidType(other)),
         })
@@ -557,6 +563,67 @@ pub mod payload {
         pub node: Option<NodeInfo>,
     }
 
+    /// `WATCH_ARM` (§4.9, CAP_WATCH_ASYNC): arm a device-side poll thread;
+    /// on selector hit the agent acts then pushes `WATCH_HIT` on the media
+    /// socket — the control conn stays free (u2 watcher parity).
+    #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+    pub struct WatchArmReq {
+        pub selector: Selector,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub action: Option<WatchAction>,
+        /// 0/absent = no timeout.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub timeout_ms: Option<u64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub poll_ms: Option<u64>,
+    }
+
+    #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+    pub struct WatchArmAck {
+        pub armed: bool,
+        pub watch_id: u32,
+    }
+
+    #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+    pub struct WatchDisarmReq {
+        pub watch_id: u32,
+    }
+
+    #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+    pub struct WatchDisarmAck {
+        pub disarmed: bool,
+    }
+
+    /// `WATCH_HIT` ui_event payload — ch=1 msg_type 0x0002 pushed on the
+    /// media socket (§4.8 reserved slot), not a control response.
+    #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+    pub struct WatchHit {
+        pub watch_id: u32,
+        pub matched: bool,
+        pub waited_ms: u64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub action_ok: Option<bool>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub node: Option<NodeInfo>,
+    }
+
+    /// ch=1 msg_type for the `WATCH_HIT` ui_event (docs/02 §4.8 reserved).
+    pub const MSG_WATCH_HIT: u16 = 0x0002;
+
+    /// `APP_INFO` (CAP_APP_INFO): foreground-app lookup inside UiAutomation
+    /// — focused window's root pkg (~ms), no host `dumpsys` spawn.
+    #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+    pub struct AppInfoReq {}
+
+    #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+    pub struct AppInfoAck {
+        pub pkg: Option<String>,
+        /// Always null — accessibility windows don't expose activity names.
+        pub activity: Option<String>,
+        pub display: Vec<u32>,
+        pub sdk: u32,
+    }
+
     /// `TEXT` op — `ACTION_SET_TEXT` on the focused node (§4.4). Failure when
     /// nothing is focused surfaces as `code:"NO_FOCUS"`.
     #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -740,4 +807,8 @@ pub mod caps {
     pub const MULTI_PTR: u32 = 1 << 7;
     /// `WATCH` opcode served (device-side selector→action loop).
     pub const WATCH: u32 = 1 << 8;
+    /// `WATCH_ARM`/`WATCH_DISARM` + `WATCH_HIT` ui_event (async watcher).
+    pub const WATCH_ASYNC: u32 = 1 << 9;
+    /// `APP_INFO` conn-side foreground-app lookup (no adb spawn).
+    pub const APP_INFO: u32 = 1 << 10;
 }

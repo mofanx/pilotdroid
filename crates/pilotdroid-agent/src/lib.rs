@@ -16,7 +16,7 @@ pub use manager::{
     embedded_jar_path, AgentManager, AGENT_DIR, AGENT_JAR_BYTES, AGENT_JAR_REMOTE,
     AGENT_MAIN_CLASS, AGENT_SOCKET, MEDIA_SOCKET,
 };
-pub use stream::{MediaClient, StreamStats};
+pub use stream::{MediaClient, MediaEvent, StreamStats};
 
 use std::io;
 

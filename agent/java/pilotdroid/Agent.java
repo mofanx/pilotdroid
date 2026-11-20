@@ -42,21 +42,23 @@ import java.util.Set;
 public final class Agent {
     private static final String SOCKET_NAME = "pilotdroid_agent";
     private static final String MEDIA_SOCKET = "pilotdroid_agent_media";
-    private static final String AGENT_VER = "0.6.0";
+    private static final String AGENT_VER = "0.7.0";
     private static final int PROTO_VER = 0;
 
     // capability bitmap — normative spec is pilotdroid-proto `caps` (bit-for-bit)
     private static final int CAP_INJECT = 1, CAP_DUMP = 2, CAP_SHOT = 4,
             CAP_QUERY = 8, CAP_BATCH = 16, CAP_STREAM = 32, CAP_TEXT = 64,
-            CAP_MPTR = 128, CAP_WATCH = 256;
+            CAP_MPTR = 128, CAP_WATCH = 256,
+            CAP_WATCH_ASYNC = 512, CAP_APP_INFO = 1024;
 
     // opcodes
     private static final int T_HELLO = 0x0001, T_HELLO_ACK = 0x0002,
             T_PING = 0x0003, T_PONG = 0x0004, T_INJECT = 0x0010,
             T_INJECT_RESULT = 0x0011, T_DUMP = 0x0020, T_QUERY = 0x0021,
             T_SHOT = 0x0030, T_BATCH = 0x0040, T_BATCH_RESULT = 0x0041,
-            T_STREAM = 0x0050, T_FRAME = 0x0001,
-            T_TEXT = 0x0060, T_WATCH = 0x0070, T_STOP = 0x00F0;
+            T_STREAM = 0x0050, T_FRAME = 0x0001, T_WATCH_HIT = 0x0002,
+            T_TEXT = 0x0060, T_WATCH = 0x0070, T_WATCH_ARM = 0x0071,
+            T_WATCH_DISARM = 0x0072, T_APP_INFO = 0x0080, T_STOP = 0x00F0;
     private static final int CH_MEDIA = 1;
     private static final int F_RESP = 0x0001, F_MORE = 0x0002,
             F_ERR = 0x0004, F_NOACK = 0x0008;
@@ -154,12 +156,12 @@ public final class Agent {
      *  called from a worker (session op thread or stream producer). */
     private static Bitmap shotSync(final UiAutomation uia) {
         if (Looper.myLooper() == Looper.getMainLooper())
-            return uia.takeScreenshot();
+            synchronized (uia) { return uia.takeScreenshot(); }
         final Bitmap[] out = new Bitmap[1];
         final java.util.concurrent.CountDownLatch done =
                 new java.util.concurrent.CountDownLatch(1);
         mainHandler.post(() -> {
-            try { out[0] = uia.takeScreenshot(); }
+            try { synchronized (uia) { out[0] = uia.takeScreenshot(); } }
             catch (Throwable t) { System.out.println("cap on main threw: " + t); }
             done.countDown();
         });
@@ -203,6 +205,9 @@ public final class Agent {
         private final Injector injector;
         private final Dumper dumper;
         private volatile boolean stop;
+        /** Armed async watchers owned by this session — killed on session
+         *  end (§4.8-style session binding). */
+        private final List<Watcher> watchers = new ArrayList<>();
 
         Session(LocalSocket s, UiAutomation uia, Injector inj, Dumper dmp)
                 throws Exception {
@@ -237,6 +242,8 @@ public final class Agent {
             } finally {
                 // §4.8 session binding: control disconnect = implicit stop
                 Streamer.ctrlClosed(this);
+                for (Watcher w : watchers) w.disarm();
+                watchers.clear();
             }
         }
 
@@ -266,6 +273,9 @@ public final class Agent {
                     case T_BATCH:   rtype = T_BATCH_RESULT;   payload = batch(req);       break;
                     case T_STREAM:  rtype = T_STREAM;         payload = streamCtrl(req);  break;
                     case T_WATCH:   rtype = T_WATCH;          payload = watch(req);       break;
+                    case T_WATCH_ARM:   rtype = T_WATCH_ARM;   payload = watchArm(req);   break;
+                    case T_WATCH_DISARM:rtype = T_WATCH_DISARM;payload = watchDisarm(req);break;
+                    case T_APP_INFO:    rtype = T_APP_INFO;    payload = appInfo();       break;
                     case T_STOP:    rtype = T_STOP;
                         payload = map("bye", true); stop = true;                          break;
                     default:
@@ -313,7 +323,8 @@ public final class Agent {
             disp.add(b.width()); disp.add(b.height());
             m.put("display", disp);
             m.put("caps", CAP_INJECT | CAP_DUMP | CAP_SHOT | CAP_QUERY | CAP_BATCH
-                    | CAP_STREAM | CAP_TEXT | CAP_MPTR | CAP_WATCH);
+                    | CAP_STREAM | CAP_TEXT | CAP_MPTR | CAP_WATCH
+                    | CAP_WATCH_ASYNC | CAP_APP_INFO);
             m.put("inject", injector.backend()); // "im" | "uia" | "im+uia-fallback"
             return m;
         }
@@ -616,6 +627,169 @@ public final class Agent {
                 Thread.sleep(pollMs);
             }
         }
+
+        /** WATCH_ARM — arm an async watcher: a device-side thread polls the
+         *  selector; on hit it runs the action and pushes a WATCH_HIT frame
+         *  on the media socket (ch=1, §4.8 ui_event). Returns immediately —
+         *  the control conn stays free for parallel ops (u2 watcher parity).
+         *  Fire-once semantics; killed on session end. */
+        private Map<String, Object> watchArm(Object req) throws Exception {
+            Map<?, ?> r = req instanceof Map ? (Map<?, ?>) req : new LinkedHashMap<>();
+            Selector sel = new Selector(r.get("selector"));
+            long pollMs = Math.max(20, (long) num(r.get("poll_ms"), 100));
+            long timeoutMs = (long) num(r.get("timeout_ms"), 0); // 0 = no timeout
+            Map<?, ?> act = r.get("action") instanceof Map
+                    ? (Map<?, ?>) r.get("action") : new LinkedHashMap<>();
+            String type = str(act.get("type"), "click");
+            if (!"click".equals(type) && !"none".equals(type))
+                throw new OpError("ERR_ARGS", "watch action.type must be click|none");
+            Watcher w = new Watcher(Watcher.NEXT_ID.getAndIncrement(),
+                    this, sel, type, pollMs, timeoutMs);
+            synchronized (watchers) { watchers.add(w); }
+            w.start();
+            Map<String, Object> m = new LinkedHashMap<>();
+            m.put("armed", true);
+            m.put("watch_id", w.id);
+            return m;
+        }
+
+        private Map<String, Object> watchDisarm(Object req) {
+            Map<?, ?> r = req instanceof Map ? (Map<?, ?>) req : new LinkedHashMap<>();
+            int id = (int) num(r.get("watch_id"), -1);
+            Watcher hit = null;
+            synchronized (watchers) {
+                for (Watcher w : watchers) if (w.id == id) { hit = w; break; }
+                if (hit != null) watchers.remove(hit);
+            }
+            if (hit != null) hit.disarm();
+            Map<String, Object> m = new LinkedHashMap<>();
+            m.put("disarmed", hit != null);
+            return m;
+        }
+
+        void dropWatcher(Watcher w) {
+            synchronized (watchers) { watchers.remove(w); }
+        }
+
+        /** APP_INFO — foreground-app lookup entirely inside UiAutomation:
+         *  the focused window's root package. No `dumpsys` spawn — ~ms vs
+         *  the ~500ms host-adb path the shim used to take. `activity` is
+         *  honestly null: accessibility windows don't expose activity
+         *  names (u2 gets it via dumpsys — we decline the spawn cost). */
+        private Map<String, Object> appInfo() {
+            String pkg = null;
+            synchronized (uia) { try {
+                for (android.view.accessibility.AccessibilityWindowInfo w
+                        : uia.getWindows()) {
+                    if (!w.isFocused()) continue;
+                    AccessibilityNodeInfo root = w.getRoot();
+                    if (root != null) {
+                        CharSequence p = root.getPackageName();
+                        if (p != null) pkg = p.toString();
+                        root.recycle();
+                    }
+                    if (pkg != null) break;
+                }
+            } catch (Throwable ignore) {}
+            if (pkg == null) {
+                AccessibilityNodeInfo r = null;
+                try {
+                    r = uia.getRootInActiveWindow();
+                    if (r != null && r.getPackageName() != null)
+                        pkg = r.getPackageName().toString();
+                } catch (Throwable ignore) {
+                } finally {
+                    if (r != null) r.recycle();
+                }
+            } }
+            Map<String, Object> m = new LinkedHashMap<>();
+            m.put("pkg", pkg);
+            m.put("activity", null);
+            Rect b = dumper.displayBounds();
+            List<Object> disp = new ArrayList<>();
+            disp.add(b.width()); disp.add(b.height());
+            m.put("display", disp);
+            m.put("sdk", Build.VERSION.SDK_INT);
+            return m;
+        }
+    }
+
+    /** Async watcher (§4.9, CAP_WATCH_ASYNC): device-side poll thread —
+     *  detection latency = one tree-walk; on hit it acts then pushes a
+     *  WATCH_HIT ui_event on the media socket. Fire-once. */
+    private static final class Watcher implements Runnable {
+        static final java.util.concurrent.atomic.AtomicInteger NEXT_ID =
+                new java.util.concurrent.atomic.AtomicInteger(1);
+        final int id;
+        private final Session owner;
+        private final Selector sel;
+        private final String action;
+        private final long pollMs, timeoutMs;
+        private volatile boolean live = true;
+        private Thread th;
+
+        Watcher(int id, Session owner, Selector sel, String action,
+                long pollMs, long timeoutMs) {
+            this.id = id; this.owner = owner; this.sel = sel;
+            this.action = action; this.pollMs = pollMs;
+            this.timeoutMs = timeoutMs;
+        }
+
+        void start() {
+            th = new Thread(this, "pd-watch-" + id);
+            th.start();
+        }
+
+        synchronized void disarm() {
+            live = false;
+            if (th != null) th.interrupt();
+        }
+
+        public void run() {
+            long t0 = SystemClock.uptimeMillis();
+            while (live) {
+                try {
+                    AccessibilityNodeInfo hit = owner.dumper.find(sel);
+                    if (hit != null) {
+                        Map<String, Object> ev = new LinkedHashMap<>();
+                        ev.put("watch_id", id);
+                        ev.put("matched", true);
+                        ev.put("waited_ms", SystemClock.uptimeMillis() - t0);
+                        if ("click".equals(action)) {
+                            Rect b = new Rect();
+                            hit.getBoundsInScreen(b);
+                            // waitFinish=false — a sync inject holds
+                            // uia.mLock for the whole gesture-wait (~3s
+                            // when the target window is transitioning),
+                            // serializing every a11y read incl. session
+                            // QUERYs. Async means async: dispatch and go.
+                            int n = owner.injector.tap(b.centerX(),
+                                    b.centerY(), false, null);
+                            ev.put("action_ok", n == 2);
+                        }
+                        ev.put("node", Dumper.nodeInfo(hit));
+                        hit.recycle();
+                        Streamer.uiEvent(ev);
+                        break;
+                    }
+                    if (timeoutMs > 0
+                            && SystemClock.uptimeMillis() - t0 >= timeoutMs) {
+                        Map<String, Object> ev = new LinkedHashMap<>();
+                        ev.put("watch_id", id);
+                        ev.put("matched", false);
+                        ev.put("waited_ms", SystemClock.uptimeMillis() - t0);
+                        Streamer.uiEvent(ev);
+                        break;
+                    }
+                    Thread.sleep(pollMs);
+                } catch (InterruptedException e) {
+                    break;
+                } catch (Throwable t) {
+                    break; // a dead uia/socket must not leak the thread
+                }
+            }
+            owner.dropWatcher(this);
+        }
     }
 
     // ---------- selector (docs/02 §4.3) --------------------------------------
@@ -850,6 +1024,32 @@ public final class Agent {
             }
         }
 
+        /** ui_event push (§4.8 reserved, ch=1 type 0x0002): a one-shot
+         *  WATCH_HIT — written to the active stream reader, else the
+         *  pre-start pending conn (watch clients hold it while armed).
+         *  No media conn = event dropped; the action already ran. */
+        static synchronized void uiEvent(Map<String, Object> p) {
+            DataOutputStream o = curOut != null ? curOut : pendOut;
+            LocalSocket s = curOut != null ? curSock : pendSock;
+            if (o == null) return;
+            try {
+                byte[] body = Msgpack.write(p);
+                o.write("PD01".getBytes("US-ASCII"));
+                o.writeByte(PROTO_VER);
+                o.writeByte(CH_MEDIA);
+                o.writeShort(T_WATCH_HIT);
+                o.writeShort(0);                 // flags: complete, no MORE
+                o.writeInt(0);                   // req_id unused for push
+                o.writeInt(body.length);
+                o.write(body);
+                o.flush();
+            } catch (Throwable t) {
+                try { if (s != null) s.close(); } catch (Throwable ignore) {}
+                if (s == curSock) mediaDead();
+                else { pendSock = null; pendOut = null; }
+            }
+        }
+
         /** ch=1 FRAME frame: flags STREAM_MORE, req_id = seq (§4.8). */
         private static byte[] frame(long s, Map<String, Object> p) throws Exception {
             byte[] body = Msgpack.write(p);
@@ -949,7 +1149,10 @@ public final class Agent {
                 // fallback: UiAutomation.injectInputEvent (slower but OEM-safe)
                 try {
                     if (uiaInject != null) {
-                        Boolean r = (Boolean) uiaInject.invoke(uia, ev, mode == 2);
+                        Boolean r;
+                        synchronized (uia) {
+                            r = (Boolean) uiaInject.invoke(uia, ev, mode == 2);
+                        }
                         if (Boolean.TRUE.equals(r)) {
                             if (force == null) imFailures++; // prefer IM, tolerate flakiness
                             recycleEv(ev);
@@ -1032,6 +1235,9 @@ public final class Agent {
                                 | (idx << MotionEvent.ACTION_POINTER_INDEX_SHIFT);
                     }
                 }
+                if (active.isEmpty()) continue; // UP/MOVE with no active
+                                                 // pointer: obtain(…,cnt=0)
+                                                 // would crash INTERNAL
                 MotionEvent ev = obtainMulti(t0,
                         t0 + (long) num(p.get("t_ms"), 0), code, active);
                 ev.setSource(InputDevice.SOURCE_TOUCHSCREEN);
@@ -1126,22 +1332,26 @@ public final class Agent {
         Dumper(UiAutomation uia) { this.uia = uia; }
 
         Rect displayBounds() {
+            synchronized (uia) {
             AccessibilityNodeInfo root = uia.getRootInActiveWindow();
             if (root == null) return new Rect();
             Rect r = new Rect();
             root.getBoundsInScreen(r);
             root.recycle();
             return r;
+            }
         }
 
         /** DFS for the nth node matching the selector (fresh tree per call). */
         AccessibilityNodeInfo find(Selector sel) {
+            synchronized (uia) {
             AccessibilityNodeInfo root = uia.getRootInActiveWindow();
             if (root == null) return null;
             int[] seen = {0};
             AccessibilityNodeInfo hit = dfs(root, sel, seen);
             root.recycle();
             return hit;
+            }
         }
 
         private AccessibilityNodeInfo dfs(AccessibilityNodeInfo n, Selector sel,
@@ -1163,11 +1373,13 @@ public final class Agent {
 
         /** The currently focused editable node, or null. */
         AccessibilityNodeInfo focusedEditable() {
+            synchronized (uia) {
             AccessibilityNodeInfo root = uia.getRootInActiveWindow();
             if (root == null) return null;
             AccessibilityNodeInfo hit = findFocused(root);
             root.recycle();
             return hit;
+            }
         }
 
         private AccessibilityNodeInfo findFocused(AccessibilityNodeInfo n) {
@@ -1213,6 +1425,7 @@ public final class Agent {
         /** u2-compatible hierarchy XML. */
         Map<String, Object> xml() {
             long t0 = System.nanoTime();
+            synchronized (uia) {
             AccessibilityNodeInfo root = uia.getRootInActiveWindow();
             StringBuilder sb = new StringBuilder(64 * 1024);
             sb.append("<?xml version='1.0' encoding='UTF-8' standalone='yes' ?>");
@@ -1229,6 +1442,7 @@ public final class Agent {
             m.put("cost_ns", System.nanoTime() - t0);
             m.put("xml", sb.toString()); // wire contract field
             return m;
+            }
         }
 
         private void write(AccessibilityNodeInfo n, StringBuilder sb, int idx, int[] count) {
