@@ -59,10 +59,15 @@ pypi package `uvx` + `serve` args）+ `docs/mcp/SUBMIT.md`。
 `pilotdroid-agent`），`uvx pilotdroid serve` 今日必败——提交前提
 见 SUBMIT.md（pypi 先行 + whl 需可起 serve 或换 mcpb/oci）。
 
-## 5. CI-run（merge 后回填）
+## 5. CI-run（三次实跑，结论完整）
 
-- [ ] agent-jar-repro job 首跑 pass/fail + 耗时
-- [ ] rust/python/agent-jar-sync 全绿
+- run 44839645842：FAIL — `setup-android@v3` default `packages: tools platform-tools` 请求已移除的 legacy `tools` 包（sdkmanager exit 1）。
+- run 44839826192：FAIL — temurin-17 重建 `527f7c77..` ≠ committed `92e4fcfd..`（javac-major 敏感性，根因见 §1）。
+- run 44839989430：**PASS** — agent-jar-repro 26s 字节全同（temurin-25 +
+  `build-tools;37.0.0` + `platforms;android-34`）；rust/python/agent-jar-sync
+  同绿。结论：jar 构建在 pin 下字节可复现，provenance 守卫生效。
+  维护注记：javac major 变化（本地升级 JDK 重建并提交 jar）时需同步
+  bump job 的 `java-version` pin——job 注释已写明。
 
 ## 6. 用户侧剩余（不变序）
 
