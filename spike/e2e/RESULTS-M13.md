@@ -50,3 +50,13 @@ XML ground truth 对照）：
 - `cargo test --workspace` 全绿；clippy/fmt 净
 - 插曲：本 worktree target 致磁盘满 → CARGO_TARGET_DIR 指向主 worktree
   共享（AGENTS.md 既定约定）
+
+## 6. dist/doc nit 批 + 发布准备（t2）
+
+| 项 | 落地 | 实证 |
+|---|---|---|
+| doc-drift 中文正则 | `(\d+)\s*(?:tools?|工具)` 覆盖 "27 工具" 行；IGNORE.running 退役（SUPPORTED watcher 行已含 `.running`），close 保留豁免 | **负路径实证**：README 改 "99 工具"→`FAIL tools-claims claims=[27,99]`，恢复→PASS |
+| windows asset .exe | matrix `ext` 字段：`pilotdroid-cli-windows-x86_64.exe` | release.yml diff |
+| README windows 行 | 下载表 +windows x86_64 行 + SmartScreen 注（更多信息→仍要运行 / `Unblock-File`），与 macOS xattr 注同构 | README diff |
+| release notes 草稿 | `docs/release-notes-v0.6.0.md`：agent 0.7.0/caps 0x7ff、异步 WATCH 头条（armed 期 op p50=43ms）、APP_INFO ~2×、SUPPORTED 仅剩 xpath、4 平台 assets、SmartScreen/quarantine 注 | 待 publish 时粘贴 |
+| notify demux 定论 | docs/02 §4.9 尾段：**push=demux not toggle**——media socket 单读者，常驻推会抽空 pull 队列；真方案 = 按帧类型 demux（watch_hit→notification / frame→pull，~50 行）；notification 仅 log 面非结构化事件 → 保留 pull 契约 | docs/02 diff |

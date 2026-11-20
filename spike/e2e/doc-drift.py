@@ -2,20 +2,18 @@
 """doc-drift — public surface claims in docs must match the code that ships.
 
 Checks (exit 0 = PASS):
-  1. serve tools: every `N tools` figure in README.md equals the number of
-     {"name":...} entries in serve.rs's tools() JSON array;
+  1. serve tools: every `N tools`/`N 工具` figure in README.md equals the
+     number of {"name":...} entries in serve.rs's tools() JSON array;
   2. shim methods: every public method on Device/_Selector/_Watcher/_Scroll
      in compat/u2shim.py is named somewhere in compat/SUPPORTED.md —
      the file that defines our drop-in promise ("表外调用按显式拒绝").
      Methods in IGNORE are shim-internal extras, not u2 surface:
-       close   — Device.close() disposes the agent conn (shim lifecycle)
-       running — _Watcher.running mirrors u2; row belongs to p2's compat
-                 table edit, tracked as IGNORE until added
+       close — Device.close() disposes the agent conn (shim lifecycle)
 """
 import re, sys, os
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-IGNORE = {"close", "running"}
+IGNORE = {"close"}
 
 serve = open(os.path.join(ROOT, "crates/pilotdroid-cli/src/serve.rs")).read()
 readme = open(os.path.join(ROOT, "README.md")).read()
@@ -35,7 +33,7 @@ def rep(name, ok, detail=""):
 body = serve[serve.index("fn tools()"):]
 body = body[:body.index("\n    ])")]
 tools = set(re.findall(r'\{"name":"([a-z_]+)"', body))
-claims = [int(n) for n in re.findall(r"(\d+)\s*tools?\b", readme)]
+claims = [int(n) for n in re.findall(r"(\d+)\s*(?:tools?|工具)\b", readme)]
 rep("tools-claims", all(n == len(tools) for n in claims) and claims,
     f"serve.rs={len(tools)} tools; README claims={claims or 'NONE'}")
 
