@@ -42,7 +42,7 @@ import java.util.Set;
 public final class Agent {
     private static final String SOCKET_NAME = "pilotdroid_agent";
     private static final String MEDIA_SOCKET = "pilotdroid_agent_media";
-    private static final String AGENT_VER = "0.3.0";
+    private static final String AGENT_VER = "0.3.1";
     private static final int PROTO_VER = 0;
 
     // capability bitmap — normative spec is pilotdroid-proto `caps` (bit-for-bit)

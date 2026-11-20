@@ -1,0 +1,37 @@
+{
+ "n_per_op": 10,
+ "serial": "ba0d072d",
+ "scenario": "tap -> dump -> exists(class) -> shot(0.5)",
+ "same_semantics": "wait_finish taps; exists absent on CLI surface",
+ "results": [
+  {
+   "engine": "cli",
+   "tap_ms": 139.3,
+   "dump_ms": 102.6,
+   "exists_ms": null,
+   "shot_ms": 270.7
+  },
+  {
+   "engine": "lib",
+   "n": 10,
+   "tap_ms": 54,
+   "dump_ms": 56,
+   "exists_ms": 47.9,
+   "shot_ms": 242
+  },
+  {
+   "engine": "serve",
+   "tap_ms": 54.2,
+   "dump_ms": 63.6,
+   "exists_ms": 49.1,
+   "shot_ms": 234.1
+  },
+  {
+   "engine": "shim",
+   "tap_ms": 51.9,
+   "dump_ms": 54.0,
+   "exists_ms": 48.0,
+   "shot_ms": 206.3
+  }
+ ]
+}

@@ -34,6 +34,8 @@ miss=[k for k in need if k not in p]
 print("OK "+json.dumps(p) if not miss else "MISS:"+",".join(miss))' > /tmp/hello.res 2>/dev/null \
   || echo "PARSE_FAIL $HELLO" > /tmp/hello.res
 grep -q "^OK" /tmp/hello.res && ok "hello_ack_fields" || bad "hello_ack_fields" "$(cat /tmp/hello.res)"
+echo "$HELLO" | grep -q '"ver": *"0\.3\.1"\|"ver":"0\.3\.1"' \
+  && ok "agent_ver" || bad "agent_ver" "$(echo "$HELLO" | head -c 200)"
 
 echo "== A1b CAPS bitmap == proto caps: INJECT=1 DUMP=2 SHOT=4 QUERY=8 BATCH=16 STREAM=32 TEXT=64 =="
 CAPS=$(echo "$HELLO" | python3 -c 'import json,sys; print(json.load(sys.stdin)["payload"]["caps"])' 2>/dev/null || echo "?")

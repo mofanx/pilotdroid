@@ -92,6 +92,21 @@
 - [x] **夜间 soak**：`spike/e2e/soak-m4.sh`——session bench + 周期 kill-9/watchdog 恢复循环 + RSS/fd 采样，报告 `soak-report.md`。
 - 剩余：硬件编码路径（>6fps 需 SurfaceFlinger/MediaCodec，ADR-006 被否方案）、多设备流矩阵。
 
+## M5 · agent 原生调用面
+
+**范围**
+- Rust facade（Device/Session，ADR-007）+ `pilotdroid serve` stdio MCP 层 + shim v1 扩面。
+
+**M5 已交付（实测 `spike/e2e/RESULTS-M5.md`）**
+- [x] **serve stdio MCP**：真机握手（proto 2024-11-05）+ tools/list **18 工具** + tools/call 实测（app_current/exists{class}/tap/stream 三件套含 to_dir 旁路）+ 串行队列不交错 + stdout 纯净。
+- [x] **facade**：Device/Session 全套 op（tap/press/swipe/long_click/query/set_text/screenshot/scroll/app_\*/stream/batch）+ Drop 断流清 forward；fd 回归门 soak-check 全 PASS。
+- [x] **shim v1**：className/scrollable selector + scroll/long_click/app_stop/app_current（agent 侧 Selector+class/scrollable wire 扩展，caps 95→127 含 STREAM bit5）。
+- [x] **四路径对拍**：CLI 单发 **+85ms/call** 固定成本实测量化；lib/serve/shim 持久路径 ~50ms/op 一致（serve vs lib 仅 0-9ms JSON-RPC 开销）。
+- [x] **AGENT_VER 0.3.1** + verify ver 断言（防旧 jar 假绿）；verify **30/30**。
+- [x] **设备矩阵**：dash 2602BRT18C/SDK37 恢复可达，caps=127/hello/dump/tap 验证。
+- [x] `soak-check.py` 自评级门落地（fd恒定/17-17恢复/RSS斜率-0.7kB·min⁻¹ 全 PASS）。
+- 剩余：MCP notifications 式推送帧（当前 stream_read 拉式）、serve 多设备并发会话、xpath 语义层。
+
 ## 明确的排序依据
 
 1. **先对拍工具（M0）再写功能**——避免"更优"沦为口号。
