@@ -170,6 +170,7 @@ fn dispatch_fake(req: &Frame) -> Option<Frame> {
                     class: "android.widget.Button".into(),
                     clickable: true,
                     enabled: true,
+                    scrollable: None,
                 }),
             })
             .unwrap(),

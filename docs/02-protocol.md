@@ -93,16 +93,16 @@ BATCH {
 
 ```
 WaitReq = { selector: Selector, timeout_ms: u64 = 5000, poll_ms?: u64 }
-Selector = { text?: string, id?: string, desc?: string, index?: u32 }
+Selector = { text?: string, id?: string, desc?: string, class?: string, scrollable?: bool, index?: u32 }
 ```
 
-四元组 **AND** 语义：`text`/`desc` 精确匹配；`id` 为 resource-id——`"pkg:id/name"` 全等、裸 `"name"` 按 `:id/` 后缀匹配；`index` 为多命中序号（缺省 0，同时构成存在性语义：第 N 命中不存在 → 未命中）。
+多字段 **AND** 语义：`text`/`desc` 精确匹配；`id` 为 resource-id——`"pkg:id/name"` 全等、裸 `"name"` 按 `:id/` 后缀匹配；`class`（M5）为类名——全限定名全等、简单名按尾段匹配；`scrollable`（M5）按节点 scrollable 属性布尔过滤；`index` 为多命中序号（缺省 0，同时构成存在性语义：第 N 命中不存在 → 未命中）。
 
 求值在设备端常驻 UiAutomation 树缓存上每 `poll_ms`（默认 20ms，可被 BATCH.poll_ms 覆盖）执行一次；命中 → `code:"OK"`（`data.node` 附带命中节点 bounds/text/id/desc），超时 → `code:"TIMEOUT"`（op 结果，非帧错误）。
 
 ### 4.4 QUERY / TEXT / SCREENSHOT-scale wire 契约
 
-- `QueryReq = { selector: Selector, attrs?: string[] }` → `{ found: bool, node?: { text,id,desc,bounds:[l,t,r,b], class, clickable, enabled } }`；exists 语义即 `found`。`attrs` 是**可选裁剪参数**：给定 `["text","bounds"]` 时 agent 只回该属性子集；省略时回全量 node。host 侧必须容忍多余字段（serde named-map 天然如此）。
+- `QueryReq = { selector: Selector, attrs?: string[] }` → `{ found: bool, node?: { text,id,desc,bounds:[l,t,r,b], class, clickable, enabled, scrollable } }`；exists 语义即 `found`。`attrs` 是**可选裁剪参数**：给定 `["text","bounds"]` 时 agent 只回该属性子集；省略时回全量 node。host 侧必须容忍多余字段（serde named-map 天然如此）。
 - `TextReq = { text: string, clear?: bool }` → 设备端 `AccessibilityNodeInfo.ACTION_SET_TEXT` 作用于当前焦点节点（非 ASCII 同路径）；无焦点节点 → `code:"NO_FOCUS"`；应答 `{ok, chars, cost_ns}`（chars 为写入字符数）。
 - `ShotReq`/`ShotAck`：请求 `{format, quality: 0-100 = 80, scale: (0,1] = 1.0}`；应答含 `{format, w, h, scale, data}`——w/h/scale 为缩放后实际几何与生效倍率的回显；`take_ns`（capture+scale 耗时）与 `enc_ns`（JPEG 编码耗时）为可选观测字段（M3 归因计时拆分，spike/e2e/m3-experiments 消费）。
 
@@ -135,7 +135,7 @@ Selector = { text?: string, id?: string, desc?: string, index?: u32 }
 - **STREAM_CTRL（control 通道，0x0050）**：
   - 请求 `{"op":"start", "fps"?:u8=5, "scale"?:f32=0.5, "quality"?:u8=70, "format"?:"jpeg"}` → 应答 `{ok, socket, effective_fps_hint}`；已在流中 → `code:"ERR_STREAM_BUSY"`。
   - 请求 `{"op":"stop"}` → 应答 `{ok, frames_sent, dropped}`。
-- **FRAME（media 通道，ch=1，msg_type 0x0001）**：帧头 `req_id` 为单调递增 seq（缺口即丢帧）；flags 置 `STREAM_MORE`（终止帧不置）；payload msgpack `{format, w, h, ts_ns, take_ns, enc_ns, dropped, data}`——`dropped` 为累计丢帧计数，`ts_ns` 为采集时刻。
+- **FRAME（media 通道，ch=1，msg_type 0x0001）**：帧头 `req_id` 为单调递增 seq（缺口即丢帧）；flags 置 `STREAM_MORE`。流结束信号二选一：**终止帧**（STREAM_MORE 清除）或 **media socket 关闭**——v0 agent 实现走 socket 关闭（stop 三路径清理即 EOF），接收方须把 EOF 同样视为流终止；payload msgpack `{format, w, h, ts_ns, take_ns, enc_ns, dropped, data}`——`dropped` 为累计丢帧计数，`ts_ns` 为采集时刻。
 - **背压**：写阻塞超过一个帧间隔 → 丢帧不阻塞，`dropped++`；media 积压绝不影响 control 通道。
 - **stop 清理**：`stop` / control 连接断开 / media 客户端断开 → 停采集循环、join 线程、关闭该流连接（socket 继续监听）；无残留线程。
 - **会话绑定**：流绑定发起它的 control 会话；control 断开即隐式 stop（防孤儿流）。

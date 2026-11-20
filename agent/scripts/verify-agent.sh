@@ -49,7 +49,7 @@ INJ=$($CLI inject-tap 700 1600 2>&1) || true
 LC=0
 for _ in 1 2 3 4 5 6; do
   sleep 0.5
-  LC=$(adb -s "$DEV" shell 'logcat -d -b all -t 400' | grep -cE "njection from package|injectInputEvent|Input event injection" || true)
+  LC=$(adb -s "$DEV" shell 'logcat -d -b all -t 5000' | grep -cE "njection from package|injectInputEvent|Input event injection" || true)
   [ "$LC" -ge 1 ] && break
 done
 echo "$INJ" | grep -q '"ok": *true\|"ok":true' && [ "$LC" -ge 1 ] \
@@ -83,7 +83,7 @@ echo "== M3-A1 KEY op: back keycode=4 via injectInputEvent =="
 adb -s "$DEV" shell 'logcat -c' 2>/dev/null
 KEY=$($CLI inject-key 4 2>&1) || true
 sleep 0.5
-KLC=$(adb -s "$DEV" shell 'logcat -d -b all -t 400' | grep -cE "njection from package|injectInputEvent|Input event injection" || true)
+KLC=$(adb -s "$DEV" shell 'logcat -d -b all -t 5000' | grep -cE "njection from package|injectInputEvent|Input event injection" || true)
 echo "$KEY" | grep -q '"ok": *true\|"ok":true' && echo "$KEY" | grep -q '"events": *2\|"events":2' \
   && ok "key_back" || bad "key_back" "resp=$KEY logcat=$KLC"
 
@@ -180,7 +180,7 @@ NA=$($CLI noack-tap 700 1600 2>&1) || true
 LC=0
 for _ in 1 2 3 4 5 6; do
   sleep 0.5
-  LC=$(adb -s "$DEV" shell 'logcat -d -b all -t 400' | grep -cE "njection from package" || true)
+  LC=$(adb -s "$DEV" shell 'logcat -d -b all -t 5000' | grep -cE "njection from package" || true)
   [ "$LC" -ge 1 ] && break
 done
 echo "$NA" | grep -q "OK: no response" && [ "$LC" -ge 1 ] \

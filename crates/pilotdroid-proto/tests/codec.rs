@@ -415,6 +415,7 @@ fn query_and_text_payloads_roundtrip() {
             class: "android.widget.Button".into(),
             clickable: true,
             enabled: true,
+            scrollable: Some(true),
         }),
     };
     assert_eq!(decode::<QueryAck>(&encode(&qa).unwrap()).unwrap(), qa);

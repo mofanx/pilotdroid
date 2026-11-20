@@ -33,5 +33,6 @@
 - **UiAutomation 单持有者**：我方 agent 与 u2 `AutomatorServiceImpl` 互斥（见 ADR-005）。跑 u2 对拍脚本前必须 `pilotdroid agent stop`，反之亦然。
 - **`adb tcpip` 会重启 adbd** 并杀死设备上所有 app_process daemon——WiFi 模式与本 agent 不兼容，daemon 须重部署。
 - **摊销口径声明规则**：对拍数据必须注明口径——我方 session 摊销（持久连接）vs u2 per-invocation。bench n≥10 的摊销数字不得直接对比 u2 单发数字而不注明。
-- **verify-agent.sh logcat 断言已知竞态**：MIUIInput marker 异步落盘，读取采用 settle 轮询（≤3s）。`logcat -d` 后立即 grep 的写法勿复用。
+- **verify-agent.sh logcat 断言已知竞态**：MIUIInput marker 异步落盘，读取采用 settle 轮询（≤3s）；且 MIUI 高噪日志可超过 800 行/s，`-t` 尾窗口必须给到 5000 行余量（`-t 400` 曾把 marker 挤出窗口造成 flaky）。`logcat -d` 后立即 grep 的写法勿复用。
+- **adb forward 规则会残留**：forward 规则由 adb server 持有、客户端断开不自动回收。CLI 路径会清掉自己创建的规则，但手动实验/中断可能留下 `tcp:*` 规则——多设备/多端口排查前先 `adb forward --list`，陈旧规则 `adb forward --remove tcp:NNNN` 清场再测。
 - **MIUI 系统 buffer**：`MIUIInput` 标记写 system buffer 而非 main，`logcat` 须带 `-b all`。

@@ -463,6 +463,12 @@ pub mod payload {
         pub id: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub desc: Option<String>,
+        /// Class name (§4.3, M5): FQN exact or simple-name tail match.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub class: Option<String>,
+        /// Filter by the node's scrollable attribute (M5).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub scrollable: Option<bool>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub index: Option<u32>,
     }
@@ -498,6 +504,9 @@ pub mod payload {
         pub class: String,
         pub clickable: bool,
         pub enabled: bool,
+        /// M5: node scrollable attribute (absent on pre-M5 agents).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub scrollable: Option<bool>,
     }
 
     #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
