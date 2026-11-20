@@ -43,12 +43,12 @@ miss=[k for k in need if k not in p]
 print("OK "+json.dumps(p) if not miss else "MISS:"+",".join(miss))' > /tmp/hello.res 2>/dev/null \
   || echo "PARSE_FAIL $HELLO" > /tmp/hello.res
 grep -q "^OK" /tmp/hello.res && ok "hello_ack_fields" || bad "hello_ack_fields" "$(cat /tmp/hello.res)"
-echo "$HELLO" | grep -q '"ver": *"0\.6\.0"\|"ver":"0\.6\.0"' \
+echo "$HELLO" | grep -q '"ver": *"0\.7\.0"\|"ver":"0\.7\.0"' \
   && ok "agent_ver" || bad "agent_ver" "$(echo "$HELLO" | head -c 200)"
 
-echo "== A1b CAPS bitmap == proto caps: INJECT=1 DUMP=2 SHOT=4 QUERY=8 BATCH=16 STREAM=32 TEXT=64 MPTR=128 WATCH=256 =="
+echo "== A1b CAPS bitmap == INJECT=1 DUMP=2 SHOT=4 QUERY=8 BATCH=16 STREAM=32 TEXT=64 MPTR=128 WATCH=256 WATCH_ASYNC=512 APP_INFO=1024 =="
 CAPS=$(echo "$HELLO" | python3 -c 'import json,sys; print(json.load(sys.stdin)["payload"]["caps"])' 2>/dev/null || echo "?")
-[ "$CAPS" = "511" ] && ok "caps_bits" || bad "caps_bits" "caps=$CAPS expected 511 (INJECT|DUMP|SHOT|QUERY|BATCH|STREAM|TEXT|MPTR|WATCH)"
+[ "$CAPS" = "2047" ] && ok "caps_bits" || bad "caps_bits" "caps=$CAPS expected 2047 (|WATCH_ASYNC|APP_INFO)"
 
 echo "== A2 INJECT tap result + logcat side-effect =="
 adb -s "$DEV" shell 'logcat -c' 2>/dev/null
@@ -357,6 +357,114 @@ while IFS='|' read -r _name _st _det; do
   [ -z "$_name" ] && continue
   [ "$_st" = "PASS" ] && ok "$_name" || bad "$_name" "$_det"
 done <<< "$STREAM_OUT"
+
+echo "== M11 ASYNC WATCH + APP_INFO + pinch smoke (ch=1 media fwd tcp:17933 above) =="
+M11_OUT=$(python3 - "$HERE" "$PORT" 17933 "$DEV" <<'PYEOF' 2>&1
+import subprocess, sys, time, json
+sys.path.insert(0, sys.argv[1])
+import agent_client as ac
+PORT, MPORT, DEV = int(sys.argv[2]), int(sys.argv[3]), sys.argv[4]
+
+def rep(name, ok_, detail=""):
+    print(f"{name}|{'PASS' if ok_ else 'FAIL'}|{str(detail)[:300]}")
+
+def sh(*args):
+    return subprocess.run(["adb", "-s", DEV, "shell", *args],
+                          capture_output=True, text=True)
+
+a = ac.Agent(PORT).connect()
+
+# C1 conn-side APP_INFO: foreground pkg without a dumpsys spawn
+try:
+    sh("am", "start", "com.android.settings")
+    time.sleep(1.2)
+    t0 = time.time()
+    p = a.app_info()["payload"]
+    ms = (time.time() - t0) * 1000
+    rep("app_info_conn",
+        p.get("pkg") == "com.android.settings" and ms < 150,
+        f"pkg={p.get('pkg')} op_ms={ms:.0f}")
+except Exception as e:
+    rep("app_info_conn", False, e)
+
+# C2 pinch smoke: two-pointer gesture dispatches ok (CAP_MULTI_PTR)
+try:
+    sh("input", "keyevent", "KEYCODE_HOME")
+    time.sleep(0.8)
+    h = a.hello()["payload"]
+    w, hh = h["display"]
+    cx, cy = w / 2, hh / 2
+    pts = [{"action": 0, "pid": 0, "x": cx - 300, "y": cy, "t_ms": 0},
+           {"action": 0, "pid": 1, "x": cx + 300, "y": cy, "t_ms": 10}]
+    for i in range(1, 11):
+        d = 300 - 250 * i / 11
+        pts += [{"action": 2, "pid": 0, "x": cx - d, "y": cy,
+                 "t_ms": 10 + 30 * i},
+                {"action": 2, "pid": 1, "x": cx + d, "y": cy,
+                 "t_ms": 10 + 30 * i}]
+    pts += [{"action": 1, "pid": 1, "x": cx - 50, "y": cy, "t_ms": 340},
+            {"action": 1, "pid": 0, "x": cx + 50, "y": cy, "t_ms": 350}]
+    r = a.inject_multi(pts)["payload"]
+    rep("pinch_smoke", r.get("ok") is True, json.dumps(r)[:200])
+except Exception as e:
+    rep("pinch_smoke", False, e)
+
+# C3 async WATCH round-trip: arm -> trigger -> WATCH_HIT on media socket
+ms = None
+try:
+    sh("input", "keyevent", "KEYCODE_HOME")
+    time.sleep(0.8)
+    ms = ac.media_connect(MPORT)
+    ms.settimeout(10)
+    r = a.watch_arm({"pkg": "com.android.settings"}, "none",
+                    poll_ms=50)["payload"]
+    wid = r.get("watch_id")
+    assert r.get("armed") and wid, r
+    sh("am", "start", "com.android.settings")
+    fr = ac.read_frame(ms)
+    assert fr is not None, "media EOF"
+    hit = (fr[0] == 1 and fr[1] == 0x0002
+           and fr[4].get("watch_id") == wid and fr[4].get("matched"))
+    rep("watch_arm_hit", hit,
+        f"frame ch={fr[0]} type={fr[1]:#06x} p={json.dumps(fr[4])[:150]}")
+except Exception as e:
+    rep("watch_arm_hit", False, e)
+
+# C4 parallel-drive: while armed, N control ops all land (non-blocking)
+try:
+    sh("input", "keyevent", "KEYCODE_HOME")
+    time.sleep(0.8)
+    r = a.watch_arm({"pkg": "com.android.settings"}, "none",
+                    poll_ms=50)["payload"]
+    wid2 = r.get("watch_id")
+    assert wid2, r
+    t0 = time.time()
+    for _ in range(10):
+        a.ping()
+    n_found = a.query({"pkg": "com.miui.home"})["payload"].get("found")
+    par_ms = (time.time() - t0) * 1000
+    # trigger -> hit still arrives after the parallel ops
+    sh("am", "start", "com.android.settings")
+    if ms is None:
+        raise Exception("no media conn")
+    ms.settimeout(10)
+    fr = ac.read_frame(ms)
+    hit2 = (fr is not None and fr[1] == 0x0002
+            and fr[4].get("watch_id") == wid2 and fr[4].get("matched"))
+    rep("watch_parallel", hit2 and par_ms < 2000,
+        f"10ping+query={par_ms:.0f}ms home_found={n_found} hit={hit2}")
+except Exception as e:
+    rep("watch_parallel", False, e)
+
+if ms is not None:
+    ms.close()
+a.close()
+PYEOF
+)
+while IFS='|' read -r _name _st _det; do
+  [ -z "$_name" ] && continue
+  [ "$_st" = "PASS" ] && ok "$_name" || bad "$_name" "$_det"
+done <<< "$M11_OUT"
 
 echo "== A7 AGENT_STOP: CLI stop exit==0 and process gone =="
 ROOT="$(cd "$HERE/../.." && pwd)"; RCLI="$ROOT/target/debug/pilotdroid-cli"

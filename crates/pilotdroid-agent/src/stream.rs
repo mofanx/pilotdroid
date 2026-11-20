@@ -38,6 +38,14 @@ pub struct MediaClient {
     stats: StreamStats,
 }
 
+/// A frame on the media channel: a video FRAME (0x0001) or a pushed
+/// ui_event `WATCH_HIT` (0x0002, §4.9 — async watcher result).
+#[derive(Debug)]
+pub enum MediaEvent {
+    Frame(MediaFrame),
+    WatchHit(pilotdroid_proto::payload::WatchHit),
+}
+
 impl MediaClient {
     /// Connect to the forwarded media port. Read timeout bounds a stall —
     /// a stream that goes quiet longer than `timeout` surfaces `Timeout`.
@@ -91,6 +99,52 @@ impl MediaClient {
         self.stats.bytes += f.data.len() as u64;
         self.stats.dropped = f.dropped;
         Ok(f)
+    }
+
+    /// Receive the next media-channel event — a video FRAME or a `WATCH_HIT`
+    /// ui_event (§4.9). Used by async-watch clients, which hold the media
+    /// socket pre-start and read hits pushed by armed agent watchers.
+    /// `Err(Timeout)` = nothing arrived within the read timeout.
+    pub fn recv_event(&mut self) -> Result<MediaEvent> {
+        let frame = Frame::read_from(&mut self.stream).map_err(|e| match e {
+            ProtocolError::Io(io) => match io.kind() {
+                ErrorKind::TimedOut | ErrorKind::WouldBlock => AgentError::Timeout,
+                _ => AgentError::Io(io),
+            },
+            other => AgentError::Protocol(other),
+        })?;
+        if frame.header.channel != Channel::Media {
+            return Err(AgentError::UnexpectedResponse {
+                expected: "event on media channel",
+                actual: frame.header.msg_type,
+            });
+        }
+        match frame.header.msg_type {
+            t if t == MediaType::Frame as u16 => {
+                let seq = frame.header.req_id;
+                if let Some(last) = self.last_seq {
+                    self.stats.seq_gaps += seq.wrapping_sub(last).saturating_sub(1) as u64;
+                }
+                self.last_seq = Some(seq);
+                if frame.header.flags & flags::STREAM_MORE == 0 {
+                    self.ended = true;
+                }
+                let f: MediaFrame = pilotdroid_proto::payload::decode(&frame.payload)?;
+                self.stats.frames += 1;
+                self.stats.bytes += f.data.len() as u64;
+                self.stats.dropped = f.dropped;
+                Ok(MediaEvent::Frame(f))
+            }
+            t if t == pilotdroid_proto::payload::MSG_WATCH_HIT => {
+                let h: pilotdroid_proto::payload::WatchHit =
+                    pilotdroid_proto::payload::decode(&frame.payload)?;
+                Ok(MediaEvent::WatchHit(h))
+            }
+            other => Err(AgentError::UnexpectedResponse {
+                expected: "FRAME or WATCH_HIT on media channel",
+                actual: other,
+            }),
+        }
     }
 
     /// True after a terminal frame (STREAM_MORE cleared) was received.

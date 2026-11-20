@@ -37,6 +37,12 @@ n=7/arm，全部 7/7 fired。
 （设备内闭环 vs host/server 轮询），约 **45×**；对 shim host-poll（500ms
 间隔）约 **8~20×**。真 u2 watcher 实测轮询间隔 ~1.4–1.7s。
 
+**公平臂（同臂可比口径）**：45× 混合了"在场检测 floor vs 轮询全周期"两
+种粒度。剔除 am 渲染 ~430ms 后同臂延迟 ≈ device-watch 664-430≈**230ms**
+vs u2 1788-430≈**1360ms** ≈ **~6×**；vs shim host-poll ~380ms ≈
+**1.7×**。对外引用建议双表述："同臂 **2.6×~6×**（轮询间隔越低倍数越
+低）+ **39ms** detect+act floor"。
+
 ## 4. 韧性 + 口径
 
 - `client_replace` 语义定稿：顶替非原子（accept→shutdown 有 TOCTOU
@@ -51,5 +57,38 @@ n=7/arm，全部 7/7 fired。
 
 - `action_ok=true` 是**注入层**成功，不保证 hit-test 命中——node bounds
   若落屏外（偶见 resolver 全高布局）点击无效。watch 语义是"注入已下发"。
-- WATCH 是阻塞 op 占整个 control 会话直到 matched/timeout；多 selector
-  并行监测需多 client 轮换或 host 回退。
+- ~~WATCH 是阻塞 op 占整个 control 会话直到 matched/timeout~~ — M11 已
+  由 WATCH_ARM 异步变体补齐（见下节）。
+
+## 5. M11 addendum — 异步 WATCH + conn APP_INFO（agent 0.7.0, caps=0x7ff）
+
+verify-agent.sh **37/37 PASS**（含新断言 app_info_conn / pinch_smoke /
+watch_arm_hit / watch_parallel）。
+
+**异步 WATCH**（WATCH_ARM op 0x0071 + WATCH_HIT ui_event ch=1 0x0002 +
+WATCH_DISARM 0x0072）：agent 内 Watcher 线程 poll→命中推帧，不阻塞
+control——u2 watcher 后台线程的对等语义。shim watcher 自动切 device-
+async（caps 回退链：WATCH_ASYNC→阻塞 WATCH→host poll）。
+
+**并行驱动臂**（spike/e2e/bench_m11_parallel.py，同 resolver 弹窗场景，
+n=7，armed 期间同 conn 交错 4×(PING+QUERY)）：
+
+| 指标 | 数值 | 说明 |
+|---|---|---|
+| armed 期间单 op 延迟 p50 | **43ms** | 21/24 op ∈ [2,90]ms——阻塞 WATCH 下不可能交错 |
+| 单 op >500ms 次数 | 3/24 (~2.3s) | a11y-provider stall：resolver 拆除期目标 app 主线程排队（框架侧；logcat `Long monitor contention` 实证）。**同场景真 u2 `app_current` ~5.6s**——非本实现特有，且 u2 更差 |
+| trigger→WATCH_HIT | p50 **128ms** | 含 resolver 渲染；M10 热路径 floor 39ms 仍有效 |
+| 命中率 | **7/7** | armed 并行驱动不影响命中 |
+
+**conn APP_INFO**（op 0x0080）：`uia.getWindows()` 焦点窗根包名 ~ms 级
+替代 `adb shell dumpsys window` spawn（shim 旧路径 ~300-600ms）。shim
+`app_current` 优先 conn 路径；`activity` 恒 null（a11y 不暴露，诚实注记）。
+
+**a11y 串行化**：Watcher find 与 session QUERY/DUMP 共用
+`synchronized(uia)`——防并发 UiAutomation 访问的框架层 stall/竞态；watcher
+click 改 `waitFinish=false`（sync inject 曾持锁 ~3s 波及同 conn 读）。
+
+**韧性尾巴**：multiPoints 空 active 守卫（UP-only 序列 INTERNAL 崩溃修
+复）；shim pinch bounds clamp 到 display（MIUI [268,3312] 超屏 bug）；
+`Agent.call` 加锁（watcher 线程与用户线程共用 control socket 的前提）；
+shell-op 分层注写入 docs/02 §4.6；e2e-*.json gitignore 化。

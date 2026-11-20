@@ -53,3 +53,5 @@ python/build/
 python/*.egg-info/
 __pycache__/
 agent/data/verify-*.json
+# bench 输出 JSON 为再生数据（同 verify-*.json 规则），RESULTS-*.md 留引用数字
+spike/e2e/e2e-*.json
