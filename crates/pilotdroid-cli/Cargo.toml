@@ -13,7 +13,7 @@ description = "pilotdroid command-line interface"
 [dependencies]
 anyhow = "1.0.104"
 clap = { version = "4.5.61", features = ["derive"] }
-pilotdroid-adb = { version = "0.1.0", path = "../pilotdroid-adb" }
+pilotdroid-adb = { workspace = true }
 pilotdroid-agent = { workspace = true }
 pilotdroid-proto = { workspace = true }
 serde = { version = "1.0.229", features = ["derive"] }

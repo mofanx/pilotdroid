@@ -1,6 +1,23 @@
 # pilotdroid
 
+[![CI](https://github.com/mofanx/pilotdroid/actions/workflows/ci.yml/badge.svg)](https://github.com/mofanx/pilotdroid/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+
 用 Rust 独立开发的 Android 自动化控制库 / CLI。借鉴 uiautomator2-rs 与 scrcpy 的工程思路，但不照抄其架构——核心目标是通过**自研持久二进制协议 + 设备端批量执行**，突破「每条指令一次 HTTP/JSON-RPC 往返」的性能天花板（u2 实测 click ~263ms、exists ~26ms、screenshot ~186ms），拿到数量级的延迟改善。
+
+## 安装
+
+- **预编译 CLI**（推荐）：从 [Releases](https://github.com/mofanx/pilotdroid/releases)
+  下载 `pilotdroid-cli-linux-x86_64`，`chmod +x` 入 PATH。CLI 已内嵌 agent.jar，
+  一条命令完成部署+八步自检，无需 `--jar`：
+
+  ```
+  pilotdroid-cli -s <serial> setup
+  ```
+- **源码构建**：`cargo install --locked --path crates/pilotdroid-cli`（Rust 1.74+）。
+- **Python u2 shim**：`pip install pilotdroid`（PyPI 发布中）或仓库内
+  `pip install ./python`，随后 `from pilotdroid import u2shim`。
+- agent.jar 亦可单独取用：Release assets 或仓库 `agent/agent.jar`（与 CLI 内嵌字节一致）。
 
 ## 定位
 

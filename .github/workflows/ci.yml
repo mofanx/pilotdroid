@@ -32,6 +32,33 @@ jobs:
         # hardware via spike/scripts.
         run: cargo test --workspace
 
+      - name: docs-smoke (README copy-paste surface regression)
+        # mcpServers block parses, binary exists, `serve --help` documents
+        # --device, every inline `pilotdroid-cli <sub>` in README is real.
+        run: |
+          cargo build -p pilotdroid-cli
+          python3 spike/e2e/docs-smoke.py
+
+  python:
+    # u2 shim + protocol client: no pytest suite yet — syntax-compile every
+    # shipped script, editable-install the package, and smoke the imports /
+    # console entry point.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+
+      - name: compileall
+        run: python -m compileall -q python compat agent/scripts spike
+
+      - name: pip install + import smoke
+        run: |
+          pip install -e ./python
+          python -c "import pilotdroid, pilotdroid.u2shim, pilotdroid.agent_client"
+          command -v pilotdroid-agent
+
   # The Java agent dex build needs an Android SDK platform jar + d8
   # (agent/README.md); it is intentionally out of scope for this workflow
   # until a dedicated job with SDK setup is added.

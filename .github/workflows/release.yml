@@ -1,0 +1,68 @@
+name: release
+
+# Tag-triggered (v*) packaging. Produces a DRAFT GitHub Release — a human
+# reviews the notes and presses "Publish release" (which then fires pypi.yml).
+#
+# Artifacts:
+#   - pilotdroid-cli-linux-x86_64   (cargo build --release)
+#   - agent.jar                     (committed dex — same bytes embedded in the
+#                                  CLI via include_bytes!, so no SDK needed)
+#   - pilotdroid-*.whl + .tar.gz    (python/ sdist+wheel, u2 shim + client)
+#   - SHA256SUMS.txt
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  verify-tag:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: tag must match workspace + python version
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          wv=$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)
+          pv=$(grep -m1 '^version' python/pyproject.toml | cut -d'"' -f2)
+          echo "tag=$tag workspace=$wv python=$pv"
+          [ "$tag" = "$wv" ] || { echo "::error::tag $tag != workspace version $wv"; exit 1; }
+          [ "$pv" = "$wv" ] || { echo "::error::python version $pv != workspace version $wv"; exit 1; }
+
+  build:
+    needs: verify-tag
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+
+      - name: build CLI (release)
+        run: cargo build --release -p pilotdroid-cli
+
+      - name: build python dists
+        run: |
+          python -m pip install --upgrade pip build
+          (cd python && python -m build --outdir ../dist)
+
+      - name: stage artifacts
+        run: |
+          cp target/release/pilotdroid-cli dist/pilotdroid-cli-linux-x86_64
+          cp agent/agent.jar dist/agent.jar
+          (cd dist && sha256sum * > SHA256SUMS.txt)
+          ls -la dist/
+
+      - name: create draft release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            --draft \
+            --title "$GITHUB_REF_NAME" \
+            --generate-notes \
+            dist/*
