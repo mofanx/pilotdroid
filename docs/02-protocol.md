@@ -110,7 +110,7 @@ Selector = { text?: string, id?: string, desc?: string, class?: string, scrollab
 
 `InjectReq = { kind: "Tap"|"Swipe"|"Key", points?: MotionPoint[], wait_finish?: bool, keycode?: u32, meta?: u32, backend?: "im"|"uia" }`
 
-- **MotionPoint = { action: u8, x: f32, y: f32, t_ms: u64 }**：`action` 为 `MotionEvent.ACTION_*`（0=DOWN、1=UP、2=MOVE），`t_ms` 为相对首点的 eventTime 偏移。`points` 按序构成手势：tap = [DOWN, UP(+~60ms)]；**swipe = DOWN + N×MOVE + UP**（MOVE 点密度即路径采样）。`wait_finish` 缺省 false。
+- **MotionPoint = { action: u8, x: f32, y: f32, t_ms: u64, pid?: u8 }**：`action` 为 `MotionEvent.ACTION_*`（0=DOWN、1=UP、2=MOVE），`t_ms` 为相对首点的 eventTime 偏移，`pid` 为手指 id（缺省 0）。`points` 按序构成手势：tap = [DOWN, UP(+~60ms)]；**swipe = DOWN + N×MOVE + UP**（MOVE 点密度即路径采样）。**多指针（M10, CAP_MULTI_PTR=bit7）**：序列中出现 >1 个不同 `pid` 时走多指针路径——agent 维护 pid→coords 活动表，把每个 wire 点展开为携带全部活动指针的 MotionEvent（DOWN→ACTION_DOWN / ACTION_POINTER_DOWN|idx、MOVE→ACTION_MOVE、UP→ACTION_POINTER_UP|idx / ACTION_UP；idx=pid 出现序）。pinch = 两条对称收敛/发散的 pid 轨迹。`wait_finish` 缺省 false。
 - **kind="Key"**：`keycode`（`android.view.KeyEvent.KEYCODE_*`，back=4/home=3/recent=187，任意 keycode 合法）走同一 `injectInputEvent` 通道构造 `KeyEvent`（DOWN+UP）；`points` 此时省略。可选 `meta`（metaState，缺省 0）。
 - **`backend` 可选强制字段**：`"im"`（InputManager 路径）或 `"uia"`（`UiAutomation.injectInputEvent`）；缺省走 agent 内置探测回退链（IM→UIA，connect 期探测，`HELLO_ACK.inject` 上报生效后端）。强制指定后端失败 → `code:"ERR_BACKEND"` op 错误而非静默降级。
 - `ShotReq` 增 `scale: f32 ∈ (0,1]`（缺省 1.0），设备端缩放后再编码（实测账见 spike/e2e/wifi-vs-usb.md §2 + RESULTS-M2：420KB→18KB，但编码主导 e2e，字节缩减 23×）。
@@ -128,6 +128,8 @@ Selector = { text?: string, id?: string, desc?: string, class?: string, scrollab
 - **禁止跨通道交错**：media 帧（ch=1）不得出现在本 socket——未来帧流使用第二条独立 socket/forward（STREAM_CTRL 激活时建立）。agent 收到非 control 帧按协议错误拒连。
 - `stream-more` 中间推送与 CANCEL 语义**不在 M2 范围**（BATCH_RESULT 单帧返回），保留 flags bit1 与 CANCEL opcode 位待帧流再起用——STREAM_MORE 于 M4 media 帧流首次启用（§4.8）。
 
+**单 client 顶替（M8, AGENT_VER≥0.5.0）**：agent 任一时刻只服务一条 control 会话——新连接 accept 时旧 socket `shutdownInput/Output`+close（`close()` 不打断阻塞 read，必须先 FIN）。**顶替非原子（TOCTOU）**：accept 与 shutdown 之间存在调度窗口，旧 conn 上在途 op 仍可正常完成；调用方应把"新 conn 建立后旧 conn 的下一 op 必败（≤~1s 内收敛）"作为可依赖语义，而非"建立瞬间即死"。被顶替方的 stream/elements 快照随 §4.8 会话绑定一并终结。
+
 ### 4.8 媒体通道帧流（M4 契约，定稿——决策见 ADR-006）
 
 **传输**：media 帧走第二条独立 socket `localabstract:pilotdroid_agent_media`（第二条 `adb forward`），与 control socket 完全隔离——慢读者不可阻塞 control op。agent 启动时与 control socket 一并绑定，任一时刻至多一个流式会话。
@@ -140,6 +142,14 @@ Selector = { text?: string, id?: string, desc?: string, class?: string, scrollab
 - **stop 清理**：`stop` / control 连接断开 / media 客户端断开 → 停采集循环、join 线程、关闭该流连接（socket 继续监听）；无残留线程。
 - **会话绑定**：流绑定发起它的 control 会话；control 断开即隐式 stop（防孤儿流）。
 - **编码**：v0 仅 `format:"jpeg"`（E1 归因：编码∝像素，quality 只省字节）；`"h264"` 留位待 MediaCodec 管线（M5）。`ui_event`（ch=1 type 0x0002）留作 accessibility 推送，本期不实现。
+
+### 4.9 WATCH——设备端 selector→action 闭环（M10, CAP_WATCH=bit8）
+
+`WatchReq = { selector, action?: {type:"click"|"none"}, timeout_ms?: u64=10000, poll_ms?: u64=150 }`
+
+- agent 在设备内轮询 `find(selector)`（每 poll_ms 一次 tree-walk），命中即按 `action` 执行（`click`=点 bounds 中心走同一注入链；`none`=仅检测）→ 应答 `{matched, waited_ms, action_ok?, node?}`。
+- 与 `wait_until` 的差别：wait_until 只等不做事；WATCH 把"出现→动作"收进**设备内单 op 闭环**，检测延迟=一次 tree-walk（u2 watcher 每轮一次 HTTP+dump 的 host 轮询没有等价物）。
+- 同步阻塞 op：占用本 control 会话直到 matched 或 timeout；需要并行监测多 selector 时用多条会话分别 WATCH（单 client 语义下=多个 serve/客户端轮流持有）或回退 host 轮询。
 
 ## 5. u2 JSON-RPC 兼容层
 

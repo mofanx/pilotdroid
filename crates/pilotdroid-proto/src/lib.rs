@@ -63,6 +63,7 @@ pub enum OpCode {
     BatchResult = 0x0041,
     StreamCtrl = 0x0050,
     Text = 0x0060,
+    Watch = 0x0070,
     AgentStop = 0x00F0,
 }
 
@@ -84,6 +85,7 @@ impl TryFrom<u16> for OpCode {
             0x0041 => Self::BatchResult,
             0x0050 => Self::StreamCtrl,
             0x0060 => Self::Text,
+            0x0070 => Self::Watch,
             0x00F0 => Self::AgentStop,
             other => return Err(ProtocolError::InvalidType(other)),
         })
@@ -362,6 +364,11 @@ pub mod payload {
         pub y: f32,
         /// eventTime offset from first point, ms.
         pub t_ms: u64,
+        /// Pointer id (finger index). Absent/0 keeps the single-pointer
+        /// path; >1 distinct `pid` makes the agent emit multi-pointer
+        /// MotionEvents (CAP_MULTI_PTR).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub pid: Option<u8>,
     }
 
     #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -515,6 +522,37 @@ pub mod payload {
     #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
     pub struct QueryAck {
         pub found: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub node: Option<NodeInfo>,
+    }
+
+    /// `WATCH` op (§4.9, M10): device-side "when selector appears, act" —
+    /// the poll loop lives inside the agent, so detection latency is one
+    /// tree-walk rather than a host round-trip per poll (CAP_WATCH).
+    #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+    pub struct WatchReq {
+        pub selector: Selector,
+        /// "click" (tap bounds center) | "none" (detect only). Default click.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub action: Option<WatchAction>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub timeout_ms: Option<u64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub poll_ms: Option<u64>,
+    }
+
+    #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+    pub struct WatchAction {
+        pub r#type: String,
+    }
+
+    #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+    pub struct WatchAck {
+        pub matched: bool,
+        pub waited_ms: u64,
+        /// Present when action=click — whether the tap landed.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub action_ok: Option<bool>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub node: Option<NodeInfo>,
     }
@@ -698,4 +736,8 @@ pub mod caps {
     pub const STREAM: u32 = 1 << 5;
     /// `TEXT` opcode served (IME text input).
     pub const TEXT: u32 = 1 << 6;
+    /// Multi-pointer `INJECT` (`points[].pid`) — pinch/gesture class.
+    pub const MULTI_PTR: u32 = 1 << 7;
+    /// `WATCH` opcode served (device-side selector→action loop).
+    pub const WATCH: u32 = 1 << 8;
 }

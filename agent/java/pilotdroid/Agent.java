@@ -42,12 +42,13 @@ import java.util.Set;
 public final class Agent {
     private static final String SOCKET_NAME = "pilotdroid_agent";
     private static final String MEDIA_SOCKET = "pilotdroid_agent_media";
-    private static final String AGENT_VER = "0.5.0";
+    private static final String AGENT_VER = "0.6.0";
     private static final int PROTO_VER = 0;
 
     // capability bitmap — normative spec is pilotdroid-proto `caps` (bit-for-bit)
     private static final int CAP_INJECT = 1, CAP_DUMP = 2, CAP_SHOT = 4,
-            CAP_QUERY = 8, CAP_BATCH = 16, CAP_STREAM = 32, CAP_TEXT = 64;
+            CAP_QUERY = 8, CAP_BATCH = 16, CAP_STREAM = 32, CAP_TEXT = 64,
+            CAP_MPTR = 128, CAP_WATCH = 256;
 
     // opcodes
     private static final int T_HELLO = 0x0001, T_HELLO_ACK = 0x0002,
@@ -55,7 +56,7 @@ public final class Agent {
             T_INJECT_RESULT = 0x0011, T_DUMP = 0x0020, T_QUERY = 0x0021,
             T_SHOT = 0x0030, T_BATCH = 0x0040, T_BATCH_RESULT = 0x0041,
             T_STREAM = 0x0050, T_FRAME = 0x0001,
-            T_TEXT = 0x0060, T_STOP = 0x00F0;
+            T_TEXT = 0x0060, T_WATCH = 0x0070, T_STOP = 0x00F0;
     private static final int CH_MEDIA = 1;
     private static final int F_RESP = 0x0001, F_MORE = 0x0002,
             F_ERR = 0x0004, F_NOACK = 0x0008;
@@ -108,6 +109,7 @@ public final class Agent {
                             // syscall pins the file description and the old
                             // session keeps working. shutdown() delivers FIN
                             // -> peer EOF -> session read fails -> exits.
+                            lastReplaced = curCtrl;
                             try { curCtrl.shutdownInput(); } catch (Throwable ignore) {}
                             try { curCtrl.shutdownOutput(); } catch (Throwable ignore) {}
                             try { curCtrl.close(); } catch (Throwable ignore) {}
@@ -118,7 +120,14 @@ public final class Agent {
                         try {
                             new Session(c, uia, injector, dumper).run();
                         } catch (Throwable t) {
-                            System.out.println("session ended: " + t);
+                            synchronized (Agent.class) {
+                                if (c == lastReplaced) {
+                                    lastReplaced = null;
+                                    System.out.println("session ended: replaced");
+                                } else {
+                                    System.out.println("session ended: " + t);
+                                }
+                            }
                         } finally {
                             synchronized (Agent.class) {
                                 if (curCtrl == c) curCtrl = null;
@@ -137,6 +146,9 @@ public final class Agent {
     private static android.os.Handler mainHandler;
     /** The single live control conn; replaced on new accept (see accept loop). */
     private static LocalSocket curCtrl;
+    /** Conn most recently killed by replacement — lets the session's end
+     *  log distinguish "replaced" from a natural EOF/error. */
+    private static volatile LocalSocket lastReplaced;
 
     /** takeScreenshot bound to the connection thread (main); marshal when
      *  called from a worker (session op thread or stream producer). */
@@ -253,6 +265,7 @@ public final class Agent {
                     case T_TEXT:    rtype = T_TEXT;           payload = text(req);        break;
                     case T_BATCH:   rtype = T_BATCH_RESULT;   payload = batch(req);       break;
                     case T_STREAM:  rtype = T_STREAM;         payload = streamCtrl(req);  break;
+                    case T_WATCH:   rtype = T_WATCH;          payload = watch(req);       break;
                     case T_STOP:    rtype = T_STOP;
                         payload = map("bye", true); stop = true;                          break;
                     default:
@@ -300,7 +313,7 @@ public final class Agent {
             disp.add(b.width()); disp.add(b.height());
             m.put("display", disp);
             m.put("caps", CAP_INJECT | CAP_DUMP | CAP_SHOT | CAP_QUERY | CAP_BATCH
-                    | CAP_STREAM | CAP_TEXT); // M4 stream channel served
+                    | CAP_STREAM | CAP_TEXT | CAP_MPTR | CAP_WATCH);
             m.put("inject", injector.backend()); // "im" | "uia" | "im+uia-fallback"
             return m;
         }
@@ -559,6 +572,48 @@ public final class Agent {
                             "selector " + sel + " not matched within " + timeoutMs + "ms");
                 }
                 Thread.sleep(Math.max(1, pollMs));
+            }
+        }
+
+        /** WATCH op (§4.9): poll a selector inside the agent; when it
+         *  appears, optionally perform an action — the whole loop stays in
+         *  the device, so detection latency is one tree-walk, not a host
+         *  round-trip per poll. {selector, action:{type:"click"|"none"},
+         *  timeout_ms, poll_ms} -> {matched, waited_ms, action_ok?, node?} */
+        private Map<String, Object> watch(Object req) throws Exception {
+            Map<?, ?> r = req instanceof Map ? (Map<?, ?>) req : new LinkedHashMap<>();
+            Selector sel = new Selector(r.get("selector"));
+            long timeoutMs = (long) num(r.get("timeout_ms"), 10000);
+            long pollMs = Math.max(20, (long) num(r.get("poll_ms"), 150));
+            Map<?, ?> act = r.get("action") instanceof Map
+                    ? (Map<?, ?>) r.get("action") : new LinkedHashMap<>();
+            String type = str(act.get("type"), "click");
+            if (!"click".equals(type) && !"none".equals(type))
+                throw new OpError("ERR_ARGS", "watch action.type must be click|none");
+            long t0 = SystemClock.uptimeMillis();
+            Map<String, Object> m = new LinkedHashMap<>();
+            for (;;) {
+                AccessibilityNodeInfo hit = dumper.find(sel);
+                if (hit != null) {
+                    m.put("matched", true);
+                    m.put("waited_ms", SystemClock.uptimeMillis() - t0);
+                    if ("click".equals(type)) {
+                        Rect b = new Rect();
+                        hit.getBoundsInScreen(b);
+                        int ev = injector.tap(b.centerX(), b.centerY(),
+                                true, null);
+                        m.put("action_ok", ev == 2);
+                    }
+                    m.put("node", Dumper.nodeInfo(hit));
+                    hit.recycle();
+                    return m;
+                }
+                if (SystemClock.uptimeMillis() - t0 >= timeoutMs) {
+                    m.put("matched", false);
+                    m.put("waited_ms", SystemClock.uptimeMillis() - t0);
+                    return m;
+                }
+                Thread.sleep(pollMs);
             }
         }
     }
@@ -909,11 +964,22 @@ public final class Agent {
             return false;
         }
 
-        /** Generic MotionEvent point sequence: [{action,x,y,t_ms}]. */
+        /** Generic MotionEvent point sequence: [{action,x,y,t_ms,pid?}].
+         *  `pid` identifies a finger; >1 distinct pid takes the
+         *  multi-pointer path (Android MotionEvent carries the WHOLE active
+         *  pointer set per event — we track pid->coords state and emit
+         *  ACTION_DOWN / _POINTER_DOWN(idx) / MOVE / _POINTER_UP(idx) / UP).
+         *  Single-pid lists keep the legacy one-event-per-point path. */
         int points(List<?> pts, boolean waitFinish, String force) {
             long t0 = SystemClock.uptimeMillis();
-            int ok = 0;
             int n = pts.size();
+            // multi-pointer? scan distinct pids
+            java.util.LinkedHashSet<Object> pids = new java.util.LinkedHashSet<>();
+            for (Object o : pts) {
+                if (o instanceof Map) pids.add(num(((Map<?, ?>) o).get("pid"), 0));
+            }
+            if (pids.size() > 1) return multiPoints(pts, waitFinish, force, t0);
+            int ok = 0;
             for (int i = 0; i < n; i++) {
                 Map<?, ?> p = pts.get(i) instanceof Map
                         ? (Map<?, ?>) pts.get(i) : new LinkedHashMap<>();
@@ -926,6 +992,88 @@ public final class Agent {
                 if (put(ev, waitFinish && i == n - 1 ? 2 : 0, force)) ok++;
             }
             return ok;
+        }
+
+        /** Multi-pointer path: every emitted MotionEvent carries all
+         *  currently-down pointers (insertion-ordered index = the wire's
+         *  pid order of appearance). */
+        private int multiPoints(List<?> pts, boolean waitFinish, String force,
+                                long t0) {
+            int ok = 0, n = pts.size();
+            // active pointer state: insertion-ordered pid -> coords
+            java.util.LinkedHashMap<Long, float[]> active = new java.util.LinkedHashMap<>();
+            for (int i = 0; i < n; i++) {
+                Map<?, ?> p = pts.get(i) instanceof Map
+                        ? (Map<?, ?>) pts.get(i) : new LinkedHashMap<>();
+                int action = (int) num(p.get("action"), 0);
+                long pid = (long) num(p.get("pid"), 0);
+                float x = (float) num(p.get("x"), 0);
+                float y = (float) num(p.get("y"), 0);
+                int code;
+                if (action == MotionEvent.ACTION_DOWN) {
+                    active.put(pid, new float[]{x, y});
+                    if (active.size() == 1) {
+                        code = MotionEvent.ACTION_DOWN;
+                    } else {
+                        int idx = indexOf(active, pid);
+                        code = MotionEvent.ACTION_POINTER_DOWN
+                                | (idx << MotionEvent.ACTION_POINTER_INDEX_SHIFT);
+                    }
+                } else if (action == MotionEvent.ACTION_MOVE) {
+                    float[] c = active.get(pid);
+                    if (c != null) { c[0] = x; c[1] = y; }
+                    code = MotionEvent.ACTION_MOVE;
+                } else { // UP — event still carries the departing pointer
+                    if (active.size() <= 1) {
+                        code = MotionEvent.ACTION_UP;
+                    } else {
+                        int idx = indexOf(active, pid);
+                        code = MotionEvent.ACTION_POINTER_UP
+                                | (idx << MotionEvent.ACTION_POINTER_INDEX_SHIFT);
+                    }
+                }
+                MotionEvent ev = obtainMulti(t0,
+                        t0 + (long) num(p.get("t_ms"), 0), code, active);
+                ev.setSource(InputDevice.SOURCE_TOUCHSCREEN);
+                if (put(ev, waitFinish && i == n - 1 ? 2 : 0, force)) ok++;
+                if (action == MotionEvent.ACTION_UP) active.remove(pid);
+            }
+            return ok;
+        }
+
+        private static int indexOf(java.util.LinkedHashMap<Long, float[]> m,
+                                   long pid) {
+            int i = 0;
+            for (Long k : m.keySet()) { if (k == pid) return i; i++; }
+            return m.size() - 1;
+        }
+
+        private static MotionEvent obtainMulti(long down, long evTime,
+                                               int action,
+                                               java.util.LinkedHashMap<Long, float[]> active) {
+            int cnt = active.size();
+            MotionEvent.PointerProperties[] props =
+                    new MotionEvent.PointerProperties[cnt];
+            MotionEvent.PointerCoords[] coords =
+                    new MotionEvent.PointerCoords[cnt];
+            int i = 0;
+            for (java.util.Map.Entry<Long, float[]> e : active.entrySet()) {
+                MotionEvent.PointerProperties pr =
+                        new MotionEvent.PointerProperties();
+                pr.id = e.getKey().intValue();
+                pr.toolType = MotionEvent.TOOL_TYPE_FINGER;
+                props[i] = pr;
+                MotionEvent.PointerCoords pc = new MotionEvent.PointerCoords();
+                pc.x = e.getValue()[0];
+                pc.y = e.getValue()[1];
+                pc.pressure = 1.0f;
+                pc.size = 1.0f;
+                coords[i] = pc;
+                i++;
+            }
+            return MotionEvent.obtain(down, evTime, action, cnt, props, coords,
+                    0, 0, 1.0f, 1.0f, 0, 0,
+                    InputDevice.SOURCE_TOUCHSCREEN, 0);
         }
 
         /** kind="Key": KeyEvent DOWN+UP over the same injectInputEvent. */

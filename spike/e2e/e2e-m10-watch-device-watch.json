@@ -1,0 +1,20 @@
+{
+  "arm": "device-watch",
+  "poll": "agent-side poll_ms=50",
+  "waited_ms": {
+    "n": 7,
+    "mean": 734.9,
+    "p50": 753,
+    "min": 635,
+    "max": 758
+  },
+  "post_trigger_ms": {
+    "n": 7,
+    "mean": 645.3,
+    "p50": 664.2,
+    "min": 531.0,
+    "max": 677.3
+  },
+  "fired": "7/7",
+  "note": "waited_ms=device-measured watch→acted; post_trigger_ms=waited_ms-(armed→trigger e2e) ≈ detection+action after the am-start e2e finished"
+}

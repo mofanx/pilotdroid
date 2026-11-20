@@ -15,6 +15,7 @@ use crate::{AgentClient, AgentError, AgentManager, MediaClient, Result, AGENT_SO
 /// MotionEvent action codes (same provenance as client.rs).
 const ACTION_DOWN: u8 = 0;
 const ACTION_UP: u8 = 1;
+const ACTION_MOVE: u8 = 2;
 
 /// A connected device handle — owns the adb transport; `session()`
 /// moves it into a live session (watchdog connect + HELLO).
@@ -126,12 +127,14 @@ impl<T: AdbTransport> Session<T> {
                     x,
                     y,
                     t_ms: 0,
+                    pid: None,
                 },
                 MotionPoint {
                     action: ACTION_UP,
                     x,
                     y,
                     t_ms: ms,
+                    pid: None,
                 },
             ],
             wait_finish: false,
@@ -143,6 +146,88 @@ impl<T: AdbTransport> Session<T> {
 
     pub fn set_text(&mut self, text: &str, clear: bool) -> Result<()> {
         self.client.set_text(text, clear)
+    }
+
+    /// Two-pointer pinch (CAP_MULTI_PTR): both fingers start `r0` px from
+    /// center and end `r1` px away, symmetric on the x axis. pinch_in =
+    /// r0 > r1 (fingers converge), pinch_out = r0 < r1.
+    pub fn pinch(
+        &mut self,
+        cx: f32,
+        cy: f32,
+        r0: f32,
+        r1: f32,
+        duration_ms: u64,
+    ) -> Result<InjectAck> {
+        let steps = ((duration_ms / 15) as usize).clamp(1, 40);
+        let mut points = Vec::with_capacity(steps * 2 + 4);
+        points.push(MotionPoint {
+            action: ACTION_DOWN,
+            x: cx - r0,
+            y: cy,
+            t_ms: 0,
+            pid: Some(0),
+        });
+        points.push(MotionPoint {
+            action: ACTION_DOWN,
+            x: cx + r0,
+            y: cy,
+            t_ms: 10,
+            pid: Some(1),
+        });
+        for i in 1..=steps {
+            let t = i as f32 / (steps + 1) as f32;
+            let d = r0 + (r1 - r0) * t;
+            let t_ms = 10 + (duration_ms as f32 * t) as u64;
+            points.push(MotionPoint {
+                action: ACTION_MOVE,
+                x: cx - d,
+                y: cy,
+                t_ms,
+                pid: Some(0),
+            });
+            points.push(MotionPoint {
+                action: ACTION_MOVE,
+                x: cx + d,
+                y: cy,
+                t_ms,
+                pid: Some(1),
+            });
+        }
+        points.push(MotionPoint {
+            action: ACTION_UP,
+            x: cx + r1,
+            y: cy,
+            t_ms: 10 + duration_ms,
+            pid: Some(1),
+        });
+        points.push(MotionPoint {
+            action: ACTION_UP,
+            x: cx - r1,
+            y: cy,
+            t_ms: 10 + duration_ms + 10,
+            pid: Some(0),
+        });
+        self.client.inject(InjectReq {
+            kind: InjectKind::Swipe,
+            points,
+            wait_finish: true,
+            keycode: None,
+            meta: None,
+            backend: None,
+        })
+    }
+
+    /// WATCH — device-side selector→action loop (CAP_WATCH, docs/02 §4.9).
+    pub fn watch(&mut self, selector: Selector, action: &str, timeout_ms: u64) -> Result<WatchAck> {
+        self.client.watch(WatchReq {
+            selector,
+            action: Some(WatchAction {
+                r#type: action.into(),
+            }),
+            timeout_ms: Some(timeout_ms),
+            poll_ms: None,
+        })
     }
 
     pub fn dump(&mut self) -> Result<String> {

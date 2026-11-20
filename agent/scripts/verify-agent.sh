@@ -24,6 +24,15 @@ bad() { FAIL=$((FAIL+1)); echo "  FAIL $1 :: $2"; RESULTS["$1"]="fail: $2"; }
 echo "== setup: adb forward tcp:$PORT -> localabstract:pilotdroid_agent =="
 adb -s "$DEV" forward "tcp:$PORT" "localabstract:pilotdroid_agent" >/dev/null
 
+# Keyguard pre-step: a locked/asleep screen makes every downstream UI
+# assertion flake. Wake + swipe-unlock is best-effort (no-op when already
+# unlocked); MIUI pocket-mode users should keep the screen on manually.
+adb -s "$DEV" shell 'input keyevent KEYCODE_WAKEUP' >/dev/null 2>&1 || true
+adb -s "$DEV" shell 'wm size' 2>/dev/null | grep -o '[0-9]*x[0-9]*' | head -1 \
+  | awk -Fx '{print "adb -s '"$DEV"' shell input swipe "$1/2" "$2*0.9" "$1/2" "$2*0.15" 600"}' \
+  | sh >/dev/null 2>&1 || true
+sleep 0.5
+
 echo "== A1 HELLO_ACK fields =="
 HELLO=$($CLI hello 2>&1) || true
 echo "$HELLO" | python3 -c '
@@ -34,12 +43,12 @@ miss=[k for k in need if k not in p]
 print("OK "+json.dumps(p) if not miss else "MISS:"+",".join(miss))' > /tmp/hello.res 2>/dev/null \
   || echo "PARSE_FAIL $HELLO" > /tmp/hello.res
 grep -q "^OK" /tmp/hello.res && ok "hello_ack_fields" || bad "hello_ack_fields" "$(cat /tmp/hello.res)"
-echo "$HELLO" | grep -q '"ver": *"0\.5\.0"\|"ver":"0\.5\.0"' \
+echo "$HELLO" | grep -q '"ver": *"0\.6\.0"\|"ver":"0\.6\.0"' \
   && ok "agent_ver" || bad "agent_ver" "$(echo "$HELLO" | head -c 200)"
 
-echo "== A1b CAPS bitmap == proto caps: INJECT=1 DUMP=2 SHOT=4 QUERY=8 BATCH=16 STREAM=32 TEXT=64 =="
+echo "== A1b CAPS bitmap == proto caps: INJECT=1 DUMP=2 SHOT=4 QUERY=8 BATCH=16 STREAM=32 TEXT=64 MPTR=128 WATCH=256 =="
 CAPS=$(echo "$HELLO" | python3 -c 'import json,sys; print(json.load(sys.stdin)["payload"]["caps"])' 2>/dev/null || echo "?")
-[ "$CAPS" = "127" ] && ok "caps_bits" || bad "caps_bits" "caps=$CAPS expected 127 (INJECT|DUMP|SHOT|QUERY|BATCH|STREAM|TEXT)"
+[ "$CAPS" = "511" ] && ok "caps_bits" || bad "caps_bits" "caps=$CAPS expected 511 (INJECT|DUMP|SHOT|QUERY|BATCH|STREAM|TEXT|MPTR|WATCH)"
 
 echo "== A2 INJECT tap result + logcat side-effect =="
 adb -s "$DEV" shell 'logcat -c' 2>/dev/null
@@ -274,12 +283,19 @@ except Exception as e:
 b = None
 try:
     b = ac.Agent(PORT).connect()
+    # Replacement is NOT atomic (§4.6 TOCTOU): an op in flight when the new
+    # conn arrives may still land — the old conn just has to be dead
+    # shortly after. Poll <=1s instead of asserting instant death.
     killed = False
-    try:
-        a.ping()
-    except Exception:
-        killed = True
-    rep("client_replace", killed, "op on replaced conn raised")
+    deadline = time.time() + 1.0
+    while time.time() < deadline:
+        try:
+            a.ping()
+        except Exception:
+            killed = True
+            break
+        time.sleep(0.05)
+    rep("client_replace", killed, "replaced conn dead within 1s")
 except Exception as e:
     rep("client_replace", False, e)
 
