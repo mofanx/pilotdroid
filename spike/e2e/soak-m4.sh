@@ -24,6 +24,11 @@ agent_mem_fd() {           # echoes "rss_kb fd_count" or "- -"
   fd=$(adb -s "$DEV" shell "ls /proc/$p/fd 2>/dev/null | wc -l" | tr -d '\r')
   echo "${rss:-?} ${fd:-?}"
 }
+agent_watch_threads() {    # echoes live pd-watch thread count or "-"
+  local p; p=$(adb -s "$DEV" shell "pgrep -f pilotdroid.Agent" | tr -d '\r' | head -1)
+  [ -z "$p" ] && { echo "-"; return; }
+  adb -s "$DEV" shell "cat /proc/$p/task/*/comm 2>/dev/null | grep -c pd-watch" | tr -d '\r'
+}
 
 END=$((SECONDS + MINUTES * 60))
 LAST_KILL=$SECONDS
@@ -50,8 +55,17 @@ try:
         elif op == 2: a.query({"text": "Settings"})   # harmless miss
         else: a.dump()
         lat.append((time.perf_counter() - t) * 1000)
+    # M13: watcher arm/disarm x50 — pd-watch-N threads spawn+die each
+    # cycle; residue counted by the shell side via /proc/<pid>/task/comm
+    wok = 0
+    for i in range(50):
+        r = a.watch_arm({"text": "__soak_never_match__"},
+                        action="none", timeout_ms=0, poll_ms=50)
+        a.watch_disarm(r["payload"]["watch_id"])
+        wok += 1
     a.close()
-    print(json.dumps({"ops": 50, "p50": round(statistics.median(lat),1),
+    print(json.dumps({"ops": 50, "watch": wok,
+                      "p50": round(statistics.median(lat),1),
                       "p95": round(sorted(lat)[int(len(lat)*.95)],1)}))
 except Exception as e:
     print(json.dumps({"ops": 0, "err": str(e)[:200]}))
@@ -60,7 +74,9 @@ PY
   OPS=$(echo "$RES" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("ops",0))' 2>/dev/null || echo 0)
   TOTAL_OPS=$((TOTAL_OPS + OPS))
   read -r RSS FD <<< "$(agent_mem_fd)"
-  log "\"ev\":\"bench\",\"cycle\":$CYCLE,\"res\":$RES,\"rss_kb\":\"$RSS\",\"fd\":\"$FD\""
+  sleep 0.5   # pd-watch threads exit async on disarm-interrupt — settle
+  WRES=$(agent_watch_threads)
+  log "\"ev\":\"bench\",\"cycle\":$CYCLE,\"res\":$RES,\"rss_kb\":\"$RSS\",\"fd\":\"$FD\",\"wres\":\"$WRES\""
   [ "$OPS" -eq 0 ] && FAILS=$((FAILS+1))
 
   # --- periodic kill -> watchdog recovery check ---

@@ -290,6 +290,53 @@ class _Selector:
         l, t, r_, b = node["bounds"]
         return self.dev.long_click((l + r_) / 2, (t + b) / 2, duration)
 
+    def center(self):
+        """u2 `d(...).center()` -> (x, y) of the matched node's center."""
+        node = self._node()
+        if node is None:
+            raise LookupError(f"selector {self.kw} found no node")
+        l, t, r, b = node["bounds"]
+        return ((l + r) // 2, (t + b) // 2)
+
+    def swipe(self, direction, scale=0.8):
+        """u2 `d(...).swipe('left'|'right'|'up'|'down')` — swipe inside the
+        matched node's bounds (finger moves `direction` over `scale` of it)."""
+        node = self._node()
+        if node is None:
+            raise LookupError(f"selector {self.kw} found no node")
+        l, t, r, b = node["bounds"]
+        dx, dy = {"left": (-1, 0), "right": (1, 0),
+                  "up": (0, -1), "down": (0, 1)}[str(direction).lower()]
+        cx, cy = (l + r) / 2, (t + b) / 2
+        w, h = r - l, b - t
+        return self.dev.swipe(cx - dx * w * scale / 2,
+                              cy - dy * h * scale / 2,
+                              cx + dx * w * scale / 2,
+                              cy + dy * h * scale / 2)
+
+    def gesture(self, start1, start2, end1, end2, steps=100):
+        """u2 `d(...).gesture(p1, p2, p3, p4)` — two-pointer gesture scoped
+        to the element (pinch/drag class): ptrA start1->end1, ptrB
+        start2->end2 (CAP_MULTI_PTR required)."""
+        if self._node() is None:
+            raise LookupError(f"selector {self.kw} found no node")
+        n = max(1, int(steps))
+        pts = [{"action": 0, "pid": 0, "x": float(start1[0]),
+                "y": float(start1[1]), "t_ms": 0},
+               {"action": 0, "pid": 1, "x": float(start2[0]),
+                "y": float(start2[1]), "t_ms": 0}]
+        for i in range(1, n + 1):
+            f = i / n
+            pts += [{"action": 1 if i == n else 2, "pid": 0,
+                     "x": start1[0] + (end1[0] - start1[0]) * f,
+                     "y": start1[1] + (end1[1] - start1[1]) * f,
+                     "t_ms": i * 10},
+                    {"action": 1 if i == n else 2, "pid": 1,
+                     "x": start2[0] + (end2[0] - start2[0]) * f,
+                     "y": start2[1] + (end2[1] - start2[1]) * f,
+                     "t_ms": i * 10}]
+        return self.dev.a.inject_multi(pts)["payload"].get("ok", False)
+
     def _pinch(self, outward, percent=100, steps=10, duration=0.2):
         """u2 `d().pinch_in/out(percent, steps)` — two-pointer gesture over
         the matched node's bounds (CAP_MULTI_PTR agent required)."""
@@ -535,6 +582,7 @@ class Device:
     def __init__(self, port=None, serial=None, agent=None):
         port = port or _detect_port(serial)
         self.a = agent or Agent(port).connect()
+        self._port = port
         self.serial = serial
         self.caps = self.a.hello()["payload"].get("caps", 0)
 
@@ -709,6 +757,55 @@ class Device:
                          "accelerometer_rotation",
                          "0" if freeze else "1"]) == 0
 
+    def set_orientation(self, orientation):
+        """u2 `d.set_orientation('l'|'n'|'r'|'u')` — alias of the
+        `orientation` setter (freezes auto-rotate, sets user_rotation)."""
+        self.orientation = orientation
+
+    def swipe_ext(self, direction, scale=0.9):
+        """u2 `d.swipe_ext('left'|'right'|'up'|'down', scale)` — swipe
+        across `scale` fraction of the display, centered."""
+        w, h = self.window_size() or (1080, 2400)
+        dx, dy = {"left": (-1, 0), "right": (1, 0),
+                  "up": (0, -1), "down": (0, 1)}[str(direction).lower()]
+        x1 = w / 2 - dx * w * scale / 2
+        y1 = h / 2 - dy * h * scale / 2
+        return self.swipe(x1, y1, x1 + dx * w * scale,
+                          y1 + dy * h * scale, duration=0.3)
+
+    def double_click(self, x, y, duration=0.1):
+        """u2 `d.double_click(x, y, duration)` — two taps `duration`s
+        apart."""
+        self.click(x, y)
+        time.sleep(max(0.01, duration))
+        return self.click(x, y)
+
+    def drag(self, sx, sy, ex, ey, duration=0.5):
+        """u2 `d.drag(sx, sy, ex, ey, duration)` — press-hold then move;
+        coords are fractions of the display when <= 1."""
+        w, h = self.window_size() or (1080, 2400)
+        x1, y1 = sx * w if sx <= 1 else sx, sy * h if sy <= 1 else sy
+        x2, y2 = ex * w if ex <= 1 else ex, ey * h if ey <= 1 else ey
+        n = 8
+        pts = [{"action": 0, "x": float(x1), "y": float(y1), "t_ms": 0},
+               {"action": 2, "x": float(x1), "y": float(y1), "t_ms": 300}]
+        for i in range(1, n + 1):
+            f = i / n
+            pts.append({"action": 1 if i == n else 2,
+                        "x": x1 + (x2 - x1) * f, "y": y1 + (y2 - y1) * f,
+                        "t_ms": 300 + int(duration * 1000 * f)})
+        return self.a.inject_multi(pts)["payload"].get("ok", False)
+
+    def service(self, name):
+        """u2 `d.service(name)` — the on-device automation service.
+        'uiautomator' (u2's canonical service name) maps to the pilotdroid
+        agent process — same role, different binary."""
+        if name not in ("uiautomator", "pilotdroid", "pilotdroid_agent"):
+            raise ValueError(
+                f"service('{name}') unsupported — pilotdroid runs a single "
+                "device service (the agent); u2's 'uiautomator' maps to it")
+        return _Service(self)
+
     def app_current(self):
         """u2 app_current() -> {package, activity}. Prefers the conn-side
         APP_INFO op (CAP_APP_INFO — UiAutomation window read, ~ms) over a
@@ -789,5 +886,47 @@ def _detect_port(serial=None):
         "`adb forward tcp:17932 localabstract:pilotdroid_agent`")
 
 
+class _Service:
+    """`d.service('uiautomator')` over the agent app_process — u2's
+    atx-agent service lifecycle applied to our daemon. Shell-based
+    checks work even after the control conn dies on stop()."""
+
+    _PAT = "pilotdroid.Agent"
+    _DIR = "/data/local/tmp/pilotdroid"
+
+    def __init__(self, dev):
+        self.dev = dev
+
+    def running(self):
+        return bool(self.dev.shell(
+            f"pgrep -f '{self._PAT}'").output.strip())
+
+    def stop(self):
+        self.dev.shell(f"pkill -f '{self._PAT}'")
+        return not self.running()
+
+    def start(self):
+        self.dev.shell(
+            f"nohup setsid env CLASSPATH={self._DIR}/agent.jar "
+            f"app_process {self._DIR} pilotdroid.Agent "
+            f"</dev/null >{self._DIR}/agent.log 2>&1 &")
+        for _ in range(40):
+            if self.running():
+                break
+            time.sleep(0.25)
+        try:
+            self.dev.a = Agent(self.dev._port).connect()
+        except Exception:
+            pass
+        return self.running()
+
+
 def connect(port=None, serial=None):
+    """u2 `u2.connect(addr)` — the positional may be an adb serial string
+    (canonical u2 style: `u2.connect('emulator-5554')`) or a local TCP
+    port (pilotdroid-native: int or digit string). `serial=` kwarg and
+    no-arg auto-detect unchanged."""
+    if isinstance(port, str) and not port.isdigit():
+        serial = serial or port
+        port = None
     return Device(port=port, serial=serial)

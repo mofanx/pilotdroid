@@ -40,8 +40,12 @@ uiautomator2 `Device` 公共 API 的逐条标注。约定：**drop-in 只承诺�
 
 | u2 API | 状态 | 语义差 |
 |---|---|---|
-| `connect()` | ✅ | shim 签名 `connect(port=None, serial=None)`——port 缺省 auto-detect `adb forward --list` 中 `localabstract:pilotdroid_agent` 规则 |
+| `connect(addr)` | ✅ | 位置参数兼容两种口径：adb serial 字符串（u2 风格 `u2.connect('ba0d072d')`）或本地 TCP port（int/digit-str，pilotdroid 风格）；`serial=` kwarg 与无参 auto-detect（扫 `adb forward --list` 中 `localabstract:pilotdroid_agent`）不变（M13） |
+| `service("uiautomator")` | ✅ 映射 | u2 的设备端服务生命周期（`.running()/.stop()/.start()`）映射到 pilotdroid agent 进程——同角色不同实现；其他服务名报 ValueError（M13，Themis 全量脚本 teardown 依赖） |
 | `click(x,y)` `long_click(x,y,d)` `swipe` `press(key)` | ✅ | key 别名：home/back/recent(s)/power/volume_±/menu/search/enter/del |
+| `swipe_ext(dir,scale)` `double_click(x,y,d)` `drag(fx1,fy1,fx2,fy2,d)` | ✅ | M13 drop-in 补齐（Themis 实测用法驱动）：swipe_ext=居中定向扫屏；drag 坐标 ≤1 按屏幕比例，含 300ms 按住起点（M13） |
+| `set_orientation('l'|'n'|'r'|'u')` | ✅ | `orientation` setter 别名（M13） |
+| `d(...).center()` `d(...).gesture(p1,p2,p3,p4,steps)` | ✅ | center=命中节点中心坐标；gesture=节点内双指针手势（CAP_MULTI_PTR，M13） |
 | `set_text(s)` | ✅ | 作用于已聚焦编辑框（u2 同语义）；**原生支持 Unicode**，u2 需 ADBKeyboard IME |
 | `screenshot(path)` | ✅ | shim 额外 `scale`/`quality` 参数；返回 JPEG bytes |
 | `dump_hierarchy()` | ✅ | 返回 XML 字符串（agent 原生生成，节点属性集与 uiautomator dump 近似） |
