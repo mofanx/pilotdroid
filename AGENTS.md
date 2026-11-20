@@ -11,3 +11,11 @@
   `agent/scripts/verify-agent.sh <serial> <port>`, `pilotdroid-cli -s <serial> setup`.
 - Forward hygiene: killed `serve`/bench sessions leak `adb forward` rules —
   `pilotdroid setup` step 6 lists orphans; remove listed ones only.
+- Embedded jar: `agent/agent.jar` is committed and compiled into
+  `pilotdroid-cli` via `include_bytes!` — `setup`/`agent install` push it
+  when no `--jar` is given. After editing `agent/java/pilotdroid/Agent.java`,
+  rebuild + redeploy with `agent/scripts/deploy-agent.sh <serial>`, then
+  `git add agent/agent.jar`. Stale-jar sync is enforced by verify's
+  `agent_ver` assert (HELLO.ver must match AGENT_VER in Agent.java).
+- `agent/data/verify-*.json` are regenerated on every verify run — ignored;
+  don't commit them.

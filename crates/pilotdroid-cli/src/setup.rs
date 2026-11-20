@@ -1,13 +1,19 @@
-//! `pilotdroid setup` — five-step doctor for a bare checkout:
+//! `pilotdroid setup` — eight-step doctor for a bare checkout:
 //!
 //! 1. `adb` binary on PATH;
 //! 2. target device visible and `ready` via `adb devices`;
-//! 3. agent.jar present on-device (pushed when `--jar` is supplied);
+//! 3. agent.jar present on-device (pushes `--jar`, else the embedded
+//!    `AGENT_JAR_BYTES`, when the remote copy is missing);
 //! 4. `adb forward` + TCP dial to the agent socket;
-//! 5. HELLO handshake — report agent `ver` + `caps`.
+//! 5. HELLO handshake — report agent `ver` + `caps`;
+//! 6. u2/atx conflict probe (running uiautomator2 holds the
+//!    UiAutomation singleton → WARN);
+//! 7. inject_probe — dead-zone tap + PING re-check, fail-fast when
+//!    INJECT is revoked;
+//! 8. forward hygiene — orphaned `pilotdroid_agent*` rules (WARN).
 //!
 //! Every failed step prints one actionable hint. Exit status is 0 iff
-//! all five pass — CI can gate on the exit code, humans read stdout.
+//! all checks pass — CI can gate on the exit code, humans read stdout.
 
 use std::path::PathBuf;
 
@@ -182,22 +188,35 @@ pub fn run<T: AdbTransport>(
 
     let mut mgr = AgentManager::new(&mut adb);
 
-    // 3. agent.jar on-device (push when --jar supplied and remote absent).
+    // 3. agent.jar on-device — absent a remote copy we push --jar when
+    // supplied, else the embedded AGENT_JAR_BYTES (one-command setup).
     let remote_ok = mgr.remote_jar_exists(&serial).unwrap_or(false);
-    let jar_ok = if remote_ok {
-        true
-    } else if let Some(j) = jar.as_deref() {
-        mgr.install(&serial, j).is_ok()
-    } else {
+    let pushed = if remote_ok {
         false
+    } else {
+        let local = match jar.as_deref() {
+            Some(j) => Some(j.to_path_buf()),
+            None => pilotdroid_agent::embedded_jar_path().ok(),
+        };
+        local.is_some_and(|j| mgr.install(&serial, &j).is_ok())
     };
-    checks.push(if jar_ok {
-        Check::pass("agent_jar", format!("remote jar present on {serial}"))
+    checks.push(if remote_ok || pushed {
+        Check::pass(
+            "agent_jar",
+            if pushed {
+                format!(
+                    "pushed {} jar to {serial}",
+                    if jar.is_some() { "--jar" } else { "embedded" }
+                )
+            } else {
+                format!("remote jar present on {serial}")
+            },
+        )
     } else {
         Check::fail(
             "agent_jar",
-            "remote jar missing (or push failed)",
-            "pass --jar <path>/agent.jar or run `pilotdroid agent install <jar>`",
+            "remote jar missing and embedded push failed",
+            "run `pilotdroid agent install` or check adb write access to /data/local/tmp",
         )
     });
 
@@ -242,12 +261,45 @@ pub fn run<T: AdbTransport>(
         ));
     }
 
+    // 6. u2/atx conflict probe: a running uiautomator2/atx stack holds the
+    // UiAutomation singleton — our agent can dial + HELLO yet silently
+    // fail to INJECT. WARN not FAIL: an installed-but-idle u2 harms
+    // nothing, and even a live one only blocks *our* inject path.
+    checks.push(u2_conflict(
+        mgr.shell(&serial, "pm list packages"),
+        mgr.shell(&serial, "ps -A"),
+    ));
+
+    // 7. inject_probe: a harmless tap in the status-bar dead zone + a PING
+    // re-check — catches ROMs that grant UiAutomation but revoke INJECT
+    // mid-flight (duchamp-class), which steps 4-5 cannot see.
+    if let Some(c) = client.as_mut() {
+        let probe = c
+            .tap(5.0, 5.0, true)
+            .map_err(|e| e.to_string())
+            .and_then(|_| c.ping().map_err(|e| e.to_string()));
+        checks.push(match probe {
+            Ok(()) => Check::pass("inject_probe", "INJECT(5,5)+PING ok"),
+            Err(e) => Check::fail(
+                "inject_probe",
+                format!("inject or post-inject ping failed: {e}"),
+                "INJECT permission may be revoked — check UiAutomation/accessibility grants; on conflict see step u2_conflict",
+            ),
+        });
+    } else {
+        checks.push(Check::fail(
+            "inject_probe",
+            "skipped — dial failed",
+            "fix step 4 first",
+        ));
+    }
+
     // Don't leak the forward rule from the check.
     if client.is_some() {
         let _ = mgr.disconnect(&serial, used_port);
     }
 
-    // 6. forward hygiene: `pilotdroid_agent*` rules whose local port has
+    // 8. forward hygiene: `pilotdroid_agent*` rules whose local port has
     // no established client conn are orphans (leaked by killed serve/
     // bench sessions — Drop never ran). List, never delete: a multi-serve
     // sibling's rule is also "orphan-looking" if its conn isn't active.
@@ -261,6 +313,49 @@ pub fn run<T: AdbTransport>(
             "setup: {} check(s) failed",
             checks.iter().filter(|c| !c.ok).count()
         );
+    }
+}
+
+/// u2/atx conflict probe. `pm_out` is the raw `pm list packages` stdout,
+/// `ps_out` the raw `ps -A` stdout — both parsed host-side so transports
+/// never need shell pipes.
+fn u2_conflict(
+    pm_out: std::result::Result<pilotdroid_adb::ShellOutput, pilotdroid_adb::AdbError>,
+    ps_out: std::result::Result<pilotdroid_adb::ShellOutput, pilotdroid_adb::AdbError>,
+) -> Check {
+    let installed: Vec<String> = pm_out
+        .map(|o| {
+            String::from_utf8_lossy(&o.stdout)
+                .lines()
+                .filter(|l| l.contains("uiautomator") || l.contains("atx"))
+                .map(|l| l.trim_start_matches("package:").to_string())
+                .collect()
+        })
+        .unwrap_or_default();
+    let running: Vec<String> = ps_out
+        .map(|o| {
+            String::from_utf8_lossy(&o.stdout)
+                .lines()
+                .filter(|l| {
+                    (l.contains("uiautomator") || l.contains("atx")) && !l.contains("pilotdroid")
+                })
+                .map(|l| l.split_whitespace().last().unwrap_or("?").to_string())
+                .collect()
+        })
+        .unwrap_or_default();
+    if !running.is_empty() {
+        Check::warn(
+            "u2_conflict",
+            format!("uiautomator/atx process(es) running: {}", running.join(", ")),
+            "u2/atx holds the UiAutomation singleton — `am force-stop com.github.uiautomator` (or stop u2) before relying on INJECT",
+        )
+    } else if !installed.is_empty() {
+        Check::pass(
+            "u2_conflict",
+            format!("u2/atx installed but idle ({})", installed.join(", ")),
+        )
+    } else {
+        Check::pass("u2_conflict", "no uiautomator/atx packages")
     }
 }
 

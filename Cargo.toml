@@ -12,6 +12,10 @@ edition = "2021"
 version = "0.1.0"
 rust-version = "1.74"
 license = "MIT"
+repository = "https://github.com/mofanx/pilotdroid"
+homepage = "https://github.com/mofanx/pilotdroid"
+readme = "README.md"
+keywords = ["android", "adb", "uiautomator", "automation", "mcp"]
 
 [workspace.dependencies]
 pilotdroid-adb = { path = "crates/pilotdroid-adb" }

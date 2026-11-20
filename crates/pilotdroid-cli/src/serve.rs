@@ -51,7 +51,8 @@ pub fn run<T: AdbTransport, R: std::io::BufRead, W: Write>(
     let mut session: Option<Session<T>> = None;
     // Element snapshot backing tap_index/set_text_index — refreshed by
     // every list_elements call; indexes are meaningless across snapshots.
-    let mut elements: Vec<pilotdroid_agent::ElemInfo> = Vec::new();
+    // (elements, layout signature, focused pkg at snapshot time).
+    let mut snapshot: Option<(Vec<pilotdroid_agent::ElemInfo>, u64, Option<String>)> = None;
     for line in inp.lines() {
         let line = line?;
         if line.trim().is_empty() {
@@ -131,7 +132,7 @@ pub fn run<T: AdbTransport, R: std::io::BufRead, W: Write>(
                         }
                     },
                 };
-                write_resp(out, &call_tool(s, id, &name, args, &mut elements)?)?;
+                write_resp(out, &call_tool(s, id, &name, args, &mut snapshot)?)?;
                 continue;
             }
             _ => err(id, -32601, &format!("method not found: {method}")),
@@ -197,12 +198,34 @@ fn num_arg(args: &Value, k: &str) -> Option<f64> {
     args.get(k).and_then(Value::as_f64)
 }
 
+/// Snapshot staleness guard for index ops: the focused package and the
+/// layout signature must match the snapshot's — a changed screen means
+/// the cached indexes point at the wrong bounds. Fails closed: a wrong
+/// tap is more expensive than a re-list.
+fn check_snapshot<T: AdbTransport>(
+    s: &mut Session<T>,
+    snap: &(Vec<pilotdroid_agent::ElemInfo>, u64, Option<String>),
+) -> Result<()> {
+    let cur_pkg = s.app_current().ok().flatten().map(|(p, _)| p);
+    anyhow::ensure!(
+        cur_pkg == snap.2,
+        "snapshot stale — focused app changed ({:?} → {cur_pkg:?}); re-run list_elements",
+        snap.2
+    );
+    let cur_sig = s.layout_signature()?;
+    anyhow::ensure!(
+        cur_sig == snap.1,
+        "snapshot stale — layout changed since list_elements; re-run list_elements"
+    );
+    Ok(())
+}
+
 fn call_tool<T: AdbTransport>(
     s: &mut Session<T>,
     id: Value,
     name: &str,
     args: Value,
-    els: &mut Vec<pilotdroid_agent::ElemInfo>,
+    snap: &mut Option<(Vec<pilotdroid_agent::ElemInfo>, u64, Option<String>)>,
 ) -> Result<Value> {
     let r: std::result::Result<Value, anyhow::Error> =
         (|| -> std::result::Result<Value, anyhow::Error> {
@@ -257,11 +280,26 @@ fn call_tool<T: AdbTransport>(
                 }
                 "dump" => Ok(json!({"xml": s.dump()?})),
                 "list_elements" => {
-                    *els = s.list_elements()?;
-                    Ok(json!({"count": els.len(), "elements": els}))
+                    let interactive = args
+                        .get("interactive_only")
+                        .and_then(Value::as_bool)
+                        .unwrap_or(true);
+                    let sn = s.list_elements(interactive)?;
+                    let pkg = s.app_current().ok().flatten().map(|(p, _)| p);
+                    let out = json!({
+                        "count": sn.elements.len(),
+                        "interactive_only": interactive,
+                        "elements": sn.elements,
+                    });
+                    *snap = Some((sn.elements, sn.layout_sig, pkg));
+                    Ok(out)
                 }
                 "tap_index" => {
                     let i = num_arg(&args, "i").context("tap_index needs i")? as usize;
+                    let (els, _, _) = snap
+                        .as_ref()
+                        .context("no element snapshot — call list_elements first")?;
+                    check_snapshot(s, snap.as_ref().unwrap())?;
                     let e = els.get(i).with_context(|| {
                         format!(
                             "index {i} out of range — call list_elements first ({} cached)",
@@ -274,6 +312,10 @@ fn call_tool<T: AdbTransport>(
                 }
                 "set_text_index" => {
                     let i = num_arg(&args, "i").context("set_text_index needs i")? as usize;
+                    let (els, _, _) = snap
+                        .as_ref()
+                        .context("no element snapshot — call list_elements first")?;
+                    check_snapshot(s, snap.as_ref().unwrap())?;
                     let e = els.get(i).with_context(|| {
                         format!(
                             "index {i} out of range — call list_elements first ({} cached)",
@@ -418,10 +460,11 @@ fn tools() -> Value {
         {"name":"wait_for","description":"selector + timeout_ms → device-side poll (BATCH wait_until)","inputSchema":json!({
             "type":"object","allOf":[sel.clone()],"properties":{"timeout_ms":prop("integer","default 5000")}})},
         {"name":"dump","description":"UI hierarchy XML","inputSchema":schema(&[],&[])},
-        {"name":"list_elements","description":"flattened indexed element list [{i,text,desc,class,bounds,clickable,editable}] — agent observation surface","inputSchema":schema(&[],&[])},
-        {"name":"tap_index","description":"tap element i from the last list_elements snapshot (bounds center)","inputSchema":schema(
+        {"name":"list_elements","description":"flattened indexed element list [{i,text,desc,class,bounds,clickable,editable,scrollable}] — agent observation surface; interactive_only (default true) keeps clickable/editable/scrollable nodes","inputSchema":schema(
+            &[("interactive_only",prop("boolean","filter to interactive nodes, default true"))],&[])},
+        {"name":"tap_index","description":"tap element i from the last list_elements snapshot (bounds center); fails with 'snapshot stale' if layout/pkg drifted — re-list","inputSchema":schema(
             &[("i",prop("integer","element index"))],&["i"])},
-        {"name":"set_text_index","description":"focus element i (tap) then ACTION_SET_TEXT","inputSchema":schema(
+        {"name":"set_text_index","description":"focus element i (tap) then ACTION_SET_TEXT; same snapshot-stale guard as tap_index","inputSchema":schema(
             &[("i",prop("integer","element index")),("text",prop("string","")),("clear",prop("boolean","default true"))],
             &["i","text"])},
         {"name":"screenshot","description":"JPEG capture; path = file bypass (preferred), else base64","inputSchema":schema(
@@ -557,7 +600,10 @@ mod tests {
                                     r#"clickable="true" bounds="[10,20][110,60]"/>"#,
                                     r#"<node index="1" text="" resource-id="com.x:id/e" "#,
                                     r#"class="android.widget.EditText" package="com.x" content-desc="输入框" "#,
-                                    r#"clickable="true" bounds="[10,80][300,140]"/></hierarchy>"#,
+                                    r#"clickable="true" bounds="[10,80][300,140]"/>"#,
+                                    r#"<node index="2" text="标题" resource-id="" "#,
+                                    r#"class="android.widget.TextView" package="com.x" content-desc="" "#,
+                                    r#"clickable="false" bounds="[10,150][200,190]"/></hierarchy>"#,
                                 )
                                 .into(),
                             })
@@ -615,8 +661,93 @@ mod tests {
         addr
     }
 
+    /// Fake whose DUMP answer flips on the second call — drives the
+    /// snapshot-stale guard (layout signature differs at tap_index time).
+    fn spawn_fake_flipping() -> SocketAddr {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let dumps = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        thread::spawn(move || {
+            while let Ok((mut sock, _)) = listener.accept() {
+                while let Ok(req) = Frame::read_from(&mut sock) {
+                    let (ty, payload) = match OpCode::try_from(req.header.msg_type) {
+                        Ok(OpCode::Hello) => (
+                            OpCode::HelloAck as u16,
+                            encode(&HelloAck {
+                                agent: "fake/0".into(),
+                                caps: caps::INJECT | caps::QUERY,
+                                ver: Some("9.9.9-fake".into()),
+                                proto: None,
+                                sdk: None,
+                                abi: None,
+                                display: None,
+                                inject: None,
+                            })
+                            .unwrap(),
+                        ),
+                        Ok(OpCode::Dump) => {
+                            let n = dumps.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                            let xml = if n == 0 {
+                                concat!(
+                                    r#"<?xml version='1.0'?><hierarchy>"#,
+                                    r#"<node text="A" class="android.widget.TextView" "#,
+                                    r#"package="com.x" clickable="true" bounds="[0,0][10,10]"/>"#,
+                                    r#"</hierarchy>"#,
+                                )
+                            } else {
+                                // bounds drifted → signature mismatch
+                                concat!(
+                                    r#"<?xml version='1.0'?><hierarchy>"#,
+                                    r#"<node text="A" class="android.widget.TextView" "#,
+                                    r#"package="com.x" clickable="true" bounds="[0,0][20,20]"/>"#,
+                                    r#"</hierarchy>"#,
+                                )
+                            };
+                            (
+                                OpCode::Dump as u16,
+                                encode(&DumpAck { xml: xml.into() }).unwrap(),
+                            )
+                        }
+                        _ => {
+                            let p = encode(&ErrorAck {
+                                code: "UNSUPPORTED".into(),
+                                message: "fake".into(),
+                            })
+                            .unwrap();
+                            let resp = Frame::new(
+                                req.header.channel,
+                                req.header.msg_type,
+                                flags::RESPONSE | flags::ERROR,
+                                req.header.req_id,
+                                p,
+                            );
+                            if resp.write_to(&mut sock).is_err() {
+                                break;
+                            }
+                            continue;
+                        }
+                    };
+                    let resp = Frame::new(
+                        req.header.channel,
+                        ty,
+                        flags::RESPONSE,
+                        req.header.req_id,
+                        payload,
+                    );
+                    if resp.write_to(&mut sock).is_err() {
+                        break;
+                    }
+                }
+            }
+        });
+        addr
+    }
+
     fn serve_once(lines: &str) -> Vec<Value> {
-        let addr = spawn_fake();
+        serve_once_at(lines, spawn_fake())
+    }
+
+    fn serve_once_at(lines: &str, addr: SocketAddr) -> Vec<Value> {
         let mut adb = Some(TestAdb::default());
         let mut out = Vec::new();
         run(BufReader::new(lines.as_bytes()), &mut out, move || {
@@ -728,6 +859,56 @@ mod tests {
         assert_eq!(tap["result"]["ok"], true);
         // out-of-range index → tool error, not protocol error
         assert_eq!(resps[2]["result"]["isError"], true);
+    }
+
+    #[test]
+    fn list_elements_interactive_only_filters() {
+        // Default keeps only interactive nodes (the non-clickable 标题
+        // TextView is filtered out); interactive_only=false lists all 3.
+        let resps = serve_once(
+            &[
+                r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"list_elements","arguments":{"interactive_only":false}}}"#,
+            ]
+            .join("\n"),
+        );
+        let body: Value =
+            serde_json::from_str(resps[0]["result"]["content"][0]["text"].as_str().unwrap())
+                .unwrap();
+        assert_eq!(body["count"], 3);
+        assert_eq!(body["interactive_only"], false);
+        assert_eq!(body["elements"][2]["text"], "标题");
+        assert!(body["elements"][2].get("clickable").is_none()); // false elided
+    }
+
+    #[test]
+    fn tap_index_rejects_stale_snapshot() {
+        // list_elements snapshots layout A; the flipping fake serves
+        // layout B at guard time → "snapshot stale" tool error.
+        let resps = serve_once_at(
+            &[
+                r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"list_elements","arguments":{}}}"#,
+                r#"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"tap_index","arguments":{"i":0}}}"#,
+            ]
+            .join("\n"),
+            spawn_fake_flipping(),
+        );
+        assert_eq!(resps[1]["result"]["isError"], true);
+        let text = resps[1]["result"]["content"][0]["text"].as_str().unwrap();
+        assert!(text.contains("stale"), "expected stale error, got {text}");
+    }
+
+    #[test]
+    fn index_tools_require_snapshot_first() {
+        // tap_index before any list_elements → tool error naming the fix.
+        let resps = serve_once(
+            &[
+                r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"tap_index","arguments":{"i":0}}}"#,
+            ]
+            .join("\n"),
+        );
+        assert_eq!(resps[0]["result"]["isError"], true);
+        let text = resps[0]["result"]["content"][0]["text"].as_str().unwrap();
+        assert!(text.contains("list_elements"), "got {text}");
     }
 
     #[test]
