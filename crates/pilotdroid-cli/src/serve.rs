@@ -426,6 +426,27 @@ fn call_tool<T: AdbTransport>(
                     Ok(json!({"frames": out, "count": out.len()}))
                 }
                 "stream_stop" => Ok(json!(s.stream_stop()?)),
+                "pinch_in" | "pinch_out" => {
+                    let cx = num_arg(&args, "cx").context("pinch needs cx")? as f32;
+                    let cy = num_arg(&args, "cy").context("pinch needs cy")? as f32;
+                    let radius = num_arg(&args, "radius_px").unwrap_or(300.0) as f32;
+                    let pct = (num_arg(&args, "percent").unwrap_or(50.0) / 100.0) as f32;
+                    let dur = num_arg(&args, "duration_ms").unwrap_or(300.0) as u64;
+                    let (r0, r1) = if name == "pinch_in" {
+                        (radius, radius * (1.0 - pct))
+                    } else {
+                        (radius * (1.0 - pct), radius)
+                    };
+                    Ok(json!(s.pinch(cx, cy, r0, r1, dur)?))
+                }
+                "watch" => {
+                    let ack = s.watch(
+                        selector_of(&args),
+                        &str_arg(&args, "action").unwrap_or_else(|| "click".into()),
+                        num_arg(&args, "timeout_ms").unwrap_or(5000.0) as u64,
+                    )?;
+                    Ok(json!(ack))
+                }
                 "batch" => {
                     let ops: Vec<BatchOp> = serde_json::from_value(
                         args.get("ops").cloned().unwrap_or_else(|| json!([])),
@@ -474,6 +495,12 @@ fn tools() -> Value {
         {"name":"long_click","description":"long press (x,y,duration_ms)","inputSchema":schema(
             &[("x",prop("number","x")),("y",prop("number","y")),("duration_ms",prop("integer","hold ms, default 500"))],
             &["x","y"])},
+        {"name":"pinch_in","description":"two-finger pinch-in (zoom out) centered at (cx,cy); percent = % of radius travelled (CAP_MULTI_PTR)","inputSchema":schema(
+            &[("cx",prop("number","center x px")),("cy",prop("number","center y px")),("radius_px",prop("number","start radius, default 300")),("percent",prop("number","0-100, default 50")),("duration_ms",prop("integer","default 300"))],
+            &["cx","cy"])},
+        {"name":"pinch_out","description":"two-finger pinch-out (zoom in) centered at (cx,cy); same args as pinch_in (CAP_MULTI_PTR)","inputSchema":schema(
+            &[("cx",prop("number","center x px")),("cy",prop("number","center y px")),("radius_px",prop("number","start radius, default 300")),("percent",prop("number","0-100, default 50")),("duration_ms",prop("integer","default 300"))],
+            &["cx","cy"])},
         {"name":"swipe","description":"swipe (x1,y1)→(x2,y2) over duration_ms","inputSchema":schema(
             &[("x1",prop("number","")),("y1",prop("number","")),("x2",prop("number","")),("y2",prop("number","")),("duration_ms",prop("integer","default 300"))],
             &["x1","y1","x2","y2"])},
@@ -483,6 +510,8 @@ fn tools() -> Value {
             &[("text",prop("string","")),("clear",prop("boolean","clear first, default true"))],&["text"])},
         {"name":"exists","description":"selector exists? — device-side UiAutomation tree","inputSchema":sel.clone()},
         {"name":"query","description":"selector → {found,node{text,id,desc,bounds,class,...}}","inputSchema":sel.clone()},
+        {"name":"watch","description":"device-side selector→action watch loop (CAP_WATCH, docs/02 §4.9) — blocks this session until the selector is matched+acted or timeout_ms","inputSchema":json!({
+            "type":"object","allOf":[sel.clone()],"properties":{"action":prop("string","default click"),"timeout_ms":prop("integer","default 5000")}})},
         {"name":"wait_for","description":"selector + timeout_ms → device-side poll (BATCH wait_until)","inputSchema":json!({
             "type":"object","allOf":[sel.clone()],"properties":{"timeout_ms":prop("integer","default 5000")}})},
         {"name":"dump","description":"UI hierarchy XML","inputSchema":schema(&[],&[])},

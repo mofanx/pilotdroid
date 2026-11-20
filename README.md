@@ -25,6 +25,16 @@
   | Linux x86_64 | `pilotdroid-cli-linux-x86_64` |
   | macOS arm64 | `pilotdroid-cli-macos-arm64` |
 
+  > **macOS 注意**：Release 二进制未签名，浏览器下载后首次运行会被
+  > Gatekeeper 拦截——先执行 `xattr -d com.apple.quarantine pilotdroid-cli`
+  > 再运行（或直接用下方 Homebrew 安装，无此问题）。
+
+- **Homebrew**（macOS）：
+
+  ```
+  brew install mofanx/pilotdroid/pilotdroid
+  ```
+
   CLI 已内嵌 agent.jar，一条命令完成部署+八步自检，无需 `--jar`：
 
   ```
@@ -53,7 +63,7 @@
 | 形态 | 适合 | 开销 | 入口 |
 |---|---|---|---|
 | `pilotdroid-cli agent <op>` | 人工/脚本单发 | ~85ms/call（含 fwd+connect+HELLO） | 子进程每次拉起 |
-| `pilotdroid-cli serve`（stdio MCP） | **AI agent 一行接入** | 持久会话摊销 ~0 | `pilotdroid-cli serve` + JSON-RPC 21 工具 |
+| `pilotdroid-cli serve`（stdio MCP） | **AI agent 一行接入** | 持久会话摊销 ~0 | `pilotdroid-cli serve` + JSON-RPC 24 工具 |
 | Rust `pilotdroid-agent` facade | Rust 库内嵌 | 持久 Session | `Device::with_transport(..).session()` |
 
 另有 **u2 兼容 shim**（`compat/u2shim.py`，host 侧翻译层，`pip install ./python`
@@ -89,6 +99,8 @@ serve 会在下一 call 惰性重连夺权（M10 起）。
 | 设备内 op 序列（shim 对拍 n=20） | 212ms | 2140ms | **10.1×** `spike/e2e/RESULTS-M3.md` |
 | 批量 tap→wait→tap e2e | 58.5ms | 612.9ms | **10.5×** `spike/e2e/RESULTS-M2.md` |
 | 帧流 live view | 6.0fps@0.5 持续 65s | 无此能力 | `spike/e2e/RESULTS-M4.md` |
+| watcher 弹窗自愈（appear→dismiss 同臂） | ~680ms（设备内 WATCH） | ~1790ms（u2 watcher 轮询） | **~2.6×** `spike/e2e/RESULTS-M10.md` |
+| watcher 元素在场 detect+act 下限 | **39ms** | — | `spike/e2e/RESULTS-M10.md` |
 | CLI vs 持久路径 | +85ms/call 固定成本 | — | `spike/e2e/RESULTS-M5.md` |
 | 中文/Unicode 文本输入 | `ACTION_SET_TEXT` 原生支持 | 需 ADBKeyboard IME | `verify-agent.sh` `text_unicode` |
 | 设备矩阵 | Mi11/A14（USB）verify 33/33 + dash/A17（**adb-over-TCP 已通**）核心 op 全过 | — | `verify-agent.sh`；无线仅 1 台 TCP 验证 |

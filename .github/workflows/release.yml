@@ -26,7 +26,7 @@ jobs:
     if: github.event_name == 'push'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: tag must match workspace + python version
         run: |
           tag="${GITHUB_REF_NAME#v}"
@@ -44,7 +44,7 @@ jobs:
           - { os: macos-latest, suffix: macos-arm64 }
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
 
@@ -55,7 +55,7 @@ jobs:
         run: |
           mkdir -p dist
           cp target/release/pilotdroid-cli "dist/pilotdroid-cli-${{ matrix.suffix }}"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: cli-${{ matrix.suffix }}
           path: dist/
@@ -63,15 +63,15 @@ jobs:
   python-dist:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.x"
       - name: build dists
         run: |
           python -m pip install --upgrade pip build
           (cd python && python -m build --outdir ../dist)
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: python-dist
           path: dist/
@@ -81,8 +81,8 @@ jobs:
     needs: [verify-tag, cli, python-dist]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
         with:
           pattern: "*"
           path: dist
