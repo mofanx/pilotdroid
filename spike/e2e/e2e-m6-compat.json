@@ -8,7 +8,7 @@
       ],
       "d.app_current": [
         "ok",
-        "{'package': 'com.android.settings', 'activity': 'com.android"
+        "{'package': 'com.miui.home', 'activity': 'com.miui.home.laun"
       ],
       "d.click(x,y)": [
         "ok",
@@ -28,7 +28,7 @@
       ],
       "d.dump_hierarchy": [
         "ok",
-        "423"
+        "418036"
       ],
       "d.press(back)": [
         "ok",
@@ -50,15 +50,15 @@
       ],
       "d(packageName=...).exists": [
         "ok",
-        "True"
+        "False"
       ],
-      "d(resourceId=...).info()": [
+      "d(resourceId=...).info (property)": [
         "ok",
-        "{'text': '开启小米云服务', 'id': 'android:id/title', 'desc': '', 'b"
+        null
       ],
       "d(description=...).exists": [
         "ok",
-        "True"
+        "False"
       ],
       "d(index=1).exists": [
         "ok",

@@ -34,7 +34,7 @@ miss=[k for k in need if k not in p]
 print("OK "+json.dumps(p) if not miss else "MISS:"+",".join(miss))' > /tmp/hello.res 2>/dev/null \
   || echo "PARSE_FAIL $HELLO" > /tmp/hello.res
 grep -q "^OK" /tmp/hello.res && ok "hello_ack_fields" || bad "hello_ack_fields" "$(cat /tmp/hello.res)"
-echo "$HELLO" | grep -q '"ver": *"0\.4\.0"\|"ver":"0\.4\.0"' \
+echo "$HELLO" | grep -q '"ver": *"0\.5\.0"\|"ver":"0\.5\.0"' \
   && ok "agent_ver" || bad "agent_ver" "$(echo "$HELLO" | head -c 200)"
 
 echo "== A1b CAPS bitmap == proto caps: INJECT=1 DUMP=2 SHOT=4 QUERY=8 BATCH=16 STREAM=32 TEXT=64 =="
@@ -269,28 +269,26 @@ try:
 except Exception as e:
     rep("stream_frames", False, e)
 
-# A3 busy: start on a second control session -> ERR_STREAM_BUSY
+# A3 single-client: a second control conn REPLACES the first — op on `a`
+# fails (socket closed by agent), and a's stream dies with its session (§4.8).
+b = None
 try:
     b = ac.Agent(PORT).connect()
-    rb = b.stream_start()
-    rep("stream_busy", "ERR_STREAM_BUSY" in rb["raw_payload"].decode("utf8", "replace"),
-        json.dumps(rb["payload"]))
-    b.close()
+    killed = False
+    try:
+        a.ping()
+    except Exception:
+        killed = True
+    rep("client_replace", killed, "op on replaced conn raised")
 except Exception as e:
-    rep("stream_busy", False, e)
+    rep("client_replace", False, e)
 
-# A4 stop: ok + counters; then media conn EOF (socket closed)
-try:
-    p = a.stream_stop()["payload"]
-    rep("stream_stop", p.get("ok") is True and p.get("frames_sent", 0) >= 1,
-        json.dumps(p))
-except Exception as e:
-    rep("stream_stop", False, e)
+# A4 implicit stop: replaced session's stream freed -> media conn EOF
 try:
     if ms is None:
         raise Exception("no media conn")
     ms.settimeout(5)
-    # TCP-forwarded media conns may have in-flight frames after stop_ack —
+    # TCP-forwarded media conns may have in-flight frames after stop —
     # drain until EOF (bounded), not "next frame must be EOF".
     extra = 0
     while ac.read_frame(ms) is not None:
@@ -302,9 +300,23 @@ try:
 except Exception as e:
     rep("stream_eof", False, e)
 
+# A4b replacement conn owns a fresh stream: b start -> ok, stop -> counters
+try:
+    if b is None:
+        raise Exception("no replacement conn")
+    p = b.stream_start(5, 0.5, 70)["payload"]
+    ok_start = p.get("ok") is True
+    q = b.stream_stop()["payload"]
+    rep("stream_stop", ok_start and q.get("ok") is True
+        and q.get("frames_sent", 0) >= 0, f"start={json.dumps(p)} stop={json.dumps(q)}")
+except Exception as e:
+    rep("stream_stop", False, e)
+
 # A5 fps throttle: fps=2 for ~4s -> effective fps in [1..5]
 try:
-    a.stream_start(2, 0.5, 70)
+    if b is None:
+        raise Exception("no replacement conn")
+    b.stream_start(2, 0.5, 70)
     ms2 = ac.media_connect(MPORT); ms2.settimeout(10)
     n, t0 = 0, time.time()
     while time.time() - t0 < 4:
@@ -312,7 +324,7 @@ try:
             break
         n += 1
     wall = time.time() - t0
-    a.stream_stop()
+    b.stream_stop()
     ms2.close()
     fps = n / wall if wall else 0
     rep("stream_fps", 1 <= fps <= 5 and n >= 3,
@@ -320,6 +332,8 @@ try:
 except Exception as e:
     rep("stream_fps", False, e)
 
+if b is not None:
+    b.close()
 a.close()
 PYEOF
 )

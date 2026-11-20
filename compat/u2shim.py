@@ -9,15 +9,16 @@ round-trip per call; shim pays one socket op).
     d = u2.connect(port=17932)
     d.click(360, 1600); d(text="OK").click(); d.press("back")
 
-Covered (v1): connect / click(x,y) / long_click / swipe / press /
-set_text / dump_hierarchy / screenshot / app_start / app_stop /
-app_current / info;
+Covered: connect / click(x,y) / long_click / swipe / press / set_text /
+clear_text / dump_hierarchy / screenshot / shell / app_start / app_stop /
+app_current / app_list / app_info / info / window_size / screen_on /
+screen_off / unlock / orientation (get+set) / watcher;
 d(text|resourceId|description|className|packageName|scrollable,index).click() /
 .exists / .wait / .info / .set_text / .long_click /
 d(scrollable=True).scroll.(forward|backward|toEnd|toBeginning).
 (xpath still rejected with ValueError — see _SUPPORTED.)
 """
-import os, subprocess, sys, time
+import os, re, subprocess, sys, threading, time
 
 try:
     from .agent_client import Agent  # installed `pilotdroid` package
@@ -78,15 +79,15 @@ class _Selector:
         return self._node()
 
     def wait(self, timeout=10.0):
-        t0 = time.time()
+        """u2 semantics: True when the selector appears within timeout,
+        False otherwise."""
         r = self.dev.a.wait_until(self._sel(), int(timeout * 1000))
-        res = r["payload"]["results"][0]
-        ok = res["code"] == "OK"
-        return self._node() if ok else None
+        return r["payload"]["results"][0]["code"] == "OK"
 
     def click(self, timeout=None):
         if timeout:
-            node = self.wait(timeout)
+            ok = self.wait(timeout)
+            node = self._node() if ok else None
         else:
             node = self._node()
         if node is None:
@@ -156,6 +157,91 @@ class _Scroll:
         return self._to(False)
 
 
+class _WhenCtx:
+    """One watcher rule builder: `d.watcher.when(text='x').click()`."""
+
+    def __init__(self, watcher, kw):
+        self._w, self.kw = watcher, kw
+
+    def click(self):
+        def action():
+            _Selector(self._w.dev, **self.kw).click()
+        self._w._rules.append((self.kw, action))
+        return self._w
+
+
+class _Watcher:
+    """u2 `d.watcher` parity — host-side poll thread (u2 polls inside its
+    server; the semantic is the same: when a registered selector appears,
+    run its action once). Rules fire once each; the thread exits when all
+    have fired or `.stop()` is called."""
+
+    def __init__(self, dev, interval=2.0):
+        self.dev, self.interval = dev, interval
+        self._rules = []        # [(selector_kw, action)]
+        self._th = None
+
+    def when(self, *args, **kw):
+        # u2 allows positional text / resourceId strings
+        for a in args:
+            kw["text" if "text" not in kw else "description"] = a
+        return _WhenCtx(self, kw)
+
+    def _tick(self):
+        fired = []
+        for i, (kw, action) in enumerate(self._rules):
+            try:
+                if _Selector(self.dev, **kw).exists:
+                    action()
+                    fired.append(i)
+            except Exception:
+                fired.append(i)  # a broken rule must not kill the loop
+        for i in reversed(fired):
+            self._rules.pop(i)
+        return not self._rules
+
+    def run(self):
+        while not self._tick():
+            time.sleep(self.interval)
+
+    def start(self, interval=None):
+        if interval:
+            self.interval = interval
+        if self._th and self._th.is_alive():
+            return
+        self._th = threading.Thread(target=self.run, daemon=True)
+        self._th.start()
+
+    def stop(self):
+        self._rules.clear()
+        if self._th:
+            self._th.join(timeout=self.interval + 1)
+
+    def reset(self):
+        self.stop()
+
+    @property
+    def running(self):
+        return bool(self._th and self._th.is_alive())
+
+
+class ShellResponse:
+    """u2 `d.shell` return shape (output + exit_code attribute access)."""
+    __slots__ = ("output", "exit_code")
+
+    def __init__(self, output, exit_code):
+        self.output, self.exit_code = output, exit_code
+
+    def __str__(self):
+        return self.output
+
+
+_ORIENTATION = {0: "natural", 1: "left", 2: "upsidedown", 3: "right"}
+_ORIENTATION_SET = {"natural": 0, "n": 0, "left": 1, "l": 1, "90": 1,
+                   "upsidedown": 2, "u": 2, "180": 2, "right": 3, "r": 3,
+                   "270": 3}
+
+
 class Device:
     def __init__(self, port=None, serial=None, agent=None):
         port = port or _detect_port(serial)
@@ -191,6 +277,86 @@ class Device:
     def set_text(self, s):
         p = self.a.text(s)["payload"]
         return p.get("ok", False)
+
+    def clear_text(self):
+        """u2 `d.clear_text()` — clear the currently focused field.
+        ACTION_SET_TEXT with empty payload achieves the same end state."""
+        return self.a.text("", clear=True)["payload"].get("ok", False)
+
+    def shell(self, command):
+        """u2 `d.shell('cmd')` -> ShellResponse(output, exit_code)."""
+        r = subprocess.run(self._sh_cmd([command]),
+                           capture_output=True, text=True, timeout=60)
+        return ShellResponse(r.stdout.rstrip("\n"), r.returncode)
+
+    def window_size(self):
+        """u2 `d.window_size()` -> (w, h)."""
+        out = self.shell("wm size").output
+        m = re.search(r"(\d+)x(\d+)", out)
+        return (int(m.group(1)), int(m.group(2))) if m else None
+
+    def app_list(self):
+        """u2 `d.app_list()` -> [package names]."""
+        out = self.shell("pm list packages").output
+        return sorted(l.split(":", 1)[1].strip()
+                      for l in out.splitlines() if ":" in l)
+
+    def app_info(self, pkg):
+        """u2 `d.app_info(pkg)` subset: versionName/versionCode/flags."""
+        out = self.shell(f"dumpsys package {pkg}").output
+        def grab(key):
+            m = re.search(key + r"=([^\s]+)", out)
+            return m.group(1) if m else None
+        return {"packageName": pkg if "versionCode" in out or
+                "versionName" in out else None,
+                "versionName": grab("versionName"),
+                "versionCode": grab("versionCode")}
+
+    def _wakefulness(self):
+        out = self.shell("dumpsys power").output
+        m = re.search(r"mWakefulness=(\w+)", out)
+        return m.group(1) if m else None
+
+    def screen_on(self):
+        if self._wakefulness() != "Awake":
+            self.press("power")
+            time.sleep(0.5)
+        return True
+
+    def screen_off(self):
+        if self._wakefulness() == "Awake":
+            self.press("power")
+            time.sleep(0.5)
+        return True
+
+    def unlock(self):
+        """u2 `d.unlock()`: wake + swipe up past the lockscreen."""
+        self.screen_on()
+        w, h = self.window_size() or (1080, 2400)
+        return self.swipe(w / 2, h * 0.8, w / 2, h * 0.2, duration=0.15)
+
+    @property
+    def orientation(self):
+        # user_rotation mirrors the display rotation the setter writes;
+        # dumpsys input has no stable SurfaceOrientation field across ROMs.
+        out = self.shell("settings get system user_rotation").output.strip()
+        if out.isdigit():
+            return _ORIENTATION.get(int(out))
+        out = self.shell("dumpsys input").output
+        m = re.search(r"displayId=0.*?orientation=(\d)", out, re.S)
+        return _ORIENTATION.get(int(m.group(1))) if m else None
+
+    @orientation.setter
+    def orientation(self, value):
+        rot = _ORIENTATION_SET[str(value).lower()]
+        self.shell("settings put system accelerometer_rotation 0")
+        self.shell(f"settings put system user_rotation {rot}")
+
+    @property
+    def watcher(self):
+        if not hasattr(self, "_watcher"):
+            self._watcher = _Watcher(self)
+        return self._watcher
 
     def dump_hierarchy(self):
         return self.a.dump()["payload"]["xml"]

@@ -52,3 +52,4 @@ __pycache__/
 python/build/
 python/*.egg-info/
 __pycache__/
+agent/data/verify-*.json
