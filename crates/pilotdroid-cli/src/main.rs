@@ -1,4 +1,5 @@
 mod agent;
+mod serve;
 
 #[cfg(test)]
 mod agent_smoke;
@@ -67,6 +68,18 @@ enum Cmd {
     Agent {
         #[command(subcommand)]
         cmd: AgentCmd,
+    },
+
+    /// stdio JSON-RPC tool layer for agent callers (ADR-007): MCP-style
+    /// initialize → tools/list → tools/call, one message per line on
+    /// stdin/stdout. stdout carries responses only; logs go to stderr.
+    Serve {
+        /// Agent's localabstract socket name.
+        #[arg(long, default_value = AGENT_SOCKET)]
+        socket: String,
+        /// Local tcp port for the control forward (default: auto-pick).
+        #[arg(long)]
+        port: Option<u16>,
     },
 }
 
@@ -264,6 +277,22 @@ fn main() -> Result<()> {
             adb.pull(&serial, remote, local)
                 .with_context(|| format!("pulling {} -> {}", remote, local.display()))?;
             eprintln!("pulled {}:{} -> {}", serial, remote, local.display());
+        }
+        Cmd::Serve { socket, port } => {
+            let serial = resolve_serial(&cli, &mut adb)?;
+            let socket = socket.clone();
+            let port = *port;
+            let stdin = std::io::stdin();
+            let mut stdout = std::io::stdout();
+            // Lazy session: handshake/tools-list must work before any
+            // device contact; first tools/call triggers watchdog connect.
+            let mut adb_opt = Some(adb);
+            serve::run(stdin.lock(), &mut stdout, move || {
+                let adb = adb_opt.take().context("session already consumed")?;
+                pilotdroid_agent::Device::with_transport(adb, serial.clone())
+                    .session_opts(port, &socket)
+                    .map_err(Into::into)
+            })?;
         }
         Cmd::Agent { cmd } => {
             let serial = resolve_serial(&cli, &mut adb)?;

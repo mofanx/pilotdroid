@@ -9,7 +9,7 @@ use std::time::Duration;
 
 use pilotdroid_adb::{AdbTransport, DeviceInfo, Result as AdbResult, ShellOutput};
 use pilotdroid_agent::{
-    AgentClient, AgentError, AgentManager, MediaClient, AGENT_JAR_REMOTE, AGENT_MAIN_CLASS,
+    AgentClient, AgentError, AgentManager, Device, MediaClient, AGENT_JAR_REMOTE, AGENT_MAIN_CLASS,
 };
 use pilotdroid_proto::payload::*;
 use pilotdroid_proto::*;
@@ -895,4 +895,113 @@ async fn media_channel_rejects_non_frame_message() {
         Err(AgentError::UnexpectedResponse { .. }) => {}
         other => panic!("expected UnexpectedResponse, got {other:?}"),
     }
+}
+
+// ---- facade (ADR-007): Device/Session + lazy media attach + Drop cleanup ----
+
+/// Shared-recorder AdbTransport: the Session owns it, the test keeps a
+/// handle to inspect forward/shell calls after drop.
+#[derive(Clone, Default)]
+struct SpyAdb {
+    inner: std::rc::Rc<std::cell::RefCell<FakeAdb>>,
+    shell_out: std::rc::Rc<Vec<u8>>,
+}
+
+impl AdbTransport for SpyAdb {
+    fn list_devices(&mut self) -> AdbResult<Vec<DeviceInfo>> {
+        Ok(vec![])
+    }
+    fn shell(&mut self, serial: &str, command: &str) -> AdbResult<ShellOutput> {
+        self.inner
+            .borrow_mut()
+            .shells
+            .push((serial.into(), command.into()));
+        Ok(ShellOutput {
+            stdout: self.shell_out.as_ref().clone(),
+            stderr: vec![],
+            exit_code: Some(0),
+        })
+    }
+    fn push(&mut self, s: &str, l: &Path, r: &str) -> AdbResult<()> {
+        self.inner.borrow_mut().push(s, l, r)
+    }
+    fn pull(&mut self, s: &str, r: &str, l: &Path) -> AdbResult<()> {
+        self.inner.borrow_mut().pull(s, r, l)
+    }
+    fn forward(&mut self, s: &str, l: &str, r: &str) -> AdbResult<()> {
+        self.inner.borrow_mut().forward(s, l, r)
+    }
+    fn forward_remove(&mut self, s: &str, l: &str) -> AdbResult<()> {
+        self.inner.borrow_mut().forward_remove(s, l)
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn facade_session_basic_ops_and_app_current() {
+    let addr = spawn_fake(FakeBehavior::Responsive).await;
+    tokio::time::sleep(Duration::from_millis(30)).await;
+
+    let spy = SpyAdb {
+        shell_out: std::rc::Rc::new(
+            b"mCurrentFocus=Window{abc u0 com.android.settings/com.android.settings.MainSettings}\n".to_vec(),
+        ),
+        ..Default::default()
+    };
+    let mut s = Device::with_transport(spy, "fake0")
+        .session_opts(Some(addr.port()), "pilotdroid_agent")
+        .unwrap();
+    assert!(s.tap(1.0, 2.0).unwrap().ok);
+    assert!(s.exists(Selector::default()).unwrap());
+    assert!(s.set_text("hi", true).is_ok());
+    assert!(s.dump().unwrap().contains("hierarchy"));
+    assert_eq!(
+        s.app_current().unwrap(),
+        Some((
+            "com.android.settings".into(),
+            "com.android.settings.MainSettings".into()
+        ))
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn facade_stream_full_lifecycle() {
+    let (ctrl_addr, media_addr) = spawn_stream_fake(4, None).await;
+    tokio::time::sleep(Duration::from_millis(30)).await;
+
+    let spy = SpyAdb::default();
+    let calls = spy.inner.clone();
+    let mut s = Device::with_transport(spy, "fake0")
+        .session_opts(Some(ctrl_addr.port()), "pilotdroid_agent")
+        .unwrap();
+
+    // Lazy attach: start must NOT open a media forward yet — the agent
+    // discards pre-start pending conns (§4.8).
+    let ack = s.stream_start(Some(10), Some(0.5), Some(70)).unwrap();
+    assert_eq!(ack.socket, "pilotdroid_agent_media");
+    assert_eq!(calls.borrow().forward_calls.len(), 1, "only control fwd");
+
+    // First read attaches: media forward appears, frames arrive in order.
+    s.set_media_port(media_addr.port());
+    let frames = s.stream_read(4, None).unwrap();
+    assert_eq!(frames.len(), 4);
+    assert_eq!(calls.borrow().forward_calls.len(), 2, "media fwd attached");
+    assert!(calls
+        .borrow()
+        .forward_calls
+        .iter()
+        .any(|(_, _, r)| r.contains("pilotdroid_agent_media")));
+
+    let stop = s.stream_stop().unwrap();
+    assert_eq!(stop.frames_sent, 4);
+    // Stop removes the media forward; control stays until drop.
+    assert!(!calls.borrow().forwards.is_empty());
+
+    // Drop: control forward removed — no leaked rules.
+    let port = ctrl_addr.port();
+    drop(s);
+    let f = calls.borrow().forwards.clone();
+    assert!(
+        !f.iter().any(|(_, l, _)| l == &format!("tcp:{port}")),
+        "control forward leaked: {f:?}"
+    );
 }

@@ -6,10 +6,12 @@
 //!   so it stays backend-agnostic (adr/001).
 
 mod client;
+mod facade;
 mod manager;
 mod stream;
 
 pub use client::AgentClient;
+pub use facade::{Device, ScrollDir, Session};
 pub use manager::{
     AgentManager, AGENT_DIR, AGENT_JAR_REMOTE, AGENT_MAIN_CLASS, AGENT_SOCKET, MEDIA_SOCKET,
 };
