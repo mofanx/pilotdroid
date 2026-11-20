@@ -154,6 +154,25 @@ Selector = { text?: string, id?: string, desc?: string, class?: string, scrollab
 - 请求超时：默认 5s，可被 op 级 timeout 覆盖；INJECT wait_finish 超时 2s。
 - 背压：media 通道独立窗口，帧流丢帧优先于阻塞控制通道（FRAME 帧可被 agent 在队列积压时丢弃，带 dropped 计数）。
 
+### 6.1 op `code` 错误码表（定稿）
+
+| code | 语义 | 触发面 |
+|---|---|---|
+| `OK` | op 成功 | 全部 |
+| `TIMEOUT` | op 级超时（如 wait_until 到时未命中）— op 结果而非帧错误 | wait_until、wait_finish |
+| `DEADLINE` | BATCH 级 deadline 耗尽，余 op 跳记 | BATCH |
+| `ABORTED` | 前序 op 失败/谓词不满足，余 op 中止 | BATCH |
+| `ERR_BACKEND` | `backend` 强制指定的注入后端不可用 | INJECT/KEY |
+| `ERR_SET_TEXT` | `ACTION_SET_TEXT` 返回 false | TEXT |
+| `ERR_STREAM_BUSY` | 流已在跑 / 流被其他 session 持有 | STREAM_CTRL start |
+| `ERR_STREAM_FMT` | 请求了 v0 不支持 format（仅 jpeg） | STREAM_CTRL start |
+| `ERR_INTERNAL` | 未分类 agent 内部异常兜底 | 全部 |
+| `UNSUPPORTED` | op/opcode 不被该 agent 版本支持 | 全部 |
+
+### 6.2 版本命名空间（M6 定稿）
+
+三套版本号互不混用：`ver`（帧头 byte）= **wire 帧格式版本**；`HELLO_ACK.ver`（如 `0.3.1`）= **设备端 agent.jar 构建版本**；`serve` 的 `serverInfo.version` = **host 侧 crate 版本**，`serverInfo.agentVer` 透传 HELLO.ver——一次 MCP 握手即可同时读出两侧版本。
+
 ## 7. 未定项（留给实现期）
 
 - msgpack vs FlatBuffers（首版 msgpack，bench 后重评）。

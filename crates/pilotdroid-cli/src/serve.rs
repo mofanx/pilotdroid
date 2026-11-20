@@ -21,12 +21,28 @@ use pilotdroid_agent::{ScrollDir, Session};
 use pilotdroid_proto::payload::*;
 use serde_json::{json, Map, Value};
 
-/// MCP protocol revision we speak (echoed back to the client).
-pub const MCP_VERSION: &str = "2024-11-05";
+/// MCP protocol revisions we implement, oldest → newest. Negotiation
+/// is a whitelist: an offered version we don't implement gets our
+/// newest back — echoing arbitrary offers would overclaim support.
+pub const SUPPORTED_VERSIONS: &[&str] = &["2024-11-05", "2025-11-25"];
+
+/// Pick the `protocolVersion` for the initialize response: echo a
+/// supported offer, otherwise report our newest (clients must
+/// tolerate a different version than they proposed).
+fn negotiate_version(offered: Option<&str>) -> &'static str {
+    if let Some(v) = offered {
+        if let Some(&sv) = SUPPORTED_VERSIONS.iter().find(|&&s| s == v) {
+            return sv;
+        }
+    }
+    SUPPORTED_VERSIONS[SUPPORTED_VERSIONS.len() - 1]
+}
 
 /// Serve loop: read JSON-RPC requests from `inp`, write responses to
-/// `out`. `connect` is invoked lazily on the first `tools/call` — the
-/// handshake and tools/list work without a device session.
+/// `out`. `initialize` attempts `connect` once to fill
+/// `serverInfo.agentVer` (null when the device is unreachable — the
+/// handshake stays device-free); the first `tools/call` (re)connects
+/// on demand.
 pub fn run<T: AdbTransport, R: std::io::BufRead, W: Write>(
     inp: R,
     out: &mut W,
@@ -55,16 +71,36 @@ pub fn run<T: AdbTransport, R: std::io::BufRead, W: Write>(
         };
         let resp = match method {
             "initialize" => {
-                let pv = req
-                    .pointer("/params/protocolVersion")
-                    .and_then(Value::as_str)
-                    .unwrap_or(MCP_VERSION);
+                let pv = negotiate_version(
+                    req.pointer("/params/protocolVersion")
+                        .and_then(Value::as_str),
+                );
+                // One handshake exposes both version namespaces
+                // (docs/02 §7): serverInfo.version = host crate,
+                // agentVer = on-device jar build from HELLO. Connect
+                // eagerly so the field is populated when the device is
+                // reachable; null keeps the handshake device-free.
+                let agent_ver = match session.as_ref() {
+                    Some(s) => s.agent_ver().map(str::to_string),
+                    None => match connect() {
+                        Ok(s) => {
+                            let v = s.agent_ver().map(str::to_string);
+                            session = Some(s);
+                            v
+                        }
+                        Err(_) => None,
+                    },
+                };
                 ok(
                     id,
                     json!({
                         "protocolVersion": pv,
                         "capabilities": {"tools": {"listChanged": false}},
-                        "serverInfo": {"name": "pilotdroid", "version": env!("CARGO_PKG_VERSION")},
+                        "serverInfo": {
+                            "name": "pilotdroid",
+                            "version": env!("CARGO_PKG_VERSION"),
+                            "agentVer": agent_ver,
+                        },
                     }),
                 )
             }
@@ -446,7 +482,7 @@ mod tests {
                             encode(&HelloAck {
                                 agent: "fake/0".into(),
                                 caps: caps::INJECT | caps::QUERY,
-                                ver: None,
+                                ver: Some("9.9.9-fake".into()),
                                 proto: None,
                                 sdk: None,
                                 abi: None,
@@ -553,6 +589,8 @@ mod tests {
         assert_eq!(resps[0]["id"], 0);
         assert_eq!(resps[0]["result"]["serverInfo"]["name"], "pilotdroid");
         assert_eq!(resps[0]["result"]["protocolVersion"], "2024-11-05");
+        // initialize eagerly connected → HELLO.ver is transparent through.
+        assert_eq!(resps[0]["result"]["serverInfo"]["agentVer"], "9.9.9-fake");
         // tools/list: full v1 catalogue incl. stream tools.
         let names: Vec<&str> = resps[1]["result"]["tools"]
             .as_array()
@@ -581,6 +619,21 @@ mod tests {
             serde_json::from_str(resps[3]["result"]["content"][0]["text"].as_str().unwrap())
                 .unwrap();
         assert_eq!(body3["exists"], true);
+    }
+
+    #[test]
+    fn protocol_version_whitelist_negotiation() {
+        // Supported offer → echoed; unknown offer → our newest, never
+        // an echo of a version we don't implement.
+        let resps = serve_once(
+            &[
+                r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"9999-01-01","capabilities":{},"clientInfo":{"name":"t","version":"0"}}}"#,
+                r#"{"jsonrpc":"2.0","id":2,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"t","version":"0"}}}"#,
+            ]
+            .join("\n"),
+        );
+        assert_eq!(resps[0]["result"]["protocolVersion"], "2025-11-25");
+        assert_eq!(resps[1]["result"]["protocolVersion"], "2025-11-25");
     }
 
     #[test]

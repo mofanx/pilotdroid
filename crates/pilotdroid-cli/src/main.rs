@@ -1,5 +1,6 @@
 mod agent;
 mod serve;
+mod setup;
 
 #[cfg(test)]
 mod agent_smoke;
@@ -80,6 +81,20 @@ enum Cmd {
         /// Local tcp port for the control forward (default: auto-pick).
         #[arg(long)]
         port: Option<u16>,
+    },
+
+    /// Five-step doctor: adb → device → agent.jar → forward → HELLO.
+    /// Exits 0 when all checks pass; each failure prints a hint.
+    Setup {
+        /// Agent's localabstract socket name.
+        #[arg(long, default_value = AGENT_SOCKET)]
+        socket: String,
+        /// Local tcp port for the check forward (default: auto-pick).
+        #[arg(long)]
+        port: Option<u16>,
+        /// Push this local agent.jar when the remote copy is missing.
+        #[arg(long)]
+        jar: Option<PathBuf>,
     },
 }
 
@@ -241,8 +256,29 @@ fn build_shell_command(args: &[String]) -> String {
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
-    let mut adb =
-        AdbClient::at(cli.adb_port).context("connecting to adb server (is `adb` running?)")?;
+    let mut adb = match AdbClient::at(cli.adb_port) {
+        Ok(a) => a,
+        Err(e) => {
+            if matches!(cli.cmd, Cmd::Setup { .. }) {
+                // Doctor must still emit its step report: try waking the
+                // server once, else degrade to the unreachable report.
+                match setup::adb_transport_or_start_server(cli.adb_port) {
+                    Some(a) => a,
+                    None => {
+                        let bin_ok = std::process::Command::new("adb")
+                            .arg("version")
+                            .output()
+                            .map(|o| o.status.success())
+                            .unwrap_or(false);
+                        setup::run_unreachable(bin_ok)?;
+                        unreachable!()
+                    }
+                }
+            } else {
+                return Err(e).context("connecting to adb server (is `adb` running?)");
+            }
+        }
+    };
 
     match &cli.cmd {
         Cmd::Devices => {
@@ -282,17 +318,22 @@ fn main() -> Result<()> {
             let serial = resolve_serial(&cli, &mut adb)?;
             let socket = socket.clone();
             let port = *port;
+            let adb_port = cli.adb_port;
             let stdin = std::io::stdin();
             let mut stdout = std::io::stdout();
-            // Lazy session: handshake/tools-list must work before any
-            // device contact; first tools/call triggers watchdog connect.
-            let mut adb_opt = Some(adb);
+            // Session on demand: initialize tries once (for agentVer),
+            // first tools/call retries. A fresh AdbClient per attempt —
+            // a failed connect must not consume the transport.
             serve::run(stdin.lock(), &mut stdout, move || {
-                let adb = adb_opt.take().context("session already consumed")?;
+                let adb = AdbClient::at(adb_port)
+                    .context("connecting to adb server (is `adb` running?)")?;
                 pilotdroid_agent::Device::with_transport(adb, serial.clone())
                     .session_opts(port, &socket)
                     .map_err(Into::into)
             })?;
+        }
+        Cmd::Setup { socket, port, jar } => {
+            setup::run(adb, cli.device.clone(), jar.clone(), *port, socket)?;
         }
         Cmd::Agent { cmd } => {
             let serial = resolve_serial(&cli, &mut adb)?;

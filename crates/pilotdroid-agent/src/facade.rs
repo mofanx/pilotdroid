@@ -42,13 +42,14 @@ impl<T: AdbTransport> Device<T> {
     /// tests pin the port to reach a loopback fake agent.
     pub fn session_opts(self, port: Option<u16>, socket: &str) -> Result<Session<T>> {
         let Device { mut adb, serial } = self;
-        let (client, port, _hello) =
+        let (client, port, hello) =
             AgentManager::new(&mut adb).connect_recover(&serial, port, socket, None)?;
         Ok(Session {
             adb,
             serial,
             port,
             client,
+            hello,
             media: None,
             media_port: None,
             media_port_hint: None,
@@ -87,9 +88,21 @@ pub struct Session<T: AdbTransport> {
     /// Socket name from the start ack (attach must wait for start, §4.8).
     media_socket: Option<String>,
     streaming: bool,
+    /// HELLO_ACK retained so callers can expose agent build/caps.
+    hello: pilotdroid_proto::payload::HelloAck,
 }
 
 impl<T: AdbTransport> Session<T> {
+    /// Agent build version from HELLO (`ver` field); `None` on pre-M2 agents.
+    pub fn agent_ver(&self) -> Option<&str> {
+        self.hello.ver.as_deref()
+    }
+
+    /// Capability bitmap from HELLO.
+    pub fn caps(&self) -> u32 {
+        self.hello.caps
+    }
+
     pub fn tap(&mut self, x: f32, y: f32) -> Result<InjectAck> {
         self.client.tap(x, y, true)
     }
