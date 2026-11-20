@@ -183,17 +183,15 @@ class _Selector:
                 dir_ok = _REL[self._rel]
                 hits = [p for p in pairs if self._kw_match(p[1])
                         and dir_ok(p[1]["bounds"], ab)]
-        i = self._index()
-        if 0 <= i < len(hits):
-            return [hits[i][1]]
-        return [] if hits else []
+        return [p[1] for p in hits]
 
     def _node(self):
         if self._wireable():
             r = self.dev.a.query(self._sel())["payload"]
             return r.get("node") if r.get("found") else None
         ns = self._nodes()
-        return ns[0] if ns else None
+        i = self._index()
+        return ns[i] if 0 <= i < len(ns) else None
 
     @property
     def exists(self):
