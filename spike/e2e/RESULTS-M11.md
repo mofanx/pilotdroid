@@ -48,6 +48,9 @@ macOS quarantine 解、SUPPORTED 免费二批、韧性尾巴。
 - [x] SUPPORTED 免费二批（本节②：6 项 ✅ + instance alias；clipboard/toast 保 ❌）
 - [x] multiPoints 守卫 + pinch clamp + shell 分层注（t1）
 - [x] verify 37/37（含 transition-stall settle 修复）
+- [x] serve watch 语义洞（t6）：`watch_arm` 预连 media（arm→迟读 2.5s
+  →hit 仍可追回，丢窗关闭）+空 selector 显式拒绝；`_pinch` 改可见性
+  判据（全屏外鬼 bounds→LookupError）；`watch_disarm` 命中后 false 语义注
 
 ## 5. 已知边界（沿 M10）
 

@@ -1,0 +1,24 @@
+{
+  "probe": "watch_hit push vs pull (M12 t2)",
+  "a_notification_via_logging_callback": [
+    [
+      "info",
+      {
+        "type": "watch_hit",
+        "watch_id": 7,
+        "matched": true
+      }
+    ]
+  ],
+  "a_other_messages_seen": [
+    "ServerNotification"
+  ],
+  "a_tool_result": "pong",
+  "a_push_received": true,
+  "b_capabilities": [
+    "tools"
+  ],
+  "b_logging_capability": false,
+  "b_unsolicited_probe": "no-read-api: client streams are pull-based",
+  "b_conclusion": "serve advertises ONLY tools — no logging/notifications channel; watch_hit today is strictly pull (watch_events). A push path exists in-protocol (notifications/message, proven in half A) but surfaces to clients as a LOG line, not a structured tool event — so agent-tooling would still need to poll watch_events for the payload. Recommendation: keep pull as the contract; optionally mirror hits as notifications/message for human-facing logs later."
+}

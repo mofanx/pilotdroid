@@ -57,3 +57,13 @@ benchmark 行已挂引用。
 - `cargo test --workspace` 全绿（+1 新测试
   `watch_events_quiet_media_reports_timeout_union`，静默 media→timeout
   union）；clippy/fmt 净
+
+## 7. dist/doc 防线（t2）
+
+| 项 | 落地 | 证据 |
+|---|---|---|
+| doc-drift guard | `spike/e2e/doc-drift.py`：serve.rs tools() 工具名集 ↔ README `N tools` 断言；u2shim 四类（Device/_Selector/_Watcher/_Scroll）公开方法 ↔ SUPPORTED.md 全文交叉断言（IGNORE={close,running}，shim 内部件非 u2 面）；挂 docs-smoke step4 + ci.yml python job | 实证：README 改前 21→FAIL，修 27→PASS；方法侧 0 missing |
+| README 修正 | 21 tools→27（现行值）；serve 段补"两实例并存 ping-pong 夺权"明示句 | doc-drift PASS |
+| 版本对齐 | workspace + python/pyproject 0.5.0→**0.6.0**（与 draft tag v0.6.0 一致；lock 同步）；AGENT_VER=0.7.0 为协议内部版本、与发布版本独立演进（CHANGELOG 注） | `cargo metadata` 全 member=0.6.0；release.yml verify-tag 会强校验 tag==workspace==pyproject |
+| Windows matrix | release.yml +`windows-latest / x86_64-pc-windows-msvc` → `pilotdroid-cli-windows-x86_64`（.exe）；bin 名入 matrix 字段；rusb 为 vendored（源码 cc 编译，无系统 libusb 依赖） | dispatch 实跑见 ci run 记录 |
+| MCP notification spike | `spike/e2e/mcp-notify-spike.py` + `mcp-notify-spike.json`：(A) in-proc echo server 发 `notifications/message` → 真 ClientSession `logging_callback` 实测收到（`ServerNotification` 经 message_handler 亦可见）——**推通道协议内可达**；(B) 真 serve capabilities 仅 `tools`，无 logging cap——现状纯 pull | 结论：watch_hit 保持 pull（watch_events）为契约；notification 只能当 log 面（非结构化 tool 事件），tooling 仍需轮询取 payload。可选：未来 hit 镜像为 logging notification 供人类观察 |

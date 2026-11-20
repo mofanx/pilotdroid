@@ -4,6 +4,48 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.6.0]
+
+Versioning note: `AGENT_VER` (device jar, 0.7.0) is the internal protocol
+version and moves independently of release versions — bumps happen on any
+wire/agent change, not on every release.
+
+### Added
+
+- **Multi-pointer gestures**: `pinch_in`/`pinch_out` (protocol `points[].pid`,
+  `CAP_MULTI_PTR`) in agent, shim (`_Selector.pinch_*` with display clamp +
+  off-screen visibility check) and MCP serve.
+- **Async WATCH** (`CAP_WATCH_ASYNC`, §4.9): `WATCH_ARM`/`WATCH_DISARM` +
+  `WATCH_HIT` pushed on the media channel — armed watchers don't block
+  control ops (armed-period op p50 = 43ms, same magnitude as unarmed).
+  Shim `watcher` uses device-async semantics on agent ≥0.7.0; serve gains
+  `watch_arm`/`watch_disarm`/`watch_events` (armed hits pre-attached to the
+  media conn — no silent hit-loss window; empty selectors rejected).
+- **conn-side APP_INFO** (`CAP_APP_INFO`, §4.10): `app_current`/`app_wait`
+  resolve the foreground app over the agent conn (~51ms vs ~96ms adb spawn).
+- **Serve resilience**: dead control conns (replaced by a newer conn) now
+  self-heal — next call lazily reconnects and succeeds; conn-replaced events
+  log a stderr warning (stdout stays pure JSON-RPC).
+- **u2shim coverage (M11+M12)**: `app_wait`/`session`/`send_keys`/
+  `open_notification`/`open_quick_settings`/`freeze_rotation` + `instance`
+  alias; host post-filter selector keys (`*Contains`/`*Matches`/
+  `*StartsWith`, attrs, `.count`/`.wait_gone`, relative
+  `.left/.right/.up/.down/.child/.sibling`) via dump+post-filter. `xpath`
+  remains the only explicitly-out-of-scope item.
+- **Distribution**: macOS arm64 + Windows x86_64 release assets;
+  Homebrew tap `mofanx/homebrew-pilotdroid`; PyPI publish workflow
+  (OIDC trusted publishing on release publish); `live-view.py` MJPEG demo.
+- **doc-drift guard** (`spike/e2e/doc-drift.py`, in docs-smoke + CI):
+  README tool count ↔ serve.rs, shim methods ↔ SUPPORTED.md.
+
+### Fixed
+
+- `verify-agent.sh` flakes: window-transition a11y stall settle (0.8→1.5s),
+  foreground-hijack retry, screen-off timeout pinned to MAX during runs.
+- `watch_events` timeout returns a normal `{type:"timeout"}` union instead
+  of `isError`; watcher limit `MAX_WATCHERS=8` → `ERR_LIMIT`; media channel
+  pins to `control_port+1` (bounded forward orphans).
+
 ## [0.5.0] — first public release
 
 ### Added
