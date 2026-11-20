@@ -543,10 +543,10 @@ public final class Agent {
 
     // ---------- selector (docs/02 §4.3) --------------------------------------
 
-    /** Selector = {text?, id?, desc?, class?, scrollable?, index?} — AND
+    /** Selector = {text?, id?, desc?, class?, scrollable?, pkg?, index?} — AND
      *  semantics; index is the nth-match ordinal (default 0). */
     private static final class Selector {
-        private final String text, id, desc, cls;
+        private final String text, id, desc, cls, pkg;
         private final int index;
         private final Boolean scrollable;
 
@@ -556,6 +556,7 @@ public final class Agent {
             this.id = str0(m.get("id"));
             this.desc = str0(m.get("desc"));
             this.cls = str0(m.get("class"));
+            this.pkg = str0(m.get("pkg"));
             this.index = m.get("index") instanceof Number
                     ? ((Number) m.get("index")).intValue() : 0;
             this.scrollable = m.get("scrollable") instanceof Boolean
@@ -578,6 +579,7 @@ public final class Agent {
                 if (!cls.equals(cn) && !cn.endsWith("." + cls)) return false;
             }
             if (scrollable != null && scrollable != n.isScrollable()) return false;
+            if (pkg != null && !pkg.equals(cs(n.getPackageName()))) return false;
             return true;
         }
 
@@ -585,7 +587,7 @@ public final class Agent {
 
         public String toString() {
             return "{text=" + text + ",id=" + id + ",desc=" + desc + ",class=" + cls
-                    + ",scrollable=" + scrollable + ",index=" + index + "}";
+                    + ",scrollable=" + scrollable + ",pkg=" + pkg + ",index=" + index + "}";
         }
     }
 

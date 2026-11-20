@@ -172,6 +172,19 @@ $CLI text "pdtest" >/dev/null 2>&1 || true
 sleep 0.4
 Q=$($CLI query '{"text":"pdtest"}' 2>&1) || true
 echo "$Q" | grep -q '"found": *true' && ok "text_visible" || bad "text_visible" "$Q"
+
+echo "== M6-A1 TEXT unicode (ACTION_SET_TEXT is UTF-16 — no IME needed) =="
+$CLI text "试点pd" >/dev/null 2>&1 || true
+sleep 0.4
+Q=$($CLI query '{"text":"试点pd"}' 2>&1) || true
+echo "$Q" | grep -q '"found": *true' && ok "text_unicode" || bad "text_unicode" "$Q"
+
+echo "== M6-A2 QUERY pkg selector (owning package exact match) =="
+# foreground is quicksearchbox — the typed node lives in its window tree
+Q=$($CLI query '{"text":"试点pd","pkg":"com.android.quicksearchbox"}' 2>&1) || true
+echo "$Q" | grep -q '"found": *true' && ok "query_pkg" || bad "query_pkg" "$Q"
+Q=$($CLI query '{"text":"试点pd","pkg":"com.nonexistent.pkg"}' 2>&1) || true
+echo "$Q" | grep -q '"found": *false' && ok "query_pkg_neg" || bad "query_pkg_neg" "$Q"
 # restore MainSettings so id=input assertions below still hold
 adb -s "$DEV" shell 'am start -n com.android.settings/.MainSettings' >/dev/null 2>&1
 sleep 1.0
@@ -271,7 +284,14 @@ try:
     if ms is None:
         raise Exception("no media conn")
     ms.settimeout(5)
-    rep("stream_eof", ac.read_frame(ms) is None, "eof expected")
+    # TCP-forwarded media conns may have in-flight frames after stop_ack —
+    # drain until EOF (bounded), not "next frame must be EOF".
+    extra = 0
+    while ac.read_frame(ms) is not None:
+        extra += 1
+        if extra > 8:
+            raise Exception(f"no EOF after {extra} in-flight frames")
+    rep("stream_eof", True, f"eof after {extra} in-flight frames")
     ms.close()
 except Exception as e:
     rep("stream_eof", False, e)

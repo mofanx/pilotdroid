@@ -12,16 +12,19 @@ round-trip per call; shim pays one socket op).
 Covered (v1): connect / click(x,y) / long_click / swipe / press /
 set_text / dump_hierarchy / screenshot / app_start / app_stop /
 app_current / info;
-d(text|resourceId|description|className|scrollable,index).click() /
+d(text|resourceId|description|className|packageName|scrollable,index).click() /
 .exists / .wait / .info / .set_text / .long_click /
 d(scrollable=True).scroll.(forward|backward|toEnd|toBeginning).
-(packageName/xpath still rejected with ValueError — see _SUPPORTED.)
+(xpath still rejected with ValueError — see _SUPPORTED.)
 """
 import os, subprocess, sys, time
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__),
-                                "..", "agent", "scripts"))
-from agent_client import Agent  # noqa: E402
+try:
+    from .agent_client import Agent  # installed `pilotdroid` package
+except ImportError:
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__),
+                                    "..", "agent", "scripts"))
+    from agent_client import Agent  # noqa: E402
 
 _KEYCODES = {"home": 3, "back": 4, "recent": 187, "recents": 187,
              "power": 26, "volume_up": 24, "volume_down": 25,
@@ -35,7 +38,7 @@ class _Selector:
         self.dev, self.kw = dev, kw
 
     _SUPPORTED = ("text", "resourceId", "description", "className",
-                  "scrollable", "index")
+                  "packageName", "scrollable", "index")
 
     def _sel(self):
         bad = [k for k in self.kw if k not in self._SUPPORTED]
@@ -43,7 +46,7 @@ class _Selector:
             raise ValueError(
                 f"u2shim selector: unsupported keys {bad}; "
                 f"supported: {list(self._SUPPORTED)} "
-                f"(packageName/xpath not in v1)")
+                f"(xpath not supported)")
         s = {}
         if "text" in self.kw:
             s["text"] = self.kw["text"]
@@ -54,6 +57,8 @@ class _Selector:
             s["desc"] = self.kw["description"]
         if "className" in self.kw:
             s["class"] = self.kw["className"]  # full or simple name
+        if "packageName" in self.kw:
+            s["pkg"] = self.kw["packageName"]  # exact package match
         if "scrollable" in self.kw:
             s["scrollable"] = bool(self.kw["scrollable"])
         if "index" in self.kw:

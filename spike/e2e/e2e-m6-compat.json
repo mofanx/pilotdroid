@@ -1,0 +1,113 @@
+{
+  "serial": "ba0d072d",
+  "scripts": {
+    "script_A_readme_quickstart": {
+      "d.info (property)": [
+        "ok",
+        "{'displayWidth': 1440, 'displayHeight': 3200, 'sdkInt': 34, "
+      ],
+      "d.app_current": [
+        "ok",
+        "{'package': 'com.android.settings', 'activity': 'com.android"
+      ],
+      "d.click(x,y)": [
+        "ok",
+        "True"
+      ],
+      "d(text=...).exists": [
+        "ok",
+        "True"
+      ],
+      "d(index=0,class).click": [
+        "ok",
+        "True"
+      ],
+      "d.screenshot(path)": [
+        "ok",
+        "b'\\xff\\xd8\\xff\\xe0\\x00\\x10JFIF\\x00\\x01\\x01\\x00\\x00\\x01\\x00\\x"
+      ],
+      "d.dump_hierarchy": [
+        "ok",
+        "423"
+      ],
+      "d.press(back)": [
+        "ok",
+        "True"
+      ]
+    },
+    "script_B_selector_scroll": {
+      "d(className=...).exists": [
+        "ok",
+        "True"
+      ],
+      "d(scrollable).scroll.forward": [
+        "ok",
+        "True"
+      ],
+      "d(scrollable).scroll.toBeginning": [
+        "ok",
+        "False"
+      ],
+      "d(packageName=...).exists": [
+        "ok",
+        "True"
+      ],
+      "d(resourceId=...).info()": [
+        "ok",
+        "{'text': '开启小米云服务', 'id': 'android:id/title', 'desc': '', 'b"
+      ],
+      "d(description=...).exists": [
+        "ok",
+        "True"
+      ],
+      "d(index=1).exists": [
+        "ok",
+        "True"
+      ],
+      "d(xpath=...) [u2 xpath plugin]": [
+        "unsupported",
+        "u2shim selector: unsupported keys ['xpath']; supported: ['text', 'resourceId', '"
+      ]
+    },
+    "script_C_app_input": {
+      "d.app_stop(settings)": [
+        "ok",
+        "True"
+      ],
+      "d.app_start(settings)": [
+        "ok",
+        "True"
+      ],
+      "exists(title)+1.2s": [
+        "ok",
+        "True"
+      ],
+      "d.set_text": [
+        "ok",
+        "False"
+      ],
+      "d.long_click(x,y)": [
+        "ok",
+        "True"
+      ],
+      "d.swipe": [
+        "ok",
+        "True"
+      ],
+      "d.press(home)": [
+        "ok",
+        "True"
+      ],
+      "d.press(recent)": [
+        "ok",
+        "True"
+      ]
+    }
+  },
+  "summary": {
+    "ok": 23,
+    "unsupported": 1,
+    "error": 0,
+    "total": 24
+  }
+}

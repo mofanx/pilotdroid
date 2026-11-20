@@ -469,6 +469,9 @@ pub mod payload {
         /// Filter by the node's scrollable attribute (M5).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub scrollable: Option<bool>,
+        /// Filter by owning package name, exact match (M6).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub pkg: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub index: Option<u32>,
     }

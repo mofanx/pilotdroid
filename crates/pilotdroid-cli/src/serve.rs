@@ -181,6 +181,7 @@ fn selector_of(args: &Value) -> Selector {
         desc: str_arg(args, "desc"),
         class: str_arg(args, "className").or_else(|| str_arg(args, "class")),
         scrollable: args.get("scrollable").and_then(Value::as_bool),
+        pkg: str_arg(args, "packageName").or_else(|| str_arg(args, "pkg")),
         index: args.get("index").and_then(Value::as_u64).map(|v| v as u32),
     }
 }
@@ -361,6 +362,7 @@ fn tools() -> Value {
         "text": prop("string","exact text"), "id": prop("string","resource-id"),
         "desc": prop("string","content-desc"), "className": prop("string","class FQN or simple name"),
         "scrollable": prop("boolean","scrollable attr"), "index": prop("integer","nth match"),
+        "packageName": prop("string","owning package, exact"),
     }});
     json!([
         {"name":"tap","description":"tap (x,y) — INJECT MotionEvent down/up","inputSchema":xy},

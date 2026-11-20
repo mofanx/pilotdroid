@@ -107,6 +107,19 @@
 - [x] `soak-check.py` 自评级门落地（fd恒定/17-17恢复/RSS斜率-0.7kB·min⁻¹ 全 PASS）。
 - 剩余：MCP notifications 式推送帧（当前 stream_read 拉式）、serve 多设备并发会话、xpath 语义层。
 
+## M6 · 真实兼容性 + 可分发
+
+**范围**
+- shim 支持集推进至"几乎全部非 xpath"、Unicode 输入实证、真实 u2 脚本对拍矩阵、Python 包分发、TCP 传输矩阵。
+
+**M6 已交付（feature/m6-agent，实测 `spike/e2e/e2e-m6-compat.json`）**
+- [x] **packageName selector 全链路**：wire `pkg` 字段（§4.3）+ agent `getPackageName` 精确匹配 + shim `packageName=` 映射 + serve schema——非 xpath ValueError 类清零。
+- [x] **Unicode 文本实证**：`ACTION_SET_TEXT`（UTF-16 Bundle）原生支持中文，`text_unicode` 断言双机 PASS——区别于 u2 需 ADBKeyboard IME。
+- [x] **真实 u2 脚本对拍矩阵**：3 组官方风格场景（README quickstart / selector+scroll / app 生命周期+输入）零改动跑 shim：**24 op 中 23 ok / 1 unsupported（xpath plugin）/ 0 error**。
+- [x] **Python 包**：`python/` pyproject（`pip install ./python` → `import pilotdroid`），symlink 单源无副本。
+- [x] **TCP 矩阵行**：dash A17/SDK37 经 `11.0.0.2:5555` 全链路可跑（inject/dump/shot/stream/unicode/pkg 均 PASS）——`stream_eof` 断言放宽为"排空≤8 在途帧后 EOF"（TCP 缓冲语义修正，USB 行为不变）。
+- verify **33/33**（Mi11 USB）；dash 复跑 ~29/33，fail 均为 `android:id/input`+scrollable+logcat marker 等 **MIUI 布局专属断言**在 stock A17 的环境差异（首次跑批 32/33 曾全过，非功能回归——后续宜把该断言集设备无关化）。
+
 ## 明确的排序依据
 
 1. **先对拍工具（M0）再写功能**——避免"更优"沦为口号。

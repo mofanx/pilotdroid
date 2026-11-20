@@ -18,11 +18,13 @@
 | `pilotdroid serve`（stdio MCP） | **AI agent 一行接入** | 持久会话摊销 ~0 | `pilotdroid serve` + JSON-RPC 18 工具 |
 | Rust `pilotdroid-agent` facade | Rust 库内嵌 | 持久 Session | `Device::with_transport(..).session()` |
 
-另有 **u2 兼容 shim**（`compat/u2shim.py`，host 侧翻译层）：u2 脚本零改动跑通。
+另有 **u2 兼容 shim**（`compat/u2shim.py`，host 侧翻译层，`pip install ./python`
+后 `import pilotdroid`）：u2 脚本零改动跑通。
 支持集（明确不暗示全覆盖）：`click/long_click/swipe/press/set_text/dump_hierarchy/
 screenshot/app_start/app_stop/app_current/info` + selector `text/resourceId/
-description/className/scrollable/index` + `d(scrollable=True).scroll.*`；
-`packageName/xpath` 显式拒绝（ValueError）。
+description/className/packageName/scrollable/index` + `d(scrollable=True).scroll.*`；
+仅 `xpath` 显式拒绝（ValueError）。M6 真实脚本对拍：**23/24 op 通过，唯一
+unsupported = xpath**（`spike/e2e/e2e-m6-compat.json`）。
 
 ## 实测数据（真机，同口径）
 
@@ -32,6 +34,7 @@ description/className/scrollable/index` + `d(scrollable=True).scroll.*`；
 | 批量 tap→wait→tap e2e | 58.5ms | 612.9ms | **10.5×** `spike/e2e/RESULTS-M2.md` |
 | 帧流 live view | 6.0fps@0.5 持续 65s | 无此能力 | `spike/e2e/RESULTS-M4.md` |
 | CLI vs 持久路径 | +85ms/call 固定成本 | — | `spike/e2e/RESULTS-M5.md` |
+| 中文/Unicode 文本输入 | `ACTION_SET_TEXT` 原生支持 | 需 ADBKeyboard IME | `verify-agent.sh` `text_unicode` |
 
 ## 路线图（以真机实测数据驱动）
 
@@ -42,6 +45,7 @@ description/className/scrollable/index` + `d(scrollable=True).scroll.*`；
 | M2 | 二进制分帧 + 批量/设备端条件（wait_until）+ u2 兼容层 | 10 步序列往返 = 1 |
 | M3 | selector/xpath 语义层、帧流选项、Unicode 输入、OEM 矩阵扩展 | 详见 `docs/05-roadmap.md` |
 | M5 | agent 原生调用面（serve/facade/shim v1） | 详见 `docs/05-roadmap.md` + ADR-007 |
+| M6 | 真实兼容性 + 可分发（pkg selector / Unicode 实证 / pip 包 / TCP 矩阵） | 详见 `docs/05-roadmap.md` |
 
 ## 仓库结构
 
