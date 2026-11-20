@@ -5,6 +5,8 @@
 
 Asserts (exit 0 = PASS, prints verdict lines):
   - fd count constant across all bench samples
+  - fd absolute ceiling <= 90 (SHOT/GC-deferred dmabuf spikes are
+    bounded — a constant-only gate can't see a raised baseline)
   - recoveries == kills, every recovery < 5s
   - bench_fails == 0
   - RSS linear-fit slope <= +50 kB/min (no monotonic leak)
@@ -31,6 +33,9 @@ def main(path):
         print(f"{'PASS' if passed else 'FAIL'} {name}: {detail}")
 
     rep("fd_constant", len(fd) == 1, f"fd={sorted(fd)}")
+    fds = [int(e["fd"]) for e in bench if str(e.get("fd", "")).isdigit()]
+    rep("fd_abs", not fds or max(fds) <= 90,
+        f"max={max(fds) if fds else '-'} (cap 90)")
     rep("recoveries==kills", len(rec) == kills and not recf,
         f"{len(rec)}/{kills}, fails={len(recf)}")
     if rec:

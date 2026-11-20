@@ -23,6 +23,40 @@ pub const MEDIA_SOCKET: &str = "pilotdroid_agent_media";
 
 const AGENT_LOG: &str = "/data/local/tmp/pilotdroid/agent.log";
 
+/// The dex agent jar compiled into the binary — `setup`/`install`/watchdog
+/// deploy it without a local build (`--jar` still overrides with a custom
+/// build). Rebuilt via `agent/scripts/deploy-agent.sh`; kept in sync with
+/// agent/java by the committed file + verify's `agent_ver` assert.
+pub const AGENT_JAR_BYTES: &[u8] = include_bytes!("../../../agent/agent.jar");
+
+/// Materialize [`AGENT_JAR_BYTES`] as a real file — `adb push` needs a
+/// path. Written once to a versioned temp name and reused; concurrent
+/// writers can't corrupt it (temp file + atomic rename, same bytes).
+pub fn embedded_jar_path() -> std::io::Result<std::path::PathBuf> {
+    let dir = std::env::temp_dir().join("pilotdroid");
+    std::fs::create_dir_all(&dir)?;
+    let name = format!(
+        "agent-{:08x}-{}.jar",
+        fnv1a_32(AGENT_JAR_BYTES),
+        AGENT_JAR_BYTES.len()
+    );
+    let dst = dir.join(name);
+    if !dst.exists() {
+        let tmp = dir.join(format!(".tmp-{}", std::process::id()));
+        std::fs::write(&tmp, AGENT_JAR_BYTES)?;
+        std::fs::rename(&tmp, &dst)?;
+    }
+    Ok(dst)
+}
+
+fn fnv1a_32(b: &[u8]) -> u32 {
+    let mut h = 0x811c9dc5u32;
+    for &x in b {
+        h = (h ^ x as u32).wrapping_mul(0x01000193);
+    }
+    h
+}
+
 /// Settle delay after `agent start` — app_process needs a moment to bind
 /// the localabstract socket before the forward dial can succeed.
 const RECOVER_SETTLE: std::time::Duration = std::time::Duration::from_millis(800);
@@ -145,7 +179,9 @@ impl<'a, T: AdbTransport> AgentManager<'a, T> {
     ///    as a forced reflash after restart failed too.
     ///
     /// `jar = None` makes the watchdog fully usable without a local jar;
-    /// it is required only if the remote jar turned out to be absent.
+    /// when the remote copy is absent the embedded
+    /// [`AGENT_JAR_BYTES`] is pushed automatically — `--jar` is only for
+    /// forcing a custom build.
     pub fn connect_recover(
         &mut self,
         serial: &str,
@@ -166,14 +202,27 @@ impl<'a, T: AdbTransport> AgentManager<'a, T> {
             ok @ Ok(_) => ok,
             Err(second) => {
                 let remote_present = self.remote_jar_exists(serial).unwrap_or(false);
-                match jar {
+                // --jar forces a reflash; absent a flag, the embedded jar
+                // covers "remote missing" so recovery is self-contained.
+                let effective = match jar {
+                    Some(p) => Some(p.to_path_buf()),
+                    None if !remote_present => {
+                        Some(embedded_jar_path().map_err(|e| AgentError::Recover {
+                            stage: "jar-embed",
+                            detail: e.to_string(),
+                        })?)
+                    }
+                    None => None,
+                };
+                match effective.as_deref() {
                     // Reflash: covers both "remote jar missing" and the
                     // caller's explicit forced reflash via --jar.
                     Some(local) => {
-                        self.recover(serial, local).map_err(|e| AgentError::Recover {
-                            stage: "install",
-                            detail: e.to_string(),
-                        })?;
+                        self.recover(serial, local)
+                            .map_err(|e| AgentError::Recover {
+                                stage: "install",
+                                detail: e.to_string(),
+                            })?;
                         self.connect_hello(serial, port, socket).map_err(|third| {
                             AgentError::Recover {
                                 stage: "retry",
@@ -183,12 +232,8 @@ impl<'a, T: AdbTransport> AgentManager<'a, T> {
                             }
                         })
                     }
-                    None if !remote_present => Err(AgentError::Recover {
-                        stage: "jar-missing",
-                        detail: format!(
-                            "remote {AGENT_JAR_REMOTE} absent and no --jar supplied                              (first: {first_err}; restart: {second})"
-                        ),
-                    }),
+                    // remote jar present, daemon still unanswerable after
+                    // restart — nothing left to push.
                     None => Err(AgentError::Recover {
                         stage: "retry",
                         detail: format!("first: {first_err}; restart: {second}"),
@@ -216,6 +261,17 @@ impl<'a, T: AdbTransport> AgentManager<'a, T> {
         self.start(serial)?;
         std::thread::sleep(RECOVER_SETTLE);
         Ok(())
+    }
+
+    /// Raw `adb shell` passthrough — returns the output verbatim (no
+    /// exit-code check; callers inspect `ShellOutput`). For the doctor's
+    /// probe steps that must not fail closed on a non-zero status.
+    pub fn shell(
+        &mut self,
+        serial: &str,
+        command: &str,
+    ) -> std::result::Result<pilotdroid_adb::ShellOutput, pilotdroid_adb::AdbError> {
+        self.adb.shell(serial, command)
     }
 
     /// `test -f` on the on-device jar — false also when the shell itself
@@ -265,4 +321,25 @@ impl<'a, T: AdbTransport> AgentManager<'a, T> {
 
 pub(crate) fn agent_addr(port: u16) -> SocketAddr {
     SocketAddr::new(Ipv4Addr::LOCALHOST.into(), port)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn embedded_jar_is_a_zip_dex_container() {
+        // agent.jar is a d8-produced zip containing classes.dex.
+        assert!(AGENT_JAR_BYTES.len() > 10_000, "jar suspiciously small");
+        assert_eq!(&AGENT_JAR_BYTES[..4], b"PK\x03\x04");
+    }
+
+    #[test]
+    fn embedded_jar_path_materializes_once() {
+        let p1 = embedded_jar_path().unwrap();
+        assert!(p1.exists());
+        assert_eq!(std::fs::read(&p1).unwrap().len(), AGENT_JAR_BYTES.len());
+        // Second call reuses the same versioned path.
+        assert_eq!(embedded_jar_path().unwrap(), p1);
+    }
 }

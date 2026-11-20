@@ -41,7 +41,12 @@ Thumbs.db
 .env.*
 spike/apk/*.idsig
 agent/build/
-agent/agent.jar
+# agent/agent.jar IS committed: it is the embedded payload `pilotdroid-cli
+# setup` pushes when no --jar is given (include_bytes! in manager.rs).
+# Rebuild it via agent/scripts/deploy-agent.sh after touching Agent.java,
+# then `git add agent/agent.jar` — the `*.jar` glob above is overridden by:
+!agent/agent.jar
+agent/data/verify-*.json
 __pycache__/
 .devin/mcp_config.local.json
 python/build/

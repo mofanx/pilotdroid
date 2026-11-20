@@ -151,11 +151,37 @@ impl<T: AdbTransport> Session<T> {
 
     /// Snapshot the UI tree as a flat, index-addressable element list —
     /// the agent-observation surface (`list_elements` tool). `i` is the
-    /// node's position in dump order and is only meaningful against the
-    /// snapshot it came from; callers re-list before indexing.
-    pub fn list_elements(&mut self) -> Result<Vec<ElemInfo>> {
+    /// node's position in the returned (possibly filtered) list and is
+    /// only meaningful against the snapshot it came from; callers
+    /// re-list before indexing.
+    ///
+    /// `interactive_only` keeps clickable/editable/scrollable nodes —
+    /// the ~4KB response an agent caller actually wants; pass `false`
+    /// for the raw full-tree dump order.
+    pub fn list_elements(&mut self, interactive_only: bool) -> Result<ElemSnapshot> {
         let xml = self.dump()?;
-        Ok(parse_nodes(&xml))
+        let nodes = parse_nodes(&xml);
+        let layout_sig = nodes_signature(&nodes);
+        let mut elements = nodes;
+        if interactive_only {
+            elements.retain(|e| e.clickable || e.editable || e.scrollable);
+        }
+        for (i, e) in elements.iter_mut().enumerate() {
+            e.i = i;
+        }
+        Ok(ElemSnapshot {
+            elements,
+            layout_sig,
+        })
+    }
+
+    /// Recompute the layout signature of the *current* screen — the
+    /// staleness probe backing `tap_index`'s snapshot guard. Cheap
+    /// signal: fnv over every node's (pkg,class,bounds); text changes
+    /// alone do not invalidate a snapshot.
+    pub fn layout_signature(&mut self) -> Result<u64> {
+        let xml = self.dump()?;
+        Ok(nodes_signature(&parse_nodes(&xml)))
     }
 
     pub fn query(&mut self, selector: Selector) -> Result<QueryAck> {
@@ -485,9 +511,18 @@ fn fnv1a(b: &[u8]) -> u64 {
 /// One flattened UI node from a DUMP snapshot — index-addressable for
 /// `tap_index`/`set_text_index`. Empty text/desc/class fields are
 /// skipped on the wire (~2KB target for a typical Settings page).
+/// Result of [`Session::list_elements`] — the filtered element list plus
+/// a layout signature for staleness checks.
+pub struct ElemSnapshot {
+    pub elements: Vec<ElemInfo>,
+    /// fnv over all nodes' (pkg,class,bounds) — compared against
+    /// [`Session::layout_signature`] before index ops.
+    pub layout_sig: u64,
+}
+
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]
 pub struct ElemInfo {
-    /// Position in dump order — index handle for tap/set_text.
+    /// Position in the returned list — index handle for tap/set_text.
     pub i: usize,
     #[serde(skip_serializing_if = "String::is_empty")]
     pub text: String,
@@ -505,6 +540,9 @@ pub struct ElemInfo {
     /// `android.widget.EditText` (or subclass tail `EditText`).
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub editable: bool,
+    /// Node can scroll — interactive for the `scroll` tool too.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub scrollable: bool,
 }
 
 /// Parse uiautomator dump XML into a flat element list. Attribute
@@ -538,10 +576,32 @@ fn parse_nodes(xml: &str) -> Vec<ElemInfo> {
             bounds: parse_bounds(g("bounds")).unwrap_or([0, 0, 0, 0]),
             clickable: g("clickable") == "true",
             editable: simple == "EditText",
+            scrollable: g("scrollable") == "true",
         });
         pos = tag_end;
     }
     out
+}
+
+/// Layout signature for staleness checks: fnv-1a over every node's
+/// (pkg, class, bounds) — deliberately ignores text/desc so a ticking
+/// clock or typed text does not invalidate a position snapshot.
+fn nodes_signature(nodes: &[ElemInfo]) -> u64 {
+    let mut h = 0xcbf29ce484222325u64;
+    let mut mix = |b: &[u8]| {
+        for &x in b {
+            h = (h ^ x as u64).wrapping_mul(0x100000001b3);
+        }
+    };
+    for n in nodes {
+        mix(n.pkg.as_bytes());
+        mix(n.class.as_bytes());
+        for v in n.bounds {
+            mix(&v.to_le_bytes());
+        }
+        mix(&[0xff]);
+    }
+    h
 }
 
 /// `[l,t][r,b]` → `[l,t,r,b]`.

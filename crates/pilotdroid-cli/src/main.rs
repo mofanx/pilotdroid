@@ -92,7 +92,8 @@ enum Cmd {
         /// Local tcp port for the check forward (default: auto-pick).
         #[arg(long)]
         port: Option<u16>,
-        /// Push this local agent.jar when the remote copy is missing.
+        /// Push this local agent.jar when the remote copy is missing
+        /// (default: the embedded jar — a bare checkout needs nothing).
         #[arg(long)]
         jar: Option<PathBuf>,
     },
@@ -109,7 +110,7 @@ struct ConnectOpts {
     socket: String,
     /// Force reflash: during watchdog recovery, reinstall this agent.jar
     /// instead of relying on the on-device copy (M3 graded recovery —
-    /// without it, a dead daemon is revived by zero-copy restart only).
+    /// a missing remote jar falls back to the embedded build anyway).
     #[arg(long)]
     jar: Option<PathBuf>,
 }
@@ -118,8 +119,9 @@ struct ConnectOpts {
 enum AgentCmd {
     /// Push the agent jar to the device (/data/local/tmp/pilotdroid/agent.jar).
     Install {
-        /// Local agent.jar (dex) built from agent/java.
-        jar: PathBuf,
+        /// Local agent.jar (dex) built from agent/java. Optional — the
+        /// embedded jar (AGENT_JAR_BYTES) is pushed when omitted.
+        jar: Option<PathBuf>,
     },
     /// Launch the agent daemon (setsid + app_process, survives shell exit).
     Start,
@@ -230,8 +232,8 @@ fn resolve_serial(cli: &Cli, adb: &mut impl AdbTransport) -> Result<String> {
 }
 
 /// Connect through `ConnectOpts` — always the graded watchdog path: a dead
-/// daemon is revived by zero-copy restart; `--jar` forces a reflash and is
-/// required only when the remote jar itself is gone.
+/// daemon is revived by zero-copy restart; `--jar` forces a reflash (a
+/// missing remote jar falls back to the embedded build automatically).
 fn connect_opts(
     adb: &mut impl AdbTransport,
     serial: &str,
@@ -339,10 +341,14 @@ fn main() -> Result<()> {
             let serial = resolve_serial(&cli, &mut adb)?;
             match cmd {
                 AgentCmd::Install { jar } => {
-                    AgentManager::new(&mut adb).install(&serial, jar)?;
+                    let local = match jar {
+                        Some(j) => j.clone(),
+                        None => pilotdroid_agent::embedded_jar_path()?,
+                    };
+                    AgentManager::new(&mut adb).install(&serial, &local)?;
                     eprintln!(
                         "installed {} -> {}:{}",
-                        jar.display(),
+                        local.display(),
                         serial,
                         pilotdroid_agent::AGENT_JAR_REMOTE
                     );

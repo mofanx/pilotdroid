@@ -664,9 +664,10 @@ fn watchdog_installs_when_remote_jar_missing() {
 }
 
 #[test]
-fn watchdog_jar_missing_no_local_reports_stage() {
-    // Remote jar absent and no --jar supplied → explicit jar-missing error,
-    // not a bare connect retry failure.
+fn watchdog_jar_missing_pushes_embedded_then_retries() {
+    // Remote jar absent and no --jar supplied → the embedded
+    // AGENT_JAR_BYTES is pushed automatically; the failure that remains
+    // is the connect retry, not a jar-missing report.
     let probe = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let port = probe.local_addr().unwrap().port();
     drop(probe);
@@ -678,13 +679,18 @@ fn watchdog_jar_missing_no_local_reports_stage() {
     let mut m = AgentManager::new(&mut adb);
     let res = m.connect_recover("fake0", Some(port), "pilotdroid_agent", None);
     match res {
-        Err(AgentError::Recover { stage, detail }) => {
-            assert_eq!(stage, "jar-missing");
-            assert!(detail.contains("jar"), "{detail}");
+        Err(AgentError::Recover { stage, .. }) => {
+            assert_eq!(stage, "retry");
         }
-        Err(e) => panic!("expected Recover{{stage:jar-missing}}, got {e:?}"),
+        Err(e) => panic!("expected Recover{{stage:retry}}, got {e:?}"),
         Ok(_) => panic!("expected recovery failure, got connected client"),
     }
+    let pushes = &adb.pushes;
+    assert_eq!(pushes.len(), 1, "embedded jar push expected: {pushes:?}");
+    assert!(
+        std::fs::read(&pushes[0].1).unwrap().len() == pilotdroid_agent::AGENT_JAR_BYTES.len(),
+        "pushed payload should be the embedded jar"
+    );
 }
 
 // ---- M3 client surface: press / swipe / backend ----------------------------

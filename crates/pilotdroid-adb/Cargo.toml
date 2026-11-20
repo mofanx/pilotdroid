@@ -4,6 +4,10 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme.workspace = true
+keywords.workspace = true
 description = "Vendor boundary over the ADB transport (adr/001: adb_client first, CLI fallback, self-hosted last resort)"
 
 [dependencies]
