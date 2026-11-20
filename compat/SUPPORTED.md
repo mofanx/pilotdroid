@@ -8,13 +8,18 @@ uiautomator2 `Device` 公共 API 的逐条标注。约定：**drop-in 只承诺�
 
 | u2 key | 状态 | 备注 |
 |---|---|---|
-| `text` `resourceId` `description` `className` `packageName` `index` | ✅ | AND 语义同 u2 |
+| `text` `resourceId` `description` `className` `packageName` `index` | ✅ | AND 语义同 u2；全精确键时走 wire QUERY 快路径 |
 | `scrollable` | ✅ | wire 原生字段 |
-| `textContains` `textStartsWith` `textMatches` `descriptionContains` `descriptionMatches` `classNameMatches` … | ❌ 显式拒绝 | agent 只做精确匹配；contains/regex 未实现 |
-| `instance` | ✅ | `index` 别名（M11） |
-| `clickable` `checked` `enabled` `focusable` `selected` `longClickable` … | ❌ 显式拒绝 | attrs 过滤语义未实现 |
-| relative selector（`child`/`sibling`/`left`/`right`/`up`/`down`） | ❌ 显式拒绝 | |
+| `textContains` `textStartsWith` `textMatches` `descriptionContains` `descriptionStartsWith` `descriptionMatches` `classNameMatches` `packageNameMatches` `resourceIdMatches` | ✅ | M12 host post-filter：dump 全树→Python 端谓词（regex 用 fullmatch 语义，同 u2 `*Matches`） |
+| `instance` | ✅ | `index` 别名（M11）；两路径均为"第 N 个命中" |
+| `clickable` `checkable` `checked` `enabled` `focusable` `focused` `selected` `longClickable` | ✅ | M12 host post-filter attrs |
+| relative selector（`child`/`sibling`/`left`/`right`/`up`/`down`） | ✅ | M12 host post-filter：空间向=节点 bounds 完全落在锚点方向区；child/sibling 用 dump 树父子关系 |
 | `xpath` | ❌ **非目标** | u2 xpath 为可选插件，明确不做 |
+
+> 解析路径注（M12）：全精确键走 wire QUERY（仅 active window）；含
+> contains/matches/attrs/relative 时整体切 dump+post-filter（全窗口树，
+> 更贴近 u2——u2 selector 同样能看到非 active 窗口节点）。两条路径对
+> 同一 selector 可能给出不同命中集（如通知栏文本），属口径差异非 bug。
 
 ## Selector 对象方法（`d(...).X`）
 
@@ -28,7 +33,8 @@ uiautomator2 `Device` 公共 API 的逐条标注。约定：**drop-in 只承诺�
 | `.pinch_in(pct)` `.pinch_out(pct)` | ✅ | M10 多指针 INJECT（CAP_MULTI_PTR），作用于命中节点 bounds（clamp 到 display）；⚠️ MIUI 鬼 bounds（a11y 报屏外坐标，如 [268,3312]@3200 高）→ LookupError 而非静默注入屏边 |
 | `.gesture(s1,e1,s2,e2)` | ✅ | 任意双点轨迹可用 `points[].pid` 直接表达 |
 | `.drag_to(x,y)` `.swipe` `.fling` | ✅ | 单指针 points 免费项（此前误标 ❌） |
-| `.wait_gone(timeout)` `.count` `.child` 等 relative/attrs selector | ❌ | 选择器面同上行约束 |
+| `.wait_gone(timeout)` `.count` | ✅ | M12 host post-filter：真计数/消失轮询 |
+| `.child` `.sibling` `.left` `.right` `.up` `.down` | ✅ | M12 relative selector（见 selector keys 行） |
 
 ## Device 顶层方法
 

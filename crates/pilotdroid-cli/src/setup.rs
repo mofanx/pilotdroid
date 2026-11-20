@@ -303,6 +303,8 @@ pub fn run<T: AdbTransport>(
     // no established client conn are orphans (leaked by killed serve/
     // bench sessions — Drop never ran). List, never delete: a multi-serve
     // sibling's rule is also "orphan-looking" if its conn isn't active.
+    // (M12: media attaches pin `control_port+1`, so repeated media
+    // orphans collapse onto one predictable rule rather than a set.)
     checks.push(forward_hygiene());
 
     report(&checks);

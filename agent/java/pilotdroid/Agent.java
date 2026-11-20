@@ -205,6 +205,10 @@ public final class Agent {
         private final Injector injector;
         private final Dumper dumper;
         private volatile boolean stop;
+        /** Cap on armed watchers per session — each polls the full tree
+         *  under the global a11y lock; unbounded arming starves session
+         *  queries (§4.9). Exceeding this is an ERR_LIMIT ack error. */
+        private static final int MAX_WATCHERS = 8;
         /** Armed async watchers owned by this session — killed on session
          *  end (§4.8-style session binding). */
         private final List<Watcher> watchers = new ArrayList<>();
@@ -636,13 +640,20 @@ public final class Agent {
         private Map<String, Object> watchArm(Object req) throws Exception {
             Map<?, ?> r = req instanceof Map ? (Map<?, ?>) req : new LinkedHashMap<>();
             Selector sel = new Selector(r.get("selector"));
-            long pollMs = Math.max(20, (long) num(r.get("poll_ms"), 100));
+            // poll floor 50ms: each poll is a full-tree DFS under the
+            // global a11y lock — tighter polling starves session queries.
+            long pollMs = Math.max(50, (long) num(r.get("poll_ms"), 100));
             long timeoutMs = (long) num(r.get("timeout_ms"), 0); // 0 = no timeout
             Map<?, ?> act = r.get("action") instanceof Map
                     ? (Map<?, ?>) r.get("action") : new LinkedHashMap<>();
             String type = str(act.get("type"), "click");
             if (!"click".equals(type) && !"none".equals(type))
                 throw new OpError("ERR_ARGS", "watch action.type must be click|none");
+            synchronized (watchers) {
+                if (watchers.size() >= MAX_WATCHERS)
+                    throw new OpError("ERR_LIMIT",
+                            "too many armed watchers (max " + MAX_WATCHERS + ")");
+            }
             Watcher w = new Watcher(Watcher.NEXT_ID.getAndIncrement(),
                     this, sel, type, pollMs, timeoutMs);
             synchronized (watchers) { watchers.add(w); }

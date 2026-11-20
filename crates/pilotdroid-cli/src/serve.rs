@@ -139,6 +139,11 @@ pub fn run<T: AdbTransport, R: std::io::BufRead, W: Write>(
                 // instead of this serve process erroring every call on a
                 // socket that can never recover.
                 if dead {
+                    eprintln!(
+                        "pilotdroid-serve: control conn lost — likely replaced \
+                         by another client (last-connector-wins, ADR-007); \
+                         will reconnect on next call"
+                    );
                     session = None;
                 }
                 write_resp(out, &v)?;
@@ -477,12 +482,17 @@ fn call_tool<T: AdbTransport>(
                         num_arg(&args, "watch_id").context("watch_disarm needs watch_id")? as u32;
                     Ok(json!({"disarmed": s.watch_disarm(id)?}))
                 }
-                "watch_events" => match s.watch_recv()? {
-                    MediaEvent::WatchHit(h) => Ok(json!({"type": "watch_hit", "hit": h})),
-                    MediaEvent::Frame(f) => Ok(json!({
+                "watch_events" => match s.watch_recv() {
+                    Ok(MediaEvent::WatchHit(h)) => Ok(json!({"type": "watch_hit", "hit": h})),
+                    Ok(MediaEvent::Frame(f)) => Ok(json!({
                         "type": "frame", "w": f.w, "h": f.h,
                         "dropped": f.dropped,
                     })),
+                    // No event yet is data, not failure — report it in the
+                    // union so an armed-but-quiet watcher doesn't surface
+                    // isError to the MCP client (real errors still do).
+                    Err(pilotdroid_agent::AgentError::Timeout) => Ok(json!({"type": "timeout"})),
+                    Err(e) => Err(e.into()),
                 },
                 "batch" => {
                     let ops: Vec<BatchOp> = serde_json::from_value(
@@ -553,7 +563,7 @@ fn tools() -> Value {
             "type":"object","allOf":[sel.clone()],"properties":{"action":prop("string","default click"),"timeout_ms":prop("integer","auto-disarm deadline, optional")}})},
         {"name":"watch_disarm","description":"cancel an armed watcher by watch_id → {disarmed}; a fired (one-shot) watcher is already removed, so disarming it returns {disarmed:false} — not an error","inputSchema":schema(
             &[("watch_id",prop("integer","from watch_arm"))],&["watch_id"])},
-        {"name":"watch_events","description":"read next media-channel event → {type:'watch_hit',hit:{watch_id,matched,waited_ms,action_ok,node}} or {type:'frame',...} when a stream is also active (blocks up to the media read timeout)","inputSchema":schema(&[],&[])},
+        {"name":"watch_events","description":"read next media-channel event → {type:'watch_hit',hit:{watch_id,matched,waited_ms,action_ok,node}} or {type:'frame',...} when a stream is also active; no event within the read deadline → {type:'timeout'} (normal result, not an error)","inputSchema":schema(&[],&[])},
         {"name":"wait_for","description":"selector + timeout_ms → device-side poll (BATCH wait_until)","inputSchema":json!({
             "type":"object","allOf":[sel.clone()],"properties":{"timeout_ms":prop("integer","default 5000")}})},
         {"name":"dump","description":"UI hierarchy XML","inputSchema":schema(&[],&[])},
@@ -616,6 +626,7 @@ mod tests {
     use std::path::Path;
     use std::rc::Rc;
     use std::thread;
+    use std::time::Duration;
 
     use pilotdroid_adb::{AdbTransport, DeviceInfo, Result as AdbResult, ShellOutput};
     use pilotdroid_agent::Device;
@@ -937,6 +948,30 @@ mod tests {
             .lines()
             .map(|l| serde_json::from_str(l).unwrap())
             .collect()
+    }
+
+    #[test]
+    fn watch_events_quiet_media_reports_timeout_union() {
+        // A media conn that accepts then stays silent → the read deadline
+        // yields {type:"timeout"} as a normal result (isError stays false;
+        // real errors still surface isError).
+        let addr = spawn_fake();
+        let media = TcpListener::bind(("127.0.0.1", addr.port() + 1)).unwrap();
+        thread::spawn(move || {
+            let _sock = media.accept().unwrap().0; // stay open, say nothing
+            thread::sleep(Duration::from_secs(10));
+        });
+        let resps = serve_once_at(
+            &json!({"jsonrpc":"2.0","id":1,"method":"tools/call",
+                    "params":{"name":"watch_events","arguments":{}}})
+            .to_string(),
+            addr,
+        );
+        assert_eq!(resps[0]["result"]["isError"], false);
+        let body: Value =
+            serde_json::from_str(resps[0]["result"]["content"][0]["text"].as_str().unwrap())
+                .unwrap();
+        assert_eq!(body["type"], "timeout");
     }
 
     #[test]
