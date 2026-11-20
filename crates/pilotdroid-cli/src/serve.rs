@@ -448,8 +448,25 @@ fn call_tool<T: AdbTransport>(
                     Ok(json!(ack))
                 }
                 "watch_arm" => {
+                    let sel = selector_of(&args);
+                    anyhow::ensure!(
+                        sel.text.is_some()
+                            || sel.id.is_some()
+                            || sel.desc.is_some()
+                            || sel.class.is_some()
+                            || sel.scrollable.is_some()
+                            || sel.pkg.is_some()
+                            || sel.index.is_some(),
+                        "watch_arm needs a non-empty selector (empty matches \
+                         everything → instant spurious hit)"
+                    );
+                    // Pre-attach the media conn: the agent pushes WATCH_HIT
+                    // onto the pending media socket — without it attached,
+                    // a hit fired before the first watch_events call is
+                    // silently dropped (§4.8/§4.9).
+                    s.watch_attach()?;
                     let ack = s.watch_arm(
-                        selector_of(&args),
+                        sel,
                         &str_arg(&args, "action").unwrap_or_else(|| "click".into()),
                         num_arg(&args, "timeout_ms").map(|v| v as u64),
                     )?;
@@ -534,7 +551,7 @@ fn tools() -> Value {
             "type":"object","allOf":[sel.clone()],"properties":{"action":prop("string","default click"),"timeout_ms":prop("integer","default 5000")}})},
         {"name":"watch_arm","description":"async watcher (CAP_WATCH_ASYNC, §4.9): returns {armed,watch_id} immediately; hits arrive on the media channel — read via watch_events. Control ops stay unblocked while armed","inputSchema":json!({
             "type":"object","allOf":[sel.clone()],"properties":{"action":prop("string","default click"),"timeout_ms":prop("integer","auto-disarm deadline, optional")}})},
-        {"name":"watch_disarm","description":"cancel an armed watcher by watch_id → {disarmed}","inputSchema":schema(
+        {"name":"watch_disarm","description":"cancel an armed watcher by watch_id → {disarmed}; a fired (one-shot) watcher is already removed, so disarming it returns {disarmed:false} — not an error","inputSchema":schema(
             &[("watch_id",prop("integer","from watch_arm"))],&["watch_id"])},
         {"name":"watch_events","description":"read next media-channel event → {type:'watch_hit',hit:{watch_id,matched,waited_ms,action_ok,node}} or {type:'frame',...} when a stream is also active (blocks up to the media read timeout)","inputSchema":schema(&[],&[])},
         {"name":"wait_for","description":"selector + timeout_ms → device-side poll (BATCH wait_until)","inputSchema":json!({

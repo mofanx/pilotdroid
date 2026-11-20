@@ -25,7 +25,7 @@ uiautomator2 `Device` 公共 API 的逐条标注。约定：**drop-in 只承诺�
 | `.info` | ✅ | property，同 u2；返回字段为子集（text/id/desc/bounds/class/clickable/enabled/scrollable/pkg） |
 | `.wait(timeout)` | ✅ | M8 修正为 u2 语义：返回 bool |
 | `.scroll.<dir>` | ✅ | forward/backward/toEnd/toBeginning（shim 额外需要 `scrollable=True` 选择器先命中） |
-| `.pinch_in(pct)` `.pinch_out(pct)` | ✅ | M10 多指针 INJECT（CAP_MULTI_PTR），作用于命中节点 bounds |
+| `.pinch_in(pct)` `.pinch_out(pct)` | ✅ | M10 多指针 INJECT（CAP_MULTI_PTR），作用于命中节点 bounds（clamp 到 display）；⚠️ MIUI 鬼 bounds（a11y 报屏外坐标，如 [268,3312]@3200 高）→ LookupError 而非静默注入屏边 |
 | `.gesture(s1,e1,s2,e2)` | ✅ | 任意双点轨迹可用 `points[].pid` 直接表达 |
 | `.drag_to(x,y)` `.swipe` `.fling` | ✅ | 单指针 points 免费项（此前误标 ❌） |
 | `.wait_gone(timeout)` `.count` `.child` 等 relative/attrs selector | ❌ | 选择器面同上行约束 |
