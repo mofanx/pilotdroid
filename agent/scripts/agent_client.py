@@ -21,7 +21,7 @@ T = dict(HELLO=0x0001, HELLO_ACK=0x0002, PING=0x0003, PONG=0x0004,
          INJECT=0x0010, INJECT_RESULT=0x0011, DUMP=0x0020, QUERY=0x0021,
          SCREENSHOT=0x0030, BATCH=0x0040, BATCH_RESULT=0x0041,
          STREAM_CTRL=0x0050, FRAME=0x0001,
-         TEXT=0x0060, AGENT_STOP=0x00F0)
+         TEXT=0x0060, WATCH=0x0070, AGENT_STOP=0x00F0)
 
 
 class Agent:
@@ -107,6 +107,24 @@ class Agent:
         if backend:
             req["backend"] = backend
         return self.call(T["INJECT"], req)
+
+    def inject_multi(self, points, wait_finish=True, backend=None):
+        """Multi-pointer INJECT: points=[{action,x,y,t_ms,pid}] — >1 distinct
+        pid takes the agent's multi-pointer path (pinch/gesture class)."""
+        req = {"kind": "Swipe", "points": points,
+               "wait_finish": bool(wait_finish)}
+        if backend:
+            req["backend"] = backend
+        return self.call(T["INJECT"], req)
+
+    def watch(self, selector, action="click", timeout_ms=10000, poll_ms=None):
+        """WATCH op (§4.9): device-side selector->action loop — detection
+        latency is one tree-walk, not a host round-trip per poll."""
+        req = {"selector": selector, "action": {"type": action},
+               "timeout_ms": int(timeout_ms)}
+        if poll_ms:
+            req["poll_ms"] = int(poll_ms)
+        return self.call(T["WATCH"], req)
 
     def inject_tap_noack(self, x, y):
         return self.call(T["INJECT"],

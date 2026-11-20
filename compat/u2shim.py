@@ -110,6 +110,38 @@ class _Selector:
         l, t, r_, b = node["bounds"]
         return self.dev.long_click((l + r_) / 2, (t + b) / 2, duration)
 
+    def _pinch(self, outward, percent=100, steps=10, duration=0.2):
+        """u2 `d().pinch_in/out(percent, steps)` — two-pointer gesture over
+        the matched node's bounds (CAP_MULTI_PTR agent required)."""
+        node = self._node()
+        if node is None:
+            raise LookupError(f"selector {self.kw} found no node")
+        l, t, r, b = node["bounds"]
+        cx, cy, half = (l + r) / 2, (t + b) / 2, (r - l) / 2
+        edge = half * 0.9 * min(percent, 100) / 100.0
+        r0, r1 = (half * 0.9, edge) if not outward else (edge, half * 0.9)
+        dur_ms = int(duration * 1000)
+        pts = [{"action": 0, "pid": 0, "x": cx - r0, "y": cy, "t_ms": 0},
+               {"action": 0, "pid": 1, "x": cx + r0, "y": cy, "t_ms": 10}]
+        for i in range(1, steps + 1):
+            f = i / (steps + 1)
+            d = r0 + (r1 - r0) * f
+            pts += [{"action": 2, "pid": 0, "x": cx - d, "y": cy,
+                     "t_ms": 10 + int(dur_ms * f)},
+                    {"action": 2, "pid": 1, "x": cx + d, "y": cy,
+                     "t_ms": 10 + int(dur_ms * f)}]
+        pts += [{"action": 1, "pid": 1, "x": cx + r1, "y": cy,
+                 "t_ms": 10 + dur_ms},
+                {"action": 1, "pid": 0, "x": cx - r1, "y": cy,
+                 "t_ms": 20 + dur_ms}]
+        return self.dev.a.inject_multi(pts)["payload"].get("ok", False)
+
+    def pinch_in(self, percent=100, steps=10):
+        return self._pinch(False, percent, steps)
+
+    def pinch_out(self, percent=100, steps=10):
+        return self._pinch(True, percent, steps)
+
     @property
     def scroll(self):
         """u2 `d(scrollable=True).scroll.<dir>` — swipes inside the
@@ -188,10 +220,20 @@ class _Watcher:
         return _WhenCtx(self, kw)
 
     def _tick(self):
+        # device mode (CAP_WATCH): the poll loop runs inside the agent —
+        # detection latency = one tree-walk, not a host round-trip.
+        device_mode = bool(getattr(self.dev, "caps", 0) & 0x100)
         fired = []
         for i, (kw, action) in enumerate(self._rules):
             try:
-                if _Selector(self.dev, **kw).exists:
+                if device_mode:
+                    sel = _Selector(self.dev, **kw)._sel()
+                    r = self.dev.a.watch(
+                        sel, "click", timeout_ms=int(self.interval * 1000),
+                        poll_ms=50)["payload"]
+                    if r.get("matched"):
+                        fired.append(i)  # action already ran device-side
+                elif _Selector(self.dev, **kw).exists:
                     action()
                     fired.append(i)
             except Exception:
@@ -247,7 +289,7 @@ class Device:
         port = port or _detect_port(serial)
         self.a = agent or Agent(port).connect()
         self.serial = serial
-        self.a.hello()
+        self.caps = self.a.hello()["payload"].get("caps", 0)
 
     def __call__(self, **kw):
         return _Selector(self, **kw)

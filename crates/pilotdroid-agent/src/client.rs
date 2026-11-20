@@ -86,12 +86,14 @@ impl AgentClient {
                     x,
                     y,
                     t_ms: 0,
+                    pid: None,
                 },
                 MotionPoint {
                     action: ACTION_UP,
                     x,
                     y,
                     t_ms: TAP_DURATION_MS,
+                    pid: None,
                 },
             ],
             wait_finish,
@@ -111,12 +113,14 @@ impl AgentClient {
                     x,
                     y,
                     t_ms: 0,
+                    pid: None,
                 },
                 MotionPoint {
                     action: ACTION_UP,
                     x,
                     y,
                     t_ms: TAP_DURATION_MS,
+                    pid: None,
                 },
             ],
             wait_finish: false,
@@ -159,6 +163,7 @@ impl AgentClient {
             x: x1,
             y: y1,
             t_ms: 0,
+            pid: None,
         });
         for i in 1..=steps {
             let t = i as f32 / (steps + 1) as f32;
@@ -167,6 +172,7 @@ impl AgentClient {
                 x: x1 + (x2 - x1) * t,
                 y: y1 + (y2 - y1) * t,
                 t_ms: (duration_ms as f32 * t) as u64,
+                pid: None,
             });
         }
         points.push(MotionPoint {
@@ -174,6 +180,7 @@ impl AgentClient {
             x: x2,
             y: y2,
             t_ms: duration_ms,
+            pid: None,
         });
         self.inject(InjectReq {
             kind: InjectKind::Swipe,
@@ -300,6 +307,15 @@ impl AgentClient {
             })?,
         )?;
         expect(&f, OpCode::StreamCtrl, "STREAM_CTRL response")?;
+        Ok(decode(&f.payload)?)
+    }
+
+    /// WATCH — device-side "when selector appears, act" loop (CAP_WATCH,
+    /// docs/02 §4.9). Detection latency is one tree-walk, not a host
+    /// round-trip per poll.
+    pub fn watch(&mut self, req: WatchReq) -> Result<WatchAck> {
+        let f = self.request(OpCode::Watch, encode(&req)?)?;
+        expect(&f, OpCode::Watch, "WATCH response")?;
         Ok(decode(&f.payload)?)
     }
 

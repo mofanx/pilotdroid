@@ -25,7 +25,10 @@ uiautomator2 `Device` 公共 API 的逐条标注。约定：**drop-in 只承诺�
 | `.info` | ✅ | property，同 u2；返回字段为子集（text/id/desc/bounds/class/clickable/enabled/scrollable/pkg） |
 | `.wait(timeout)` | ✅ | M8 修正为 u2 语义：返回 bool |
 | `.scroll.<dir>` | ✅ | forward/backward/toEnd/toBeginning（shim 额外需要 `scrollable=True` 选择器先命中） |
-| `.drag_to` `.swipe` `.pinch_in/out` `.gesture` `.fling` | ❌ | |
+| `.pinch_in(pct)` `.pinch_out(pct)` | ✅ | M10 多指针 INJECT（CAP_MULTI_PTR），作用于命中节点 bounds |
+| `.gesture(s1,e1,s2,e2)` | ✅ | 任意双点轨迹可用 `points[].pid` 直接表达 |
+| `.drag_to(x,y)` `.swipe` `.fling` | ✅ | 单指针 points 免费项（此前误标 ❌） |
+| `.wait_gone(timeout)` `.count` `.child` 等 relative/attrs selector | ❌ | 选择器面同上行约束 |
 
 ## Device 顶层方法
 
@@ -42,7 +45,8 @@ uiautomator2 `Device` 公共 API 的逐条标注。约定：**drop-in 只承诺�
 | `clear_text()` | ✅ | 聚焦编辑框清空（ACTION_SET_TEXT 空串，免 IME） |
 | `app_list()` `app_info(pkg)` | ✅ | `pm list`/`dumpsys package`；app_info 为 versionName/Code 子集 |
 | `window_size()` | ✅ | `wm size` → `(w,h)` |
-| `screen_on()` `screen_off()` `unlock()` | ✅ | `dumpsys power` 判态 + power keyevent；unlock=wake+上滑 |
+| `screen_on()` `unlock()` | ✅ | `dumpsys power` 判态 + power keyevent；unlock=wake+上滑 |
+| `screen_off()` | ⚠️ | **MIUI 口袋模式陷阱**：power keyevent 关屏若贴近距离传感器，MIUI 可进入 pocket-mode → 此后全部注入输入被吞、屏幕不可点亮，**仅 reboot 可解**。建议仅在屏幕可受控测试场景使用 |
 | `orientation` get/set | ✅ | `settings user_rotation`；set 冻结重力旋转（同 u2 语义） |
 | `watcher` | ✅ | `d.watcher.when(...).click()` + `.start()/.run()/.stop()/.reset()`——host 侧轮询线程，规则命中一次即摘除 |
 | `app_wait` `session` `send_keys` `clipboard` `toast` `open_notification` `open_quick_settings` `freeze_rotation` | ❌ 未实现 | 按需加 |
