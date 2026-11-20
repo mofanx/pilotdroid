@@ -93,15 +93,23 @@ verdict 口径：ok=跑到底 / unsupported=撞上 shim 明示不支持 API /
 miss=LookupError（选择器未命中，环境态非 API 失败，同 u2
 UiObjectNotFoundError）/ timeout=超过 200s / error=其他异常。
 
-**实测结果（e2e-m13-themis.json）：14 脚本 — 0 ok / 0 unsupported /
+**实测结果（m13-themis.json）：14 脚本 — 0 ok / 0 unsupported /
 0 error / 11 miss / 3 timeout**。读法：
 
 - **API 面 14/14 零失败**——connect→app_start→app_current→selector→
   click/set_text/swipe_ext/service 全部执行，无一撞 API 缺口。
   这正是 drop-in 的主张（通过率口径是"复现 bug"，不是 API 完备）
-- miss 全为环境态：and-bible `d(text="OK")` 手动实证 = 应用正常前台
-  但按钮显示"确定"（zh locale，真 u2 同设备同 miss）；"Navigate
-  up"/"More options" 等 contentDescription 在 zh 系统本地化
+- miss 全为环境态，但归因需分两类（M14 实机复核修正原"全 zh-locale"
+  口径）：
+  - **text/desc 类 = zh-locale 实证**（真 u2 同设备同 miss）：
+    and-bible `text="OK"`→实测对话框"确定/取消"；Markor
+    `desc="More options"`→实测"更多选项"；Phonograph
+    `text="SHUFFLE ALL"`→实测"随机播放所有曲目"（均 dump 直证）
+  - **resourceId 类 ≠ locale**（rid 不随语言本地化）→ 首启流程态：
+    commons `welcomeYesButton` 实测 rid 在该 build resources.arsc
+    中**存在**，但 welcome onboarding 仅首启出现（现态直达
+    LoginActivity）；Markor#1698 `action_search` rid 实测主界面
+    **存在**——suite 时 miss 因首启许可证页挡住主界面
 - timeout×3 = app 侧崩溃/权限流：APhotoManager logcat 抓到 MIUI
   ThirdAppAssistant `problemName=JE_IAE`（app 启动即崩——恰是该
   benchmark 要复现的 bug 类），脚本固有 stale-snapshot while-loop
@@ -157,3 +165,24 @@ fd_constant PASS(75) / fd_abs PASS / **watch_residue PASS（26 样本全 0）**
   头部 blockquote 是内部操作注、不入发布页）
 - **待用户**：PyPI pending-publisher 建好 → draft 点 Publish →
   （assets 上线后）homebrew tap sha256 回填
+
+## 8. M14 t1：compat/证据面清账
+
+- **u2shim 连接失败错误串**：原 `"run \`pilotdroid setup\`"`——v0.6.0 whl
+  实测仅 u2shim+agent_client（8 文件），pip 包不装 `pilotdroid` 命令，
+  纯 pip 用户照提示走必死 → 改指 `pilotdroid-cli` release 下载
+- **证据入库（mcp-notify-spike 命名先例）**：`e2e-*.json` 被 gitignore
+  （再生数据规则），但 10 个被 md 引用造成断链 → 全部改名 `m*.json`
+  入库并同步引用（RESULTS-M1/5/6/7/10/13 + README + roadmap +
+  SUPPORTED），未引用的 m3*/m7*/m11-watch-parallel 同策略入库
+- **Themis miss 归因修正**（§6c 段内）：实机复核 4 个——text/desc 类
+  miss 为 zh-locale **实证**（and-bible/Markor/Phonograph dump 直证），
+  resourceId 类 miss 为**首启流程态**非 locale（commons welcomeYesButton
+  / Markor action_search rid 均实测存在）。修正 blanket "全 zh-locale" 口径
+- **TTL dump cache：evaluated-rejected**。理由：(1) u2 语义本就是每
+  call 重新 dump（其慢的部分来源），我方优势在 transport 不在缓存；
+  (2) ~200ms TTL 引入 u2 没有的 **stale-tree 误点** bug 类（点击落在
+  已移动 bounds 上）；(3) 收益 ~40ms/call 不抵新增故障模式。
+  结论：不实现，关闭话题
+- `spike/e2e/install-smoke.sh`：post-publish 端到端冒烟脚本（publish
+  后一键跑，见文件头 checklist）

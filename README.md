@@ -76,7 +76,7 @@
 screenshot/app_start/app_stop/app_current/info` + selector `text/resourceId/
 description/className/packageName/scrollable/index` + `d(scrollable=True).scroll.*`；
 仅 `xpath` 显式拒绝（ValueError，非目标）。M6 真实脚本对拍：**23/24 op 通过，唯一
-unsupported = xpath**（`spike/e2e/e2e-m6-compat.json`）；方法级矩阵见
+unsupported = xpath**（`spike/e2e/m6-compat.json`）；方法级矩阵见
 `compat/SUPPORTED.md`。**xpath 明确不在
 supported-set 目标内**（u2 xpath 本为可选插件，非 drop-in 承诺）。
 

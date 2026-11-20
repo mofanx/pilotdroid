@@ -1,0 +1,123 @@
+{
+ "suite": "themis-benchmarks/home",
+ "device": "ba0d072d",
+ "total": 14,
+ "verdicts": {
+  "timeout": 3,
+  "miss": 11
+ },
+ "rows": [
+  {
+   "script": "APhotoManager_script-#116.py",
+   "sha": "7b92bc9063b7",
+   "verdict": "timeout",
+   "fail": "",
+   "steps": 0,
+   "elapsed_s": 200.1
+  },
+  {
+   "script": "geohashdroid_script-#73.py",
+   "sha": "c408cc70d58b",
+   "verdict": "timeout",
+   "fail": "",
+   "steps": 0,
+   "elapsed_s": 200.1
+  },
+  {
+   "script": "sunflower_script-#239.py",
+   "sha": "a76ce849e251",
+   "verdict": "miss",
+   "fail": "LookupError: selector {'description': 'Navigate up'} found no node",
+   "steps": 0,
+   "elapsed_s": 4.5
+  },
+  {
+   "script": "ActivityDiary_script-#285.py",
+   "sha": "04797aeff7fc",
+   "verdict": "miss",
+   "fail": "LookupError: selector {'className': 'android.widget.ImageButton', 'description': 'Open navigation'} found no node",
+   "steps": 0,
+   "elapsed_s": 4.6
+  },
+  {
+   "script": "Phonograph_script-#112.py",
+   "sha": "44be2c620192",
+   "verdict": "miss",
+   "fail": "LookupError: selector {'text': 'SHUFFLE ALL'} found no node",
+   "steps": 0,
+   "elapsed_s": 7.1
+  },
+  {
+   "script": "AmazeFileManager_script-#1232.py",
+   "sha": "234b1c6a6032",
+   "verdict": "miss",
+   "fail": "LookupError: selector {'className': 'android.widget.TextView', 'text': 'Alarms'} found no node",
+   "steps": 0,
+   "elapsed_s": 4.6
+  },
+  {
+   "script": "AmazeFileManager_script-#3333.py",
+   "sha": "73af4eebbcfd",
+   "verdict": "miss",
+   "fail": "LookupError: selector {'description': 'Navigate up'} found no node",
+   "steps": 0,
+   "elapsed_s": 4.5
+  },
+  {
+   "script": "Markor_script-#1698.py",
+   "sha": "3088ab4bd8ea",
+   "verdict": "miss",
+   "fail": "LookupError: selector {'resourceId': 'net.gsantner.markor:id/action_search'} found no node",
+   "steps": 0,
+   "elapsed_s": 4.5
+  },
+  {
+   "script": "Markor_script-#264.py",
+   "sha": "3e71e9d77fb3",
+   "verdict": "miss",
+   "fail": "LookupError: selector {'description': 'More options'} found no node",
+   "steps": 0,
+   "elapsed_s": 4.7
+  },
+  {
+   "script": "Scarlet-Notes_script-#114.py",
+   "sha": "9c8df8d7e860",
+   "verdict": "miss",
+   "fail": "LookupError: selector {'text': 'myBook'} found no node",
+   "steps": 1,
+   "elapsed_s": 11.0
+  },
+  {
+   "script": "and-bible_script-#375.py",
+   "sha": "559354097355",
+   "verdict": "miss",
+   "fail": "LookupError: selector {'text': 'OK'} found no node",
+   "steps": 0,
+   "elapsed_s": 4.7
+  },
+  {
+   "script": "commons_script-#1581.py",
+   "sha": "fe9f28d388c1",
+   "verdict": "miss",
+   "fail": "LookupError: selector {'className': 'android.widget.Button', 'resourceId': 'fr.free.nrw.commons.debug:id/welcomeYesButto",
+   "steps": 0,
+   "elapsed_s": 12.9
+  },
+  {
+   "script": "AnkiDroid_script-#5756.py",
+   "sha": "532e1b74f761",
+   "verdict": "timeout",
+   "fail": "",
+   "steps": 0,
+   "elapsed_s": 200.1
+  },
+  {
+   "script": "osmeditor4android_script-#637.py",
+   "sha": "c2eb6edf778a",
+   "verdict": "miss",
+   "fail": "LookupError: selector {'text': 'OKAY'} found no node",
+   "steps": 0,
+   "elapsed_s": 5.2
+  }
+ ]
+}

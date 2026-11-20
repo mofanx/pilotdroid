@@ -69,6 +69,6 @@ Regression gate: fd=59 flat from 90min soak → soak-check enforces it forward.
 
 ## Files
 
-`e2e-m5-4path.json` (raw), `bench_m5_4path.py` (harness), `bench_session.rs`
+`m5-4path.json` (raw), `bench_m5_4path.py` (harness), `bench_session.rs`
 (lib example), `soak-check.py` (grading gate), `README.md` (3-surface table +
 shim supported-set + same-口径 benchmark table).

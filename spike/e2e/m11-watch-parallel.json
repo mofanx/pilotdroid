@@ -1,0 +1,36 @@
+{
+  "arm": "device-watch-async-parallel",
+  "agent": "0.7.0",
+  "caps": "0x7ff",
+  "op_latency_ms": {
+    "n": 24,
+    "mean": 299.6,
+    "p50": 43.0,
+    "min": 1.8,
+    "max": 2383.0
+  },
+  "ops_over_500ms": 3,
+  "parallel_window_ms": {
+    "n": 3,
+    "mean": 2396.6,
+    "p50": 2531.7,
+    "min": 1999.1,
+    "max": 2658.9
+  },
+  "trigger_to_hit_ms": {
+    "n": 3,
+    "mean": 134.1,
+    "p50": 130.7,
+    "min": 116.5,
+    "max": 155.0
+  },
+  "device_detect_act_ms": {
+    "n": 3,
+    "mean": 2624.3,
+    "p50": 2736,
+    "min": 2223,
+    "max": 2914
+  },
+  "hits": "3/3",
+  "note": "per-op latencies of 4\u00d7(PING+QUERY) on the same conn while armed \u2014 blocking-WATCH could not interleave these. ops_over_500 = a11y-provider stalls during resolver teardown (framework-side: the dying app's main thread queues a11y IPC ~2s \u2014 real u2 measured ~5.6s on app_current in the same scenario). trigger_to_hit includes ~430ms resolver render; waited_ms counts from arm (incl. settle+parallel window), not detect latency."
+}
