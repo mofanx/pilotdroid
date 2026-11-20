@@ -126,7 +126,8 @@ selector，poll_ms=50），shell 侧 `/proc/<pid>/task/comm` 计 pd-watch
 精确性修正：wres 用 `pgrep -f pilotdroid.Agent` 取 pid（设备存在其他
 app_process，原 `pid_of` 的宽匹配可能错认）。
 
-**3min 实跑（26 cycles = 1300 次 arm/disarm + 1300 ops）**：
+**3min 实跑（soak-m13.jsonl；M4 原始 jsonl 保留未被覆盖）**：26 cycles
+= 1300 次 arm/disarm + 1300 ops——
 fd_constant PASS(75) / fd_abs PASS / **watch_residue PASS（26 样本全 0）**
 / bench_fails 0。rss_slope 报 FAIL(+2079kB/min)——3min 短窗内 RSS 是
 98→115MB GC 锯齿非单调增长，该门设计给 480min 长跑，短跑内为测量伪
