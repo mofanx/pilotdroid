@@ -9,9 +9,11 @@
 | 传输 | pilotdroid shim | 真 uiautomator2 | 比值 |
 |---|---|---|---|
 | USB（Mi11/A14） | **4769ms** | 41909ms | **8.8×** |
-| adb-TCP（dash/A17，无线口径） | **5915ms** | 43874ms | **7.4×** |
+| adb-TCP（dash/A17，无线口径） | **5915ms** | 43874ms | **7.4×**（实测区间 4.7–7.4×） |
 
 口径备注：同脚本同语义同 settle；两侧错误 op 均计入墙钟（u2 侧 UiObjectNotFoundError 自带 ~4s 等待——如实反映真实使用成本）。shim 在 TCP 下绝对值仅 +24%（持久 socket 摊薄传输），u2 绝对值基本不变（per-op HTTP 成本主导）。JSON：`e2e-m7-{shim,u2}-*.json`。
+
+**比值 op 混入敏感（t3 独立复核实测）**：USB shim 4483/u2 41061（比值 9.2×）、TCP u2 42630 均在 ±3% 内复现；TCP shim 9003（+52%）——复跑当次 dash 首屏 scrollable 节点在位，两个 scroll op 真实执行（记录次为快败 LookupError）。同 op-混合口径下 TCP 比值 **4.7–7.4×**，引用建议取区间而非单点。
 
 ## 2. 版本语义补漏
 

@@ -15,7 +15,7 @@
 | 形态 | 适合 | 开销 | 入口 |
 |---|---|---|---|
 | `pilotdroid-cli agent <op>` | 人工/脚本单发 | ~85ms/call（含 fwd+connect+HELLO） | 子进程每次拉起 |
-| `pilotdroid serve`（stdio MCP） | **AI agent 一行接入** | 持久会话摊销 ~0 | `pilotdroid serve` + JSON-RPC 21 工具 |
+| `pilotdroid-cli serve`（stdio MCP） | **AI agent 一行接入** | 持久会话摊销 ~0 | `pilotdroid-cli serve` + JSON-RPC 21 工具 |
 | Rust `pilotdroid-agent` facade | Rust 库内嵌 | 持久 Session | `Device::with_transport(..).session()` |
 
 另有 **u2 兼容 shim**（`compat/u2shim.py`，host 侧翻译层，`pip install ./python`
@@ -28,11 +28,13 @@ unsupported = xpath**（`spike/e2e/e2e-m6-compat.json`）；方法级矩阵见
 `compat/SUPPORTED.md`。**xpath 明确不在
 supported-set 目标内**（u2 xpath 本为可选插件，非 drop-in 承诺）。
 
-MCP client 挂接（mcpServers 片段）：
+MCP client 挂接（mcpServers 片段，二进制名 `pilotdroid-cli`，cargo install 后在 PATH）：
 
 ```json
-{"mcpServers": {"pilotdroid": {"command": "pilotdroid", "args": ["serve"]}}}
+{"mcpServers": {"pilotdroid": {"command": "pilotdroid-cli", "args": ["serve"]}}}
 ```
+
+多设备场景补 `-s`：`"args": ["serve", "-s", "<serial>"]`（`-s` 是 serve 子命令选项）。
 
 经官方 python `mcp` SDK 与 Devin CLI 实测握手通过（`spike/e2e/mcp_client_check.py`
 + `agent_e2e_transcript.txt`）；initialize 应答同时透出 `agentVer`（设备 jar 版本）。
@@ -42,7 +44,7 @@ MCP client 挂接（mcpServers 片段）：
 | 口径 | pilotdroid | uiautomator2 | 来源 |
 |---|---|---|---|
 | 同脚本端到端（21 op 总墙钟，M7） | 4769ms | 41909ms | **8.8×** `spike/e2e/RESULTS-M7.md` |
-| 同脚本端到端（adb-TCP 无线口径） | 5915ms | 43874ms | **7.4×** `spike/e2e/RESULTS-M7.md` |
+| 同脚本端到端（adb-TCP 无线口径） | 5915ms | 43874ms | **4.7–7.4×**（op 混入敏感）`spike/e2e/RESULTS-M7.md` |
 | 设备内 op 序列（shim 对拍 n=20） | 212ms | 2140ms | **10.1×** `spike/e2e/RESULTS-M3.md` |
 | 批量 tap→wait→tap e2e | 58.5ms | 612.9ms | **10.5×** `spike/e2e/RESULTS-M2.md` |
 | 帧流 live view | 6.0fps@0.5 持续 65s | 无此能力 | `spike/e2e/RESULTS-M4.md` |
