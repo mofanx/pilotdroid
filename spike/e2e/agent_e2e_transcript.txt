@@ -1,0 +1,8 @@
+工具列表已获取。现在按顺序执行脚本化任务（同一响应中按序执行）。全部 6 个调用按顺序完成，结果如下：
+
+1. **app_start** — `{"ok": true}`（已启动 com.android.settings）
+2. **screenshot** — `{"path": "/tmp/m6_agent_shot.jpg", "format": "jpeg", "bytes": 98383, "b64": null}`（scale=0.5 截图已写入文件）
+3. **app_current** — `{"package": "com.android.settings", "activity": "com.android.settings.MainSettings"}`
+4. **stream_start** — `{"ok": true, "socket": "pilotdroid_agent_media", "effective_fps_hint": 2.0}`
+5. **stream_read** — `{"count": 2, "frames": [...]}`（返回 2 帧 base64 JPEG）
+6. **stream_stop** — `{"ok": true, "frames_sent": 2, "dropped": 0}`

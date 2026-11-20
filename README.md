@@ -35,6 +35,7 @@ unsupported = xpath**（`spike/e2e/e2e-m6-compat.json`）。
 | 帧流 live view | 6.0fps@0.5 持续 65s | 无此能力 | `spike/e2e/RESULTS-M4.md` |
 | CLI vs 持久路径 | +85ms/call 固定成本 | — | `spike/e2e/RESULTS-M5.md` |
 | 中文/Unicode 文本输入 | `ACTION_SET_TEXT` 原生支持 | 需 ADBKeyboard IME | `verify-agent.sh` `text_unicode` |
+| 设备矩阵 | Mi11/A14（USB）verify 33/33 + dash/A17（**adb-over-TCP 已通**）核心 op 全过 | — | `verify-agent.sh`；无线仅 1 台 TCP 验证 |
 
 ## 路线图（以真机实测数据驱动）
 

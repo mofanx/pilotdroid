@@ -1,0 +1,27 @@
+{
+  "milestone": "M6",
+  "devices": {
+    "usb": {"serial": "ba0d072d", "model": "Mi11/A14", "verify": "33/33"},
+    "tcp": {"serial": "11.0.0.2:5555", "model": "dash/A17", "verify_first": "32/33",
+            "verify_rerun": "~29/33", "note": "fails are MIUI-layout-tuned asserts"}
+  },
+  "setup_doctor": {"command": "pilotdroid-cli -s ba0d072d setup", "steps_pass": 5},
+  "compat_matrix": {"script": "compat_m6_realscripts.py", "total": 24,
+                    "ok": 23, "unsupported": 1, "error": 0,
+                    "unsupported_set": ["xpath"], "data": "e2e-m6-compat.json"},
+  "unicode_text": {"assert": "text_unicode", "both_devices": true,
+                   "vs_u2": "ACTION_SET_TEXT UTF-16, no ADBKeyboard IME"},
+  "multi_serve": {"script": "serve_multi.py", "pass": "6/6",
+                  "semantics": "independent sessions; stream single-owner ERR_STREAM_BUSY; owner SIGKILL -> implicit stop -> survivor starts"},
+  "fd_probe": {"script": "fd_probe.sh", "fd0": 66, "after20": 77, "after40_more": 77,
+               "post_gc": 77, "verdict": "no-leak (one-time graphics-stack lazy init +11)"},
+  "real_agent_e2e": {"client": "Devin CLI (stdio MCP, local scope)",
+                     "transcript": "agent_e2e_transcript.txt",
+                     "tools_called": ["app_start", "screenshot", "app_current",
+                                      "stream_start", "stream_read", "stream_stop"],
+                     "all_ok": true,
+                     "screenshot": {"bytes": 98383, "dims": "720x1600 jpeg"}},
+  "python_pkg": {"path": "python/", "install": "pip install ./python",
+                 "import": "import pilotdroid; pilotdroid.connect(port)"},
+  "main_commit": "d1947eb"
+}

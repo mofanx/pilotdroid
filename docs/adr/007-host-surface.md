@@ -88,3 +88,17 @@ app_stop、app_current。选择器 `class`/`scrollable` 字段已入 wire
 - serve 输出即工具协议文档——`serve --list-tools` 自描述
 - u2 shim 与 serve 共用"工具面"概念：shim=进程外 HTTP 翻译，serve=
   stdio 原生工具——两条路服务两类调用方，device 侧同一 session 后端
+
+## 补注（M6 实测）· 多 serve 并发语义
+
+`spike/e2e/serve_multi.py` 实测（2×`serve` 同设备）：
+
+- 每个 serve 进程持有**自己的 adb forward 与 control 会话**（free-port
+  选取，无端口冲突）——初始化/普通 op 各自可用、互不排队；
+- 帧流仍**单 owner**：第二 serve `stream_start` 得 `ERR_STREAM_BUSY`；
+- owner serve 进程被 SIGKILL（模拟崩溃）→ 设备侧 socket EOF →
+  implicit stop（§4.8）→ 幸存 serve 立即可 `stream_start`——
+  **崩溃韧性是 session-binding 自带的**，无需心跳/租约。
+
+即：多 client 并发=设备端多会话并存，工具级互斥只有 stream 一处，
+且以"先占先得 + owner 死即释放"为语义。

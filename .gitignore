@@ -43,3 +43,4 @@ spike/apk/*.idsig
 agent/build/
 agent/agent.jar
 __pycache__/
+.devin/mcp_config.local.json
