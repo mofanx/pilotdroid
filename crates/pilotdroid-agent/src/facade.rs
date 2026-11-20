@@ -567,11 +567,20 @@ impl<T: AdbTransport> Session<T> {
             .clone()
             .filter(|s| !s.is_empty())
             .unwrap_or_else(|| MEDIA_SOCKET.to_string());
-        let (m, port) = AgentManager::new(&mut self.adb).connect_media(
-            &self.serial,
-            self.media_port_hint,
-            &socket,
-        )?;
+        // Port strategy (M12): prefer control_port+1 so a crashed host
+        // leaves at most ONE predictable orphan forward instead of an
+        // accumulating random set (setup step 6 lists it). Fall back to
+        // a free port when the fixed one is taken.
+        let (m, port) = match self.media_port_hint {
+            Some(p) => {
+                AgentManager::new(&mut self.adb).connect_media(&self.serial, Some(p), &socket)?
+            }
+            None => AgentManager::new(&mut self.adb)
+                .connect_media(&self.serial, self.port.checked_add(1), &socket)
+                .or_else(|_| {
+                    AgentManager::new(&mut self.adb).connect_media(&self.serial, None, &socket)
+                })?,
+        };
         self.media = Some(m);
         self.media_port = Some(port);
         Ok(())

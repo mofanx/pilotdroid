@@ -33,6 +33,18 @@ adb -s "$DEV" shell 'wm size' 2>/dev/null | grep -o '[0-9]*x[0-9]*' | head -1 \
   | sh >/dev/null 2>&1 || true
 sleep 0.5
 
+# Lockscreen cure: MIUI can re-lock mid-run (screen_off_timeout ~30-60s)
+# → every downstream selector false-negatives at random points. Pin the
+# screen on for the whole run, restore the user's value on exit (trap
+# covers early failures too).
+SAVED_TMO=$(adb -s "$DEV" shell 'settings get system screen_off_timeout' 2>/dev/null | tr -d ' \r')
+adb -s "$DEV" shell 'settings put system screen_off_timeout 2147483647' >/dev/null 2>&1 || true
+restore_tmo() {
+  case "$SAVED_TMO" in ''|*[!0-9]*) ;; *)
+    adb -s "$DEV" shell "settings put system screen_off_timeout $SAVED_TMO" >/dev/null 2>&1;; esac
+}
+trap restore_tmo EXIT
+
 echo "== A1 HELLO_ACK fields =="
 HELLO=$($CLI hello 2>&1) || true
 echo "$HELLO" | python3 -c '

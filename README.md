@@ -85,7 +85,8 @@ MCP client 挂接（mcpServers 片段，二进制名 `pilotdroid-cli`，cargo in
 多设备场景补 `-s`：`"args": ["serve", "-s", "<serial>"]`（`-s` 是 serve 子命令选项）。
 **一设备一 client**：agent 单 conn 顶替语义（ADR-007）——同一设备上第二个
 serve/shim/verify 连接会顶掉前一个；被顶替方下一次 op 显式报 io error，
-serve 会在下一 call 惰性重连夺权（M10 起）。
+serve 会在下一 call 惰性重连夺权（M10 起），并在 stderr 打 conn-lost
+warn（M12 起；stdout 仍只有 JSON-RPC，不污染协议流）。
 
 经官方 python `mcp` SDK 与 Devin CLI 实测握手通过（`spike/e2e/mcp_client_check.py`
 + `agent_e2e_transcript.txt`）；initialize 应答同时透出 `agentVer`（设备 jar 版本）。
@@ -98,7 +99,7 @@ serve 会在下一 call 惰性重连夺权（M10 起）。
 | 同脚本端到端（adb-TCP 无线口径） | 5915ms | 43874ms | **4.7–7.4×**（op 混入敏感）`spike/e2e/RESULTS-M7.md` |
 | 设备内 op 序列（shim 对拍 n=20） | 212ms | 2140ms | **10.1×** `spike/e2e/RESULTS-M3.md` |
 | 批量 tap→wait→tap e2e | 58.5ms | 612.9ms | **10.5×** `spike/e2e/RESULTS-M2.md` |
-| 帧流 live view | 6.0fps@0.5 持续 65s | 无此能力 | `spike/e2e/RESULTS-M4.md` |
+| 帧流 live view | 6.0fps@0.5 持续 65s | 无此能力 | `spike/e2e/RESULTS-M4.md`（浏览器直看：`python3 spike/e2e/live-view.py <serial>` → `http://127.0.0.1:8080/`） |
 | watcher 弹窗自愈（appear→dismiss 同臂） | ~680ms（设备内 WATCH） | ~1790ms（u2 watcher 轮询） | **~2.6×** `spike/e2e/RESULTS-M10.md` |
 | watcher 元素在场 detect+act 下限 | **39ms** | — | `spike/e2e/RESULTS-M10.md` |
 | CLI vs 持久路径 | +85ms/call 固定成本 | — | `spike/e2e/RESULTS-M5.md` |
