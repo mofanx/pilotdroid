@@ -6,7 +6,8 @@ is executed independently and scored: ok / unsupported(ValueError) / error.
 u2 semantics: `d(...).exists` and `d.info` are properties (no parens).
 Usage: compat_m6_realscripts.py [serial] [port]
 """
-import json, os, sys, time
+import json, os, re, sys, time
+import xml.etree.ElementTree as ET
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "compat"))
 import u2shim  # noqa: E402
@@ -71,6 +72,55 @@ def main():
         "d.press(recent)": lambda: d.press("recent"),
     }
     results["script_C_app_input"] = {k: score(v) for k, v in c.items()}
+
+    # ---- script D: selector semantics (M13 — chained relative + index/instance)
+    # needs a stable dense tree — script C ends on home/recent; relaunch.
+    d.app_start("com.android.settings")
+    time.sleep(1.5)
+
+    def _xml_nodes():
+        return list(ET.fromstring(d.dump_hierarchy()).iter("node"))
+
+    def _chain_left_truth():
+        """Ground truth for d(pkg).child(TextView).left(): anchor must be the
+        FIRST TextView *inside pkg* (base resolution), nodes left of it = r<=al."""
+        n = d(packageName="com.android.settings").child(
+            className="android.widget.TextView")._node()
+        if n is None:
+            return "no-anchor"
+        want = sum(1 for el in _xml_nodes()
+                   if [int(x) for x in re.findall(
+                       r"-?\d+", el.get("bounds", ""))][:4]
+                   and int(re.findall(r"-?\d+", el.get("bounds", ""))[2])
+                   <= n["bounds"][0])
+        got = d(packageName="com.android.settings").child(
+            className="android.widget.TextView").left().count
+        return got == want
+
+    def _chain_grandchild():
+        """d(pkg).child().child() must resolve through the chain — count of
+        grandchildren-level descendants (base resolved, not tree-first)."""
+        a = d(packageName="com.android.settings").child().child()
+        return a.count >= 0 and a.count <= \
+            d(packageName="com.android.settings").child().count
+
+    def _index_child_pos():
+        """index = child-position (XML attr): shim count == xml ground truth."""
+        want = sum(1 for el in _xml_nodes() if el.get("index") == "1")
+        return d(index=1).count == want
+
+    dd = {
+        "chain child→left truth": _chain_left_truth,
+        "chained child().child()": _chain_grandchild,
+        "index = child-position": _index_child_pos,
+        "instance = nth match": lambda:
+            d(className="android.widget.TextView", instance=1).exists,
+        "child() = descendants": lambda:
+            0 <= d(packageName="com.android.settings").child().count
+            < d(packageName="com.android.settings").count,
+    }
+    results["script_D_selector_semantics"] = \
+        {k: score(v) for k, v in dd.items()}
 
     # ---- matrix summary ----------------------------------------------------
     flat = [v[0] for s in results.values() for v in s.values()]

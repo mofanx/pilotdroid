@@ -61,6 +61,14 @@ impl MediaClient {
         })
     }
 
+    /// Override the per-read deadline (e.g. a caller-supplied
+    /// `timeout_ms` on `watch_events`). Subsequent `recv`/`recv_event`
+    /// calls surface `Timeout` after `d` of silence.
+    pub fn set_read_timeout(&self, d: Duration) -> Result<()> {
+        self.stream.set_read_timeout(Some(d))?;
+        Ok(())
+    }
+
     /// Receive the next frame. Validates ch=1 + msg_type 0x0001 (§4.8 —
     /// anything else on this socket is a protocol violation), tracks seq
     /// gaps, and marks the stream ended when STREAM_MORE clears.

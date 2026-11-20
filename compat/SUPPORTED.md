@@ -8,10 +8,10 @@ uiautomator2 `Device` 公共 API 的逐条标注。约定：**drop-in 只承诺�
 
 | u2 key | 状态 | 备注 |
 |---|---|---|
-| `text` `resourceId` `description` `className` `packageName` `index` | ✅ | AND 语义同 u2；全精确键时走 wire QUERY 快路径 |
+| `text` `resourceId` `description` `className` `packageName` | ✅ | AND 语义同 u2；全精确键时走 wire QUERY 快路径 |
 | `scrollable` | ✅ | wire 原生字段 |
 | `textContains` `textStartsWith` `textMatches` `descriptionContains` `descriptionStartsWith` `descriptionMatches` `classNameMatches` `packageNameMatches` `resourceIdMatches` | ✅ | M12 host post-filter：dump 全树→Python 端谓词（regex 用 fullmatch 语义，同 u2 `*Matches`） |
-| `instance` | ✅ | `index` 别名（M11）；两路径均为"第 N 个命中" |
+| `index` `instance` | ✅ | M13 语义对齐 u2：**`index`** = 节点在父中的子位置（XML `index` attr，host post-filter 谓词）；**`instance`** = 第 N 个命中（0-based；wire `index` 字段语义即此，shim 映射 instance→wire index）。注意 M11-12 曾把两者混为 Nth-match——旧脚本的 `d(index=N)` 语义会变 |
 | `clickable` `checkable` `checked` `enabled` `focusable` `focused` `selected` `longClickable` | ✅ | M12 host post-filter attrs |
 | relative selector（`child`/`sibling`/`left`/`right`/`up`/`down`） | ✅ | M12 host post-filter：空间向=节点 bounds 完全落在锚点方向区；child/sibling 用 dump 树父子关系 |
 | `xpath` | ❌ **非目标** | u2 xpath 为可选插件，明确不做 |
@@ -54,7 +54,7 @@ uiautomator2 `Device` 公共 API 的逐条标注。约定：**drop-in 只承诺�
 | `screen_on()` `unlock()` | ✅ | `dumpsys power` 判态 + power keyevent；unlock=wake+上滑 |
 | `screen_off()` | ⚠️ | **MIUI 口袋模式陷阱**：power keyevent 关屏若贴近距离传感器，MIUI 可进入 pocket-mode → 此后全部注入输入被吞、屏幕不可点亮，**仅 reboot 可解**。建议仅在屏幕可受控测试场景使用 |
 | `orientation` get/set | ✅ | `settings user_rotation`；set 冻结重力旋转（同 u2 语义） |
-| `watcher` | ✅ | `d.watcher.when(...).click()` + `.start()/.run()/.stop()/.reset()`——M11 起 agent 0.7.0+（CAP_WATCH_ASYNC）走**设备端异步 watcher**（WATCH_ARM + media 通道 WATCH_HIT 推送，与 u2 server 线程语义对等且 armed 期间不阻塞 control）；旧 agent 回退阻塞 WATCH，再旧回退 host 轮询。规则命中一次即摘除 |
+| `watcher` | ✅ | `d.watcher.when(...).click()` + `.start()/.run()/.stop()/.reset()/.running`——M11 起 agent 0.7.0+（CAP_WATCH_ASYNC）走**设备端异步 watcher**（WATCH_ARM + media 通道 WATCH_HIT 推送，与 u2 server 线程语义对等且 armed 期间不阻塞 control）；旧 agent 回退阻塞 WATCH，再旧回退 host 轮询。规则命中一次即摘除 |
 | `app_wait(pkg,timeout,front)` | ✅ | `pidof`+conn APP_INFO 判前台（M11） |
 | `session(pkg,attach)` | ✅ 简化 | launch+wait foreground；u2 的崩溃看护重启未实现（M11） |
 | `send_keys(text,clear)` | ✅ | TEXT op（ACTION_SET_TEXT 于 focused 节点，M11） |

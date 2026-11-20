@@ -252,10 +252,15 @@ impl<T: AdbTransport> Session<T> {
     }
 
     /// Read the next media-channel event; a `MediaEvent::WatchHit` is the
-    /// armed watcher's result. Blocks up to the media read timeout.
-    pub fn watch_recv(&mut self) -> Result<MediaEvent> {
+    /// armed watcher's result. Blocks up to `timeout_ms` (default: the
+    /// media read timeout set at connect).
+    pub fn watch_recv(&mut self, timeout_ms: Option<u64>) -> Result<MediaEvent> {
         self.attach_media()?;
-        self.media.as_mut().unwrap().recv_event()
+        let m = self.media.as_mut().unwrap();
+        if let Some(ms) = timeout_ms {
+            m.set_read_timeout(Duration::from_millis(ms))?;
+        }
+        m.recv_event()
     }
 
     /// APP_INFO — foreground pkg inside UiAutomation (~ms), no adb spawn.

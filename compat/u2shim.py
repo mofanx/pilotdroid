@@ -70,14 +70,20 @@ _PRED = {
     "packageName": lambda i, v: i["pkg"] == v,
     "packageNameMatches": lambda i, v:
         re.fullmatch(v, i["pkg"] or "") is not None,
+    # u2 `index` = child position among siblings (the a11y `index` attr);
+    # `instance` (Nth-match) is positional — applied in _node, not here.
+    "index": lambda i, v: i["index"] == int(v),
 }
 _PRED.update({k: (lambda a: lambda i, v:
                   i["attrs"].get(a, False) == bool(v))(a)
              for k, a in _BOOL_KEYS.items()})
 
-# keys the wire QUERY op can evaluate device-side (exact AND)
+# keys the wire QUERY op can evaluate device-side (exact AND). `index` is
+# deliberately NOT here — u2's `index` is the node's child-position attr
+# (host-filter predicate below); the wire `index` field means Nth-match,
+# which is what u2 calls `instance` — we map instance→wire index.
 _WIRE_KEYS = ("text", "resourceId", "description", "className",
-              "packageName", "scrollable", "index", "instance")
+              "packageName", "scrollable", "instance")
 
 # spatial directions → (node-bound edge, anchor-bound edge, must hold)
 _REL = {"left": lambda nb, ab: nb[2] <= ab[0],
@@ -132,24 +138,49 @@ class _Selector:
             s["pkg"] = self.kw["packageName"]  # exact package match
         if "scrollable" in self.kw:
             s["scrollable"] = bool(self.kw["scrollable"])
-        if "index" in self.kw or "instance" in self.kw:
-            s["index"] = int(self.kw.get("index", self.kw.get("instance")))
+        if "instance" in self.kw:
+            s["index"] = int(self.kw["instance"])  # wire index = Nth-match
         return s
 
     def _kw_match(self, info):
         bad = [k for k in self.kw
-               if k not in _PRED and k not in ("index", "instance")]
+               if k not in _PRED and k != "instance"]
         if bad:
             raise ValueError(
                 f"u2shim selector: unsupported keys {bad} "
                 f"(xpath not supported)")
         return all(_PRED[k](info, v)
                    for k, v in self.kw.items()
-                   if k not in ("index", "instance"))
+                   if k != "instance")
 
     def _index(self):
-        return int(self.kw["index"] if "index" in self.kw
-                   else self.kw.get("instance", 0))
+        """u2 `instance` = Nth-match positional pick (0-based)."""
+        return int(self.kw.get("instance", 0))
+
+    def _resolve(self, pairs, parent):
+        """(el, info) hit pairs against an already-parsed tree. Recursive —
+        the relative-selector anchor is the BASE'S OWN resolution, so
+        chained `d(A).child(B).left(C)` resolves A→B→C correctly."""
+        if self._rel is None:
+            return [p for p in pairs if self._kw_match(p[1])]
+        base_hits = self._base._resolve(pairs, parent)
+        bi = self._base._index()  # base's own `instance` positional pick
+        if not 0 <= bi < len(base_hits):
+            return []
+        ael, ab = base_hits[bi][0], base_hits[bi][1]["bounds"]
+        if self._rel == "child":
+            desc = {id(e) for e in ael.iter()} - {id(ael)}
+            return [p for p in pairs
+                    if id(p[0]) in desc and self._kw_match(p[1])]
+        if self._rel == "sibling":
+            par = parent.get(ael)
+            sib = ({id(e) for e in par} - {id(ael)}
+                   if par is not None else set())
+            return [p for p in pairs
+                    if id(p[0]) in sib and self._kw_match(p[1])]
+        dir_ok = _REL[self._rel]
+        return [p for p in pairs if self._kw_match(p[1])
+                and dir_ok(p[1]["bounds"], ab)]
 
     def _nodes(self):
         """All matching nodes (one dump). Spatial/child/sibling resolve
@@ -161,29 +192,7 @@ class _Selector:
             for ch in el:
                 parent[ch] = el
         pairs = [(el, _info(el)) for el in root.iter("node")]
-        if self._rel is None:
-            hits = [p for p in pairs if self._kw_match(p[1])]
-        else:
-            anchor = next((p for p in pairs
-                           if self._base._kw_match(p[1])), None)
-            if anchor is None:
-                return []
-            ael, ab = anchor[0], anchor[1]["bounds"]
-            if self._rel == "child":
-                desc = {id(e) for e in ael.iter()} - {id(ael)}
-                hits = [p for p in pairs
-                        if id(p[0]) in desc and self._kw_match(p[1])]
-            elif self._rel == "sibling":
-                par = parent.get(ael)
-                sib = ({id(e) for e in par} - {id(ael)}
-                       if par is not None else set())
-                hits = [p for p in pairs
-                        if id(p[0]) in sib and self._kw_match(p[1])]
-            else:
-                dir_ok = _REL[self._rel]
-                hits = [p for p in pairs if self._kw_match(p[1])
-                        and dir_ok(p[1]["bounds"], ab)]
-        return [p[1] for p in hits]
+        return [p[1] for p in self._resolve(pairs, parent)]
 
     def _node(self):
         if self._wireable():

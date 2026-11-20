@@ -100,7 +100,7 @@ WaitReq = { selector: Selector, timeout_ms: u64 = 5000, poll_ms?: u64 }
 Selector = { text?: string, id?: string, desc?: string, class?: string, scrollable?: bool, pkg?: string, index?: u32 }
 ```
 
-多字段 **AND** 语义：`text`/`desc` 精确匹配；`id` 为 resource-id——`"pkg:id/name"` 全等、裸 `"name"` 按 `:id/` 后缀匹配；`class`（M5）为类名——全限定名全等、简单名按尾段匹配；`scrollable`（M5）按节点 scrollable 属性布尔过滤；`pkg`（M6）为节点所属包名精确匹配；`index` 为多命中序号（缺省 0，同时构成存在性语义：第 N 命中不存在 → 未命中）。
+多字段 **AND** 语义：`text`/`desc` 精确匹配；`id` 为 resource-id——`"pkg:id/name"` 全等、裸 `"name"` 按 `:id/` 后缀匹配；`class`（M5）为类名——全限定名全等、简单名按尾段匹配；`scrollable`（M5）按节点 scrollable 属性布尔过滤；`pkg`（M6）为节点所属包名精确匹配；`index` 为多命中序号（缺省 0，同时构成存在性语义：第 N 命中不存在 → 未命中；即 u2 的 **`instance`** 语义——u2shim 按此映射 `instance`→wire `index`；u2 的 `index`（节点在父中的子位置）wire 不表达，shim 走 host post-filter 按 XML `index` attr 过滤，见 compat/SUPPORTED.md）。
 
 求值在设备端常驻 UiAutomation 树缓存上每 `poll_ms`（默认 20ms，可被 BATCH.poll_ms 覆盖）执行一次；命中 → `code:"OK"`（`data.node` 附带命中节点 bounds/text/id/desc），超时 → `code:"TIMEOUT"`（op 结果，非帧错误）。
 

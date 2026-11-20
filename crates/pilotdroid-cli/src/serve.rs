@@ -142,7 +142,8 @@ pub fn run<T: AdbTransport, R: std::io::BufRead, W: Write>(
                     eprintln!(
                         "pilotdroid-serve: control conn lost — likely replaced \
                          by another client (last-connector-wins, ADR-007); \
-                         will reconnect on next call"
+                         will reconnect on next call \
+                         (safe to ignore on first connection)"
                     );
                     session = None;
                 }
@@ -482,7 +483,9 @@ fn call_tool<T: AdbTransport>(
                         num_arg(&args, "watch_id").context("watch_disarm needs watch_id")? as u32;
                     Ok(json!({"disarmed": s.watch_disarm(id)?}))
                 }
-                "watch_events" => match s.watch_recv() {
+                "watch_events" => match s
+                    .watch_recv(num_arg(&args, "timeout_ms").map(|v| (v as u64).max(500)))
+                {
                     Ok(MediaEvent::WatchHit(h)) => Ok(json!({"type": "watch_hit", "hit": h})),
                     Ok(MediaEvent::Frame(f)) => Ok(json!({
                         "type": "frame", "w": f.w, "h": f.h,
@@ -563,7 +566,7 @@ fn tools() -> Value {
             "type":"object","allOf":[sel.clone()],"properties":{"action":prop("string","default click"),"timeout_ms":prop("integer","auto-disarm deadline, optional")}})},
         {"name":"watch_disarm","description":"cancel an armed watcher by watch_id → {disarmed}; a fired (one-shot) watcher is already removed, so disarming it returns {disarmed:false} — not an error","inputSchema":schema(
             &[("watch_id",prop("integer","from watch_arm"))],&["watch_id"])},
-        {"name":"watch_events","description":"read next media-channel event → {type:'watch_hit',hit:{watch_id,matched,waited_ms,action_ok,node}} or {type:'frame',...} when a stream is also active; no event within the read deadline → {type:'timeout'} (normal result, not an error)","inputSchema":schema(&[],&[])},
+        {"name":"watch_events","description":"read next media-channel event → {type:'watch_hit',hit:{watch_id,matched,waited_ms,action_ok,node}} or {type:'frame',...} when a stream is also active; no event within the deadline → {type:'timeout'} (normal result, not an error)","inputSchema":schema(&[("timeout_ms",prop("integer","default 5000, min 500"))],&[])},
         {"name":"wait_for","description":"selector + timeout_ms → device-side poll (BATCH wait_until)","inputSchema":json!({
             "type":"object","allOf":[sel.clone()],"properties":{"timeout_ms":prop("integer","default 5000")}})},
         {"name":"dump","description":"UI hierarchy XML","inputSchema":schema(&[],&[])},
