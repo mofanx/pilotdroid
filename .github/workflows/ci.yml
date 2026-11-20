@@ -73,7 +73,13 @@ jobs:
       - uses: actions/setup-java@v5
         with:
           distribution: temurin
-          java-version: "17"
+          # javac major MUST match the toolchain that built the committed jar:
+          # javac 17/21 emit different .class bytes than javac 25 → different
+          # dex (same length, different content). Proven: committed jar ==
+          # javac-25 rebuild (92e4fcfd..); javac-21 rebuild == CI's temurin-17
+          # output (527f7c77..). Bump this pin when the jar is rebuilt with a
+          # newer javac.
+          java-version: "25"
       - name: install android-34 platform + build-tools 37.0.0
         # ubuntu-latest runners ship a preinstalled Android SDK at
         # $ANDROID_HOME — call its sdkmanager directly. (setup-android@v3
