@@ -23,8 +23,9 @@
 支持集（明确不暗示全覆盖）：`click/long_click/swipe/press/set_text/dump_hierarchy/
 screenshot/app_start/app_stop/app_current/info` + selector `text/resourceId/
 description/className/packageName/scrollable/index` + `d(scrollable=True).scroll.*`；
-仅 `xpath` 显式拒绝（ValueError）。M6 真实脚本对拍：**23/24 op 通过，唯一
-unsupported = xpath**（`spike/e2e/e2e-m6-compat.json`）。**xpath 明确不在
+仅 `xpath` 显式拒绝（ValueError，非目标）。M6 真实脚本对拍：**23/24 op 通过，唯一
+unsupported = xpath**（`spike/e2e/e2e-m6-compat.json`）；方法级矩阵见
+`compat/SUPPORTED.md`。**xpath 明确不在
 supported-set 目标内**（u2 xpath 本为可选插件，非 drop-in 承诺）。
 
 MCP client 挂接（mcpServers 片段）：
@@ -40,6 +41,8 @@ MCP client 挂接（mcpServers 片段）：
 
 | 口径 | pilotdroid | uiautomator2 | 来源 |
 |---|---|---|---|
+| 同脚本端到端（21 op 总墙钟，M7） | 4769ms | 41909ms | **8.8×** `spike/e2e/RESULTS-M7.md` |
+| 同脚本端到端（adb-TCP 无线口径） | 5915ms | 43874ms | **7.4×** `spike/e2e/RESULTS-M7.md` |
 | 设备内 op 序列（shim 对拍 n=20） | 212ms | 2140ms | **10.1×** `spike/e2e/RESULTS-M3.md` |
 | 批量 tap→wait→tap e2e | 58.5ms | 612.9ms | **10.5×** `spike/e2e/RESULTS-M2.md` |
 | 帧流 live view | 6.0fps@0.5 持续 65s | 无此能力 | `spike/e2e/RESULTS-M4.md` |

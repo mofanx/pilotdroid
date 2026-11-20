@@ -44,3 +44,6 @@ agent/build/
 agent/agent.jar
 __pycache__/
 .devin/mcp_config.local.json
+python/build/
+python/*.egg-info/
+__pycache__/

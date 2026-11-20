@@ -73,6 +73,7 @@ class _Selector:
     def exists(self):
         return self._node() is not None
 
+    @property
     def info(self):
         return self._node()
 
@@ -156,7 +157,8 @@ class _Scroll:
 
 
 class Device:
-    def __init__(self, port=17932, serial=None, agent=None):
+    def __init__(self, port=None, serial=None, agent=None):
+        port = port or _detect_port(serial)
         self.a = agent or Agent(port).connect()
         self.serial = serial
         self.a.hello()
@@ -241,5 +243,38 @@ class Device:
         self.a.close()
 
 
-def connect(port=17932, serial=None):
+def _detect_port(serial=None):
+    """Auto-detect the local TCP port forwarding to pilotdroid_agent.
+
+    Parses `adb forward --list` for a `localabstract:pilotdroid_agent` rule;
+    when `serial` is given the rule must belong to that device. Falls back to
+    the conventional 17932 with an actionable error if nothing is listening.
+    """
+    try:
+        out = subprocess.run(["adb", "forward", "--list"],
+                             capture_output=True, text=True, timeout=10).stdout
+    except Exception:
+        out = ""
+    cands = []
+    for line in out.splitlines():
+        parts = line.split()
+        if len(parts) == 3 and parts[2] == "localabstract:pilotdroid_agent":
+            if serial is None or parts[0] == serial:
+                if parts[1].startswith("tcp:"):
+                    cands.append(int(parts[1][4:]))
+    if cands:
+        return cands[0]
+    for port in (17932,):
+        try:
+            Agent(port).connect().close()
+            return port
+        except Exception:
+            pass
+    raise RuntimeError(
+        "no adb forward to localabstract:pilotdroid_agent found and "
+        "tcp:17932 is not alive — run `pilotdroid setup` or "
+        "`adb forward tcp:17932 localabstract:pilotdroid_agent`")
+
+
+def connect(port=None, serial=None):
     return Device(port=port, serial=serial)

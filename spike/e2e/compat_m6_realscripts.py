@@ -50,7 +50,7 @@ def main():
         "d(scrollable).scroll.forward": lambda: d(scrollable=True).scroll.forward(),
         "d(scrollable).scroll.toBeginning": lambda: d(scrollable=True).scroll.toBeginning(),
         "d(packageName=...).exists": lambda: d(packageName="com.android.settings").exists,
-        "d(resourceId=...).info()": lambda: d(resourceId="android:id/title").info(),
+        "d(resourceId=...).info (property)": lambda: d(resourceId="android:id/title").info,
         "d(description=...).exists": lambda: d(description="搜索").exists,
         "d(index=1).exists": lambda: d(className="android.widget.TextView",
                                         index=1).exists,

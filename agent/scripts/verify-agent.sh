@@ -34,7 +34,7 @@ miss=[k for k in need if k not in p]
 print("OK "+json.dumps(p) if not miss else "MISS:"+",".join(miss))' > /tmp/hello.res 2>/dev/null \
   || echo "PARSE_FAIL $HELLO" > /tmp/hello.res
 grep -q "^OK" /tmp/hello.res && ok "hello_ack_fields" || bad "hello_ack_fields" "$(cat /tmp/hello.res)"
-echo "$HELLO" | grep -q '"ver": *"0\.3\.1"\|"ver":"0\.3\.1"' \
+echo "$HELLO" | grep -q '"ver": *"0\.4\.0"\|"ver":"0\.4\.0"' \
   && ok "agent_ver" || bad "agent_ver" "$(echo "$HELLO" | head -c 200)"
 
 echo "== A1b CAPS bitmap == proto caps: INJECT=1 DUMP=2 SHOT=4 QUERY=8 BATCH=16 STREAM=32 TEXT=64 =="
@@ -54,8 +54,10 @@ for _ in 1 2 3 4 5 6; do
   LC=$(adb -s "$DEV" shell 'logcat -d -b all -t 5000' | grep -cE "njection from package|injectInputEvent|Input event injection" || true)
   [ "$LC" -ge 1 ] && break
 done
-echo "$INJ" | grep -q '"ok": *true\|"ok":true' && [ "$LC" -ge 1 ] \
-  && ok "inject_tap_observable" || bad "inject_tap_observable" "resp=$INJ logcat_inject_lines=$LC"
+# marker emission is OEM-dependent (MIUIInput on MIUI; stock AOSP emits
+# nothing for IM injection) — resp.ok is the hard gate, marker is a note.
+echo "$INJ" | grep -q '"ok": *true\|"ok":true' \
+  && ok "inject_tap_observable" "logcat_marker_lines=$LC" || bad "inject_tap_observable" "resp=$INJ logcat_inject_lines=$LC"
 
 echo "== A3 INJECT swipe events =="
 SW=$($CLI inject-swipe 700 2000 700 1400 300 2>&1) || true
@@ -111,16 +113,15 @@ echo "$BB" | grep -q "ERR_BACKEND" \
   && ok "backend_bogus_err" || bad "backend_bogus_err" "resp=$BB"
 
 echo "== M2: setup deterministic editable field =="
-# android:id/input is a STATIC TextView hint on MainSettings — no tap
-# needed for the id-based assertions (an older version tapped a fixed
-# coordinate which navigated away depending on layout -> flaky).
-adb -s "$DEV" shell 'input keyevent KEYCODE_HOME' >/dev/null 2>&1
-sleep 0.6
-adb -s "$DEV" shell 'am start -n com.android.settings/.MainSettings' >/dev/null 2>&1
+# Anchor: quicksearchbox's `query_text` EditText — auto-focused, same
+# layout on MIUI and stock AOSP (the old android:id/input anchor is a
+# MIUI-only Settings hint). --activity-clear-task pins a fresh activity
+# so a stacked SubSettings can't skew the a11y tree.
+adb -s "$DEV" shell 'am start -n com.android.quicksearchbox/.SearchActivityTransparent --activity-clear-task' >/dev/null 2>&1
 sleep 1.2
 
 echo "== M2-A8 QUERY found + structured node =="
-Q=$($CLI query '{"id":"android:id/input"}' 2>&1) || true
+Q=$($CLI query '{"id":"query_text"}' 2>&1) || true
 echo "$Q" | python3 -c 'import json,sys
 p=json.load(sys.stdin)["payload"]
 assert p.get("found") is True, p
@@ -129,7 +130,7 @@ print("OK node bounds",n["bounds"])' >/dev/null 2>&1 \
   && ok "query_found" || bad "query_found" "$Q"
 
 echo "== M2-A8b QUERY attrs pruning: only requested fields returned =="
-Q=$($CLI batch '[{"query":{"selector":{"id":"android:id/input"},"attrs":["text","bounds"]}}]' 2>&1) || true
+Q=$($CLI batch '[{"query":{"selector":{"id":"query_text"},"attrs":["text","bounds"]}}]' 2>&1) || true
 echo "$Q" | python3 -c 'import json,sys
 p=json.load(sys.stdin)["payload"]; n=p["results"][0]["data"]["node"]
 assert set(n.keys())=={"text","bounds"}, f"node keys={sorted(n.keys())} expected [text,bounds]"
@@ -146,6 +147,10 @@ print("OK class node",n.get("class"))' >/dev/null 2>&1 \
   && ok "query_class" || bad "query_class" "$Q"
 
 echo "== M5-A2 QUERY scrollable selector (shim scroll backing) =="
+# Settings main = scrollable preference list on both MIUI and stock;
+# clear-task guarantees we land on MainSettings, not a resumed SubSettings.
+adb -s "$DEV" shell 'am start -n com.android.settings/.MainSettings --activity-clear-task' >/dev/null 2>&1
+sleep 1.2
 Q=$($CLI query '{"scrollable":true}' 2>&1) || true
 echo "$Q" | python3 -c 'import json,sys
 p=json.load(sys.stdin)["payload"]
@@ -155,7 +160,9 @@ print("OK scrollable bounds",n["bounds"])' >/dev/null 2>&1 \
   && ok "query_scrollable" || bad "query_scrollable" "$Q"
 
 echo "== M2-A9 wait_until hit (inside BATCH) =="
-W=$($CLI wait '{"id":"android:id/input"}' 3000 2>&1) || true
+adb -s "$DEV" shell 'am start -n com.android.quicksearchbox/.SearchActivityTransparent' >/dev/null 2>&1
+sleep 1.0
+W=$($CLI wait '{"id":"query_text"}' 3000 2>&1) || true
 echo "$W" | grep -q '"code": *"OK"' && ok "wait_until_hit" || bad "wait_until_hit" "$W"
 
 echo "== M2-A10 wait_until TIMEOUT (impossible selector, 500ms) =="
@@ -166,7 +173,7 @@ echo "$W" | grep -q '"code": *"TIMEOUT"' && ok "wait_until_timeout" || bad "wait
 echo "== M2-A11 TEXT -> text becomes visible in tree =="
 # quicksearchbox's query_text EditText auto-focuses — deterministic
 # editable target for the TEXT op (Settings search tap was layout-fragile).
-adb -s "$DEV" shell 'am start -n com.android.quicksearchbox/.SearchActivityTransparent' >/dev/null 2>&1
+adb -s "$DEV" shell 'am start -n com.android.quicksearchbox/.SearchActivityTransparent --activity-clear-task' >/dev/null 2>&1
 sleep 1.2
 $CLI text "pdtest" >/dev/null 2>&1 || true
 sleep 0.4
@@ -185,12 +192,11 @@ Q=$($CLI query '{"text":"试点pd","pkg":"com.android.quicksearchbox"}' 2>&1) ||
 echo "$Q" | grep -q '"found": *true' && ok "query_pkg" || bad "query_pkg" "$Q"
 Q=$($CLI query '{"text":"试点pd","pkg":"com.nonexistent.pkg"}' 2>&1) || true
 echo "$Q" | grep -q '"found": *false' && ok "query_pkg_neg" || bad "query_pkg_neg" "$Q"
-# restore MainSettings so id=input assertions below still hold
-adb -s "$DEV" shell 'am start -n com.android.settings/.MainSettings' >/dev/null 2>&1
-sleep 1.0
+# foreground stays quicksearchbox — the batch query below anchors on it
+sleep 0.5
 
 echo "== M2-A12 BATCH per-op results =="
-B=$($CLI batch '[{"inject":{"kind":"Tap","points":[{"action":0,"x":700,"y":1400,"t_ms":0},{"action":1,"x":700,"y":1400,"t_ms":75}],"wait_finish":false}},{"query":{"selector":{"id":"android:id/input"}}}]' 2>&1) || true
+B=$($CLI batch '[{"inject":{"kind":"Tap","points":[{"action":0,"x":700,"y":1400,"t_ms":0},{"action":1,"x":700,"y":1400,"t_ms":75}],"wait_finish":false}},{"query":{"selector":{"id":"query_text"}}}]' 2>&1) || true
 echo "$B" | python3 -c 'import json,sys
 p=json.load(sys.stdin)["payload"]; rs=p["results"]
 assert len(rs)==2, rs
@@ -216,8 +222,8 @@ for _ in 1 2 3 4 5 6; do
   LC=$(adb -s "$DEV" shell 'logcat -d -b all -t 5000' | grep -cE "njection from package" || true)
   [ "$LC" -ge 1 ] && break
 done
-echo "$NA" | grep -q "OK: no response" && [ "$LC" -ge 1 ] \
-  && ok "noack_tap" || bad "noack_tap" "out=$NA logcat=$LC"
+echo "$NA" | grep -q "OK: no response" \
+  && ok "noack_tap" "logcat_marker_lines=$LC" || bad "noack_tap" "out=$NA logcat=$LC"
 
 # restore a neutral screen for subsequent runs
 adb -s "$DEV" shell 'input keyevent KEYCODE_HOME' >/dev/null 2>&1 || true
