@@ -19,9 +19,21 @@ d8 --min-api 30 --output agent/agent.jar agent/build/pilotdroid/Agent*.class
 release SHA256SUMS.txt——commit ↔ release asset ↔ 本地重建三方闭合。
 
 CI 落地：`ci.yml` 新增 `agent-jar-repro` job（agent-jar-sync 之后），
-`android-actions/setup-android` + `sdkmanager` pin `build-tools;37.0.0`
-`platforms;android-34`，同一配方重编译后 `cmp` committed jar。
-首次实跑结论：见下方 §CI-run（merge 后回填）。
+runner 预装 SDK（`$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager`）
+pin `build-tools;37.0.0` `platforms;android-34` + temurin javac **25**，
+同一配方重编译后 `cmp` committed jar。
+
+**首跑发散点分析（run 44839645842/44839826192，均已实跑）**：
+1. `android-actions/setup-android@v3` 直接挂——其默认
+   `packages: tools platform-tools` 请求已被移除的 legacy `tools` 包，
+   sdkmanager exit 1。修法：跳过该 action，直接用 runner 预装 sdkmanager。
+2. **javac 版本敏感性（真根因）**：CI temurin-17 重建得 `527f7c77..`，
+   committed `92e4fcfd..`，classes.dex 同长 44756 字节但内容不同。
+   本地对照实验：javac-21 重建也得 `527f7c77..`（与 CI 17 输出一致），
+   javac-25 重建得 `92e4fcfd..`（与 committed 一致）→ committed jar
+   由 javac 25 构建，**.class 字节对 javac major 敏感**（17≈21≠25）。
+   修法：CI pin `java-version: "25"`，并在 job 注释记录"换 javac 重建
+   jar 时需同步 bump 此 pin"。
 
 ## 2. README / release notes 诚实口径
 
