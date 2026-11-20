@@ -17,9 +17,20 @@ macOS quarantine 解、SUPPORTED 免费二批、韧性尾巴。
 | pinch 端到端 | ✅ 44 事件注入 `ok:true` | MCP tools/call `{"events":44,"ms":32,"ok":true}` |
 | MCP 握手回归 | ✅ | tools (24) list + 实调通过 |
 
-注：`watch` 当前为阻塞 op（占用 control 会话至 matched/timeout）；
-t1 异步 arm/disarm 落地后语义升级对 MCP 客户端透明（schema 已按
-selector+action+timeout_ms 对齐）。
+注：`watch` 保持阻塞 op；异步面由 `watch_arm`/`watch_disarm`/
+`watch_events` 三工具补齐（tools 24→27），hit 经 media 通道
+`{type:"watch_hit",hit:{...}}` 下发。
+
+真机端到端（ba0d072d，MCP tools/call）：
+- watch_arm → `{armed:true,watch_id:1}` 秒回
+- armed 期间 `exists` 48ms（control 不阻塞，异步语义实证）
+- 触发 resolver → watch_events 收 `{matched:true,action_ok:true,node:{...}}`
+- watch_disarm 命中后为 `disarmed:false`（一次性 watcher 命中即摘除，语义正确）
+
+### verify flake 修复（本轮复核发现）
+`watch_parallel` 断言 36/1：机制钉死为 **transition stall**——
+`keyevent HOME` 后 0.8s settle 小于本机窗口过渡（实测 0.8s→par 2.2s、
+1.5s→0.2s）。sleep 0.8→1.5，2000ms 阈保留（仍区分真阻塞）。
 
 ## 3. 分发面
 
@@ -31,12 +42,12 @@ selector+action+timeout_ms 对齐）。
 
 ## 4. 待 t1/t3 补齐（占位）
 
-- [ ] 异步 WATCH：ui_event(ch=1) WATCH_HIT 帧 + arm 期间并行 op 实证
-- [ ] shim watcher device-async 语义 + "并行驱动"对拍臂
-- [ ] conn APP_CURRENT/APP_INFO op + hot-path 实测
-- [ ] SUPPORTED 免费二批（app_wait/session/send_keys/clipboard/...）
-- [ ] multiPoints cnt=0 守卫 + pinch bounds clamp + shell-op 分层注
-- [ ] verify-agent.sh WATCH/pinch 断言后 33+/33+
+- [x] 异步 WATCH（t1）：WATCH_ARM/DISARM + ui_event WATCH_HIT；serve 侧 arm/disarm/events 三工具（本节）
+- [x] shim watcher device-async + 并行对拍（t1）
+- [x] conn APP_INFO + hot-path（t1）
+- [x] SUPPORTED 免费二批（本节②：6 项 ✅ + instance alias；clipboard/toast 保 ❌）
+- [x] multiPoints 守卫 + pinch clamp + shell 分层注（t1）
+- [x] verify 37/37（含 transition-stall settle 修复）
 
 ## 5. 已知边界（沿 M10）
 

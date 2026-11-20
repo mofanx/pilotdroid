@@ -17,7 +17,7 @@ use std::path::PathBuf;
 
 use anyhow::{Context, Result};
 use pilotdroid_adb::AdbTransport;
-use pilotdroid_agent::{ScrollDir, Session};
+use pilotdroid_agent::{MediaEvent, ScrollDir, Session};
 use pilotdroid_proto::payload::*;
 use serde_json::{json, Map, Value};
 
@@ -447,6 +447,30 @@ fn call_tool<T: AdbTransport>(
                     )?;
                     Ok(json!(ack))
                 }
+                "watch_arm" => {
+                    let ack = s.watch_arm(
+                        selector_of(&args),
+                        &str_arg(&args, "action").unwrap_or_else(|| "click".into()),
+                        num_arg(&args, "timeout_ms").map(|v| v as u64),
+                    )?;
+                    Ok(json!(ack))
+                }
+                "watch_disarm" => {
+                    let id = num_arg(&args, "watch_id")
+                        .context("watch_disarm needs watch_id")? as u32;
+                    Ok(json!({"disarmed": s.watch_disarm(id)?}))
+                }
+                "watch_events" => {
+                    match s.watch_recv()? {
+                        MediaEvent::WatchHit(h) => {
+                            Ok(json!({"type": "watch_hit", "hit": h}))
+                        }
+                        MediaEvent::Frame(f) => Ok(json!({
+                            "type": "frame", "w": f.w, "h": f.h,
+                            "dropped": f.dropped,
+                        })),
+                    }
+                }
                 "batch" => {
                     let ops: Vec<BatchOp> = serde_json::from_value(
                         args.get("ops").cloned().unwrap_or_else(|| json!([])),
@@ -512,6 +536,11 @@ fn tools() -> Value {
         {"name":"query","description":"selector → {found,node{text,id,desc,bounds,class,...}}","inputSchema":sel.clone()},
         {"name":"watch","description":"device-side selector→action watch loop (CAP_WATCH, docs/02 §4.9) — blocks this session until the selector is matched+acted or timeout_ms","inputSchema":json!({
             "type":"object","allOf":[sel.clone()],"properties":{"action":prop("string","default click"),"timeout_ms":prop("integer","default 5000")}})},
+        {"name":"watch_arm","description":"async watcher (CAP_WATCH_ASYNC, §4.9): returns {armed,watch_id} immediately; hits arrive on the media channel — read via watch_events. Control ops stay unblocked while armed","inputSchema":json!({
+            "type":"object","allOf":[sel.clone()],"properties":{"action":prop("string","default click"),"timeout_ms":prop("integer","auto-disarm deadline, optional")}})},
+        {"name":"watch_disarm","description":"cancel an armed watcher by watch_id → {disarmed}","inputSchema":schema(
+            &[("watch_id",prop("integer","from watch_arm"))],&["watch_id"])},
+        {"name":"watch_events","description":"read next media-channel event → {type:'watch_hit',hit:{watch_id,matched,waited_ms,action_ok,node}} or {type:'frame',...} when a stream is also active (blocks up to the media read timeout)","inputSchema":schema(&[],&[])},
         {"name":"wait_for","description":"selector + timeout_ms → device-side poll (BATCH wait_until)","inputSchema":json!({
             "type":"object","allOf":[sel.clone()],"properties":{"timeout_ms":prop("integer","default 5000")}})},
         {"name":"dump","description":"UI hierarchy XML","inputSchema":schema(&[],&[])},
