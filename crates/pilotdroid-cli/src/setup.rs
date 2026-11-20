@@ -39,13 +39,29 @@ impl Check {
             hint: Some(hint),
         }
     }
+    /// Advisory only — never fails the doctor (orphan forwards are
+    /// harmless clutter, not a broken setup).
+    fn warn(name: &'static str, detail: impl Into<String>, hint: &'static str) -> Self {
+        Self {
+            name,
+            ok: true,
+            detail: detail.into(),
+            hint: Some(hint),
+        }
+    }
 }
 
 fn report(checks: &[Check]) {
     for c in checks {
         println!(
             "{} {} — {}",
-            if c.ok { "PASS" } else { "FAIL" },
+            if !c.ok {
+                "FAIL"
+            } else if c.hint.is_some() {
+                "WARN"
+            } else {
+                "PASS"
+            },
             c.name,
             c.detail
         );
@@ -215,7 +231,7 @@ pub fn run<T: AdbTransport>(
             Err(e) => checks.push(Check::fail(
                 "hello",
                 format!("HELLO failed: {e}"),
-                "jar/socket mismatch? deploy the matching jar via `agent install`",
+                "daemon may have died mid-check — `agent start`; jar/socket mismatch? `agent install`",
             )),
         }
     } else {
@@ -231,6 +247,12 @@ pub fn run<T: AdbTransport>(
         let _ = mgr.disconnect(&serial, used_port);
     }
 
+    // 6. forward hygiene: `pilotdroid_agent*` rules whose local port has
+    // no established client conn are orphans (leaked by killed serve/
+    // bench sessions — Drop never ran). List, never delete: a multi-serve
+    // sibling's rule is also "orphan-looking" if its conn isn't active.
+    checks.push(forward_hygiene());
+
     report(&checks);
     if checks.iter().all(|c| c.ok) {
         Ok(())
@@ -239,5 +261,79 @@ pub fn run<T: AdbTransport>(
             "setup: {} check(s) failed",
             checks.iter().filter(|c| !c.ok).count()
         );
+    }
+}
+
+/// `adb forward --list` rows targeting `pilotdroid_agent*` →
+/// (serial, local_port, remote).
+fn parse_forward_rules(list: &str) -> Vec<(String, u16, String)> {
+    list.lines()
+        .filter(|l| l.contains("pilotdroid_agent"))
+        .filter_map(|l| {
+            let mut f = l.split_whitespace();
+            let serial = f.next()?;
+            let port = f.next()?.strip_prefix("tcp:")?.parse().ok()?;
+            let remote = f.next()?;
+            Some((serial.to_string(), port, remote.to_string()))
+        })
+        .collect()
+}
+
+/// Local TCP ports (decimal) that currently have an ESTABLISHED conn,
+/// parsed from `ss -tn state established` output.
+fn established_ports(ss_out: &str) -> std::collections::HashSet<u16> {
+    ss_out
+        .lines()
+        .skip(1)
+        .filter_map(|l| {
+            // columns: State Recv-Q Send-Q Local:Port Peer:Port ...
+            let local = l.split_whitespace().nth(3)?;
+            local.rsplit(':').next()?.parse().ok()
+        })
+        .collect()
+}
+
+fn forward_hygiene() -> Check {
+    let list = std::process::Command::new("adb")
+        .args(["forward", "--list"])
+        .output();
+    let Ok(out) = list else {
+        return Check::fail(
+            "forward_hygiene",
+            "adb forward --list failed",
+            "adb server down?",
+        );
+    };
+    let rules = parse_forward_rules(&String::from_utf8_lossy(&out.stdout));
+    if rules.is_empty() {
+        return Check::pass("forward_hygiene", "no pilotdroid forward rules");
+    }
+    let ss = std::process::Command::new("ss")
+        .args(["-tn", "state", "established"])
+        .output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+        .unwrap_or_default();
+    let active = established_ports(&ss);
+    let orphans: Vec<String> = rules
+        .iter()
+        .filter(|(_, p, _)| !active.contains(p))
+        .map(|(s, p, _)| format!("{s} tcp:{p}"))
+        .collect();
+    if orphans.is_empty() {
+        Check::pass(
+            "forward_hygiene",
+            format!("{} rule(s), all with live conns", rules.len()),
+        )
+    } else {
+        Check::warn(
+            "forward_hygiene",
+            format!(
+                "{} orphan rule(s) of {}: {}",
+                orphans.len(),
+                rules.len(),
+                orphans.join(" ")
+            ),
+            "killed sessions leak rules — `adb forward --remove tcp:<port>` (listed ones only; live conns are safe)",
+        )
     }
 }

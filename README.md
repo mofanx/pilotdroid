@@ -15,7 +15,7 @@
 | 形态 | 适合 | 开销 | 入口 |
 |---|---|---|---|
 | `pilotdroid-cli agent <op>` | 人工/脚本单发 | ~85ms/call（含 fwd+connect+HELLO） | 子进程每次拉起 |
-| `pilotdroid serve`（stdio MCP） | **AI agent 一行接入** | 持久会话摊销 ~0 | `pilotdroid serve` + JSON-RPC 18 工具 |
+| `pilotdroid serve`（stdio MCP） | **AI agent 一行接入** | 持久会话摊销 ~0 | `pilotdroid serve` + JSON-RPC 21 工具 |
 | Rust `pilotdroid-agent` facade | Rust 库内嵌 | 持久 Session | `Device::with_transport(..).session()` |
 
 另有 **u2 兼容 shim**（`compat/u2shim.py`，host 侧翻译层，`pip install ./python`
@@ -24,7 +24,17 @@
 screenshot/app_start/app_stop/app_current/info` + selector `text/resourceId/
 description/className/packageName/scrollable/index` + `d(scrollable=True).scroll.*`；
 仅 `xpath` 显式拒绝（ValueError）。M6 真实脚本对拍：**23/24 op 通过，唯一
-unsupported = xpath**（`spike/e2e/e2e-m6-compat.json`）。
+unsupported = xpath**（`spike/e2e/e2e-m6-compat.json`）。**xpath 明确不在
+supported-set 目标内**（u2 xpath 本为可选插件，非 drop-in 承诺）。
+
+MCP client 挂接（mcpServers 片段）：
+
+```json
+{"mcpServers": {"pilotdroid": {"command": "pilotdroid", "args": ["serve"]}}}
+```
+
+经官方 python `mcp` SDK 与 Devin CLI 实测握手通过（`spike/e2e/mcp_client_check.py`
++ `agent_e2e_transcript.txt`）；initialize 应答同时透出 `agentVer`（设备 jar 版本）。
 
 ## 实测数据（真机，同口径）
 

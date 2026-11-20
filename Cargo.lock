@@ -761,6 +761,7 @@ dependencies = [
  "pilotdroid-adb",
  "pilotdroid-proto",
  "rmpv",
+ "serde",
  "thiserror",
  "tokio",
 ]

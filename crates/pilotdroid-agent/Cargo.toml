@@ -10,6 +10,7 @@ description = "Host-side client + lifecycle manager for the on-device pilotdroid
 pilotdroid-adb = { workspace = true }
 pilotdroid-proto = { workspace = true }
 rmpv = { version = "1.3.0", features = ["with-serde"] }
+serde = { version = "1", features = ["derive"] }
 thiserror = "2"
 
 [dev-dependencies]

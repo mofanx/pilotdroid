@@ -49,6 +49,9 @@ pub fn run<T: AdbTransport, R: std::io::BufRead, W: Write>(
     mut connect: impl FnMut() -> Result<Session<T>>,
 ) -> Result<()> {
     let mut session: Option<Session<T>> = None;
+    // Element snapshot backing tap_index/set_text_index — refreshed by
+    // every list_elements call; indexes are meaningless across snapshots.
+    let mut elements: Vec<pilotdroid_agent::ElemInfo> = Vec::new();
     for line in inp.lines() {
         let line = line?;
         if line.trim().is_empty() {
@@ -128,7 +131,7 @@ pub fn run<T: AdbTransport, R: std::io::BufRead, W: Write>(
                         }
                     },
                 };
-                write_resp(out, &call_tool(s, id, &name, args)?)?;
+                write_resp(out, &call_tool(s, id, &name, args, &mut elements)?)?;
                 continue;
             }
             _ => err(id, -32601, &format!("method not found: {method}")),
@@ -199,6 +202,7 @@ fn call_tool<T: AdbTransport>(
     id: Value,
     name: &str,
     args: Value,
+    els: &mut Vec<pilotdroid_agent::ElemInfo>,
 ) -> Result<Value> {
     let r: std::result::Result<Value, anyhow::Error> =
         (|| -> std::result::Result<Value, anyhow::Error> {
@@ -252,6 +256,39 @@ fn call_tool<T: AdbTransport>(
                     Ok(json!({"found": found, "node": node}))
                 }
                 "dump" => Ok(json!({"xml": s.dump()?})),
+                "list_elements" => {
+                    *els = s.list_elements()?;
+                    Ok(json!({"count": els.len(), "elements": els}))
+                }
+                "tap_index" => {
+                    let i = num_arg(&args, "i").context("tap_index needs i")? as usize;
+                    let e = els.get(i).with_context(|| {
+                        format!(
+                            "index {i} out of range — call list_elements first ({} cached)",
+                            els.len()
+                        )
+                    })?;
+                    let [l, t, r, b] = e.bounds;
+                    let a = s.tap((l + r) as f32 / 2.0, (t + b) as f32 / 2.0)?;
+                    Ok(json!({"i": i, "bounds": e.bounds, "result": a}))
+                }
+                "set_text_index" => {
+                    let i = num_arg(&args, "i").context("set_text_index needs i")? as usize;
+                    let e = els.get(i).with_context(|| {
+                        format!(
+                            "index {i} out of range — call list_elements first ({} cached)",
+                            els.len()
+                        )
+                    })?;
+                    let [l, t, r, b] = e.bounds;
+                    // tap the field first so ACTION_SET_TEXT lands on it
+                    s.tap((l + r) as f32 / 2.0, (t + b) as f32 / 2.0)?;
+                    s.set_text(
+                        &str_arg(&args, "text").unwrap_or_default(),
+                        args.get("clear").and_then(Value::as_bool).unwrap_or(true),
+                    )?;
+                    Ok(json!({"i": i, "ok": true}))
+                }
                 "screenshot" => {
                     let path = str_arg(&args, "path").map(PathBuf::from);
                     let (fmt, bytes) = s.screenshot(
@@ -381,6 +418,12 @@ fn tools() -> Value {
         {"name":"wait_for","description":"selector + timeout_ms → device-side poll (BATCH wait_until)","inputSchema":json!({
             "type":"object","allOf":[sel.clone()],"properties":{"timeout_ms":prop("integer","default 5000")}})},
         {"name":"dump","description":"UI hierarchy XML","inputSchema":schema(&[],&[])},
+        {"name":"list_elements","description":"flattened indexed element list [{i,text,desc,class,bounds,clickable,editable}] — agent observation surface","inputSchema":schema(&[],&[])},
+        {"name":"tap_index","description":"tap element i from the last list_elements snapshot (bounds center)","inputSchema":schema(
+            &[("i",prop("integer","element index"))],&["i"])},
+        {"name":"set_text_index","description":"focus element i (tap) then ACTION_SET_TEXT","inputSchema":schema(
+            &[("i",prop("integer","element index")),("text",prop("string","")),("clear",prop("boolean","default true"))],
+            &["i","text"])},
         {"name":"screenshot","description":"JPEG capture; path = file bypass (preferred), else base64","inputSchema":schema(
             &[("path",prop("string","output file")),("quality",prop("integer","1-100, default 80")),("scale",prop("number","(0,1] downscale"))],&[])},
         {"name":"scroll","description":"scroll inside a (scrollable) node; dir: forward|backward|to_end|to_beginning","inputSchema":json!({
@@ -501,6 +544,22 @@ mod tests {
                                 ms: 1.0,
                                 cost_ns: None,
                                 backend: None,
+                            })
+                            .unwrap(),
+                        ),
+                        Ok(OpCode::Dump) => (
+                            OpCode::Dump as u16,
+                            encode(&DumpAck {
+                                xml: concat!(
+                                    r#"<?xml version='1.0' encoding='UTF-8' standalone='yes' ?>"#,
+                                    r#"<hierarchy><node index="0" text="设置" resource-id="com.x:id/t" "#,
+                                    r#"class="android.widget.TextView" package="com.x" content-desc="" "#,
+                                    r#"clickable="true" bounds="[10,20][110,60]"/>"#,
+                                    r#"<node index="1" text="" resource-id="com.x:id/e" "#,
+                                    r#"class="android.widget.EditText" package="com.x" content-desc="输入框" "#,
+                                    r#"clickable="true" bounds="[10,80][300,140]"/></hierarchy>"#,
+                                )
+                                .into(),
                             })
                             .unwrap(),
                         ),
@@ -636,6 +695,39 @@ mod tests {
         );
         assert_eq!(resps[0]["result"]["protocolVersion"], "2025-11-25");
         assert_eq!(resps[1]["result"]["protocolVersion"], "2025-11-25");
+    }
+
+    #[test]
+    fn element_index_tools() {
+        // Observation surface: list → tap_index → set_text_index all
+        // resolve bounds-center from the same snapshot.
+        let resps = serve_once(
+            &[
+                r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"list_elements","arguments":{}}}"#,
+                r#"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"tap_index","arguments":{"i":1}}}"#,
+                r#"{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"tap_index","arguments":{"i":9}}}"#,
+            ]
+            .join("\n"),
+        );
+        let body: Value =
+            serde_json::from_str(resps[0]["result"]["content"][0]["text"].as_str().unwrap())
+                .unwrap();
+        assert_eq!(body["count"], 2);
+        let e0 = &body["elements"][0];
+        assert_eq!(e0["i"], 0);
+        assert_eq!(e0["text"], "设置");
+        assert_eq!(e0["class"], "TextView"); // simple name
+        assert_eq!(e0["bounds"], json!([10, 20, 110, 60]));
+        assert_eq!(e0["clickable"], true);
+        assert_eq!(body["elements"][1]["editable"], true); // EditText
+                                                           // tap_index hits the EditText center: (10+300)/2=155, (80+140)/2=110
+        let tap: Value =
+            serde_json::from_str(resps[1]["result"]["content"][0]["text"].as_str().unwrap())
+                .unwrap();
+        assert_eq!(tap["i"], 1);
+        assert_eq!(tap["result"]["ok"], true);
+        // out-of-range index → tool error, not protocol error
+        assert_eq!(resps[2]["result"]["isError"], true);
     }
 
     #[test]

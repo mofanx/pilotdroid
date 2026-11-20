@@ -149,6 +149,15 @@ impl<T: AdbTransport> Session<T> {
         self.client.dump()
     }
 
+    /// Snapshot the UI tree as a flat, index-addressable element list —
+    /// the agent-observation surface (`list_elements` tool). `i` is the
+    /// node's position in dump order and is only meaningful against the
+    /// snapshot it came from; callers re-list before indexing.
+    pub fn list_elements(&mut self) -> Result<Vec<ElemInfo>> {
+        let xml = self.dump()?;
+        Ok(parse_nodes(&xml))
+    }
+
     pub fn query(&mut self, selector: Selector) -> Result<QueryAck> {
         self.client.query(QueryReq {
             selector,
@@ -469,4 +478,82 @@ fn fnv1a(b: &[u8]) -> u64 {
         h = h.wrapping_mul(0x100000001b3);
     }
     h
+}
+
+// ---- element observation surface (M7) --------------------------------------
+
+/// One flattened UI node from a DUMP snapshot — index-addressable for
+/// `tap_index`/`set_text_index`. Empty text/desc/class fields are
+/// skipped on the wire (~2KB target for a typical Settings page).
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct ElemInfo {
+    /// Position in dump order — index handle for tap/set_text.
+    pub i: usize,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub text: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub desc: String,
+    /// Simple class name (`android.widget.EditText` → `EditText`).
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub class: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub pkg: String,
+    /// `[left, top, right, bottom]` device px — center is the tap point.
+    pub bounds: [i32; 4],
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub clickable: bool,
+    /// `android.widget.EditText` (or subclass tail `EditText`).
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub editable: bool,
+}
+
+/// Parse uiautomator dump XML into a flat element list. Attribute
+/// extraction is deliberately dependency-free: `<node .../>` tags are
+/// scanned for `key="value"` pairs; Android's serializer guarantees
+/// quoted attributes. Index `i` follows document order.
+fn parse_nodes(xml: &str) -> Vec<ElemInfo> {
+    fn attr<'a>(tag: &'a str, key: &str) -> Option<&'a str> {
+        let pat = format!("{key}=\"");
+        let v = &tag[tag.find(&pat)? + pat.len()..];
+        Some(&v[..v.find('"')?])
+    }
+    let mut out = Vec::new();
+    let mut pos = 0;
+    while let Some(off) = xml[pos..].find("<node ") {
+        let tag_start = pos + off;
+        let tag_end = match xml[tag_start..].find('>') {
+            Some(e) => tag_start + e,
+            None => break,
+        };
+        let tag = &xml[tag_start..tag_end];
+        let g = |k: &str| attr(tag, k).unwrap_or("");
+        let cls = g("class");
+        let simple = cls.rsplit('.').next().unwrap_or(cls);
+        out.push(ElemInfo {
+            i: out.len(),
+            text: g("text").into(),
+            desc: g("content-desc").into(),
+            class: simple.into(),
+            pkg: g("package").into(),
+            bounds: parse_bounds(g("bounds")).unwrap_or([0, 0, 0, 0]),
+            clickable: g("clickable") == "true",
+            editable: simple == "EditText",
+        });
+        pos = tag_end;
+    }
+    out
+}
+
+/// `[l,t][r,b]` → `[l,t,r,b]`.
+fn parse_bounds(s: &str) -> Option<[i32; 4]> {
+    let s = s.strip_prefix('[')?.strip_suffix(']')?;
+    let (l, r) = s.split_once("][")?;
+    let (x1, y1) = l.split_once(',')?;
+    let (x2, y2) = r.split_once(',')?;
+    Some([
+        x1.parse().ok()?,
+        y1.parse().ok()?,
+        x2.parse().ok()?,
+        y2.parse().ok()?,
+    ])
 }
