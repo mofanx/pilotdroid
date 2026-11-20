@@ -456,21 +456,17 @@ fn call_tool<T: AdbTransport>(
                     Ok(json!(ack))
                 }
                 "watch_disarm" => {
-                    let id = num_arg(&args, "watch_id")
-                        .context("watch_disarm needs watch_id")? as u32;
+                    let id =
+                        num_arg(&args, "watch_id").context("watch_disarm needs watch_id")? as u32;
                     Ok(json!({"disarmed": s.watch_disarm(id)?}))
                 }
-                "watch_events" => {
-                    match s.watch_recv()? {
-                        MediaEvent::WatchHit(h) => {
-                            Ok(json!({"type": "watch_hit", "hit": h}))
-                        }
-                        MediaEvent::Frame(f) => Ok(json!({
-                            "type": "frame", "w": f.w, "h": f.h,
-                            "dropped": f.dropped,
-                        })),
-                    }
-                }
+                "watch_events" => match s.watch_recv()? {
+                    MediaEvent::WatchHit(h) => Ok(json!({"type": "watch_hit", "hit": h})),
+                    MediaEvent::Frame(f) => Ok(json!({
+                        "type": "frame", "w": f.w, "h": f.h,
+                        "dropped": f.dropped,
+                    })),
+                },
                 "batch" => {
                     let ops: Vec<BatchOp> = serde_json::from_value(
                         args.get("ops").cloned().unwrap_or_else(|| json!([])),
