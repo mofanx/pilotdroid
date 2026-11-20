@@ -24,10 +24,15 @@
   |---|---|
   | Linux x86_64 | `pilotdroid-cli-linux-x86_64` |
   | macOS arm64 | `pilotdroid-cli-macos-arm64` |
+  | Windows x86_64 | `pilotdroid-cli-windows-x86_64.exe` |
 
   > **macOS 注意**：Release 二进制未签名，浏览器下载后首次运行会被
   > Gatekeeper 拦截——先执行 `xattr -d com.apple.quarantine pilotdroid-cli`
   > 再运行（或直接用下方 Homebrew 安装，无此问题）。
+
+  > **Windows 注意**：`.exe` 未签名，首次运行会被 SmartScreen 拦截——
+  > 点"更多信息 → 仍要运行"；命令行下载的可用 PowerShell
+  > `Unblock-File pilotdroid-cli-windows-x86_64.exe` 解除标记。
 
 - **Homebrew**（macOS）：
 

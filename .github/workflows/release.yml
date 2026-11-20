@@ -8,7 +8,7 @@ name: release
 # Artifacts (per tag release):
 #   - pilotdroid-cli-linux-x86_64   (cargo build --release, ubuntu-latest)
 #   - pilotdroid-cli-macos-arm64    (cargo build --release, macos-latest)
-#   - pilotdroid-cli-windows-x86_64 (cargo build --release, windows-latest;
+#   - pilotdroid-cli-windows-x86_64.exe (cargo build --release, windows-latest;
 #                                  libusb builds vendored via adb_client)
 #   - agent.jar                     (committed dex — same bytes embedded in the
 #                                  CLI via include_bytes!, so no SDK needed)
@@ -42,9 +42,9 @@ jobs:
     strategy:
       matrix:
         include:
-          - { os: ubuntu-latest, suffix: linux-x86_64, bin: pilotdroid-cli }
-          - { os: macos-latest, suffix: macos-arm64, bin: pilotdroid-cli }
-          - { os: windows-latest, suffix: windows-x86_64, bin: pilotdroid-cli.exe }
+          - { os: ubuntu-latest, suffix: linux-x86_64, bin: pilotdroid-cli, ext: "" }
+          - { os: macos-latest, suffix: macos-arm64, bin: pilotdroid-cli, ext: "" }
+          - { os: windows-latest, suffix: windows-x86_64, bin: pilotdroid-cli.exe, ext: ".exe" }
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v7
@@ -57,7 +57,7 @@ jobs:
       - name: stage + upload
         run: |
           mkdir -p dist
-          cp "target/release/${{ matrix.bin }}" "dist/pilotdroid-cli-${{ matrix.suffix }}"
+          cp "target/release/${{ matrix.bin }}" "dist/pilotdroid-cli-${{ matrix.suffix }}${{ matrix.ext }}"
       - uses: actions/upload-artifact@v7
         with:
           name: cli-${{ matrix.suffix }}
