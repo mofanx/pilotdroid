@@ -1,0 +1,4 @@
+{"device":"ba0d072d (Mi11 A14, 1440x3200)","agent_ver":"0.5.0","note":"preview-tier stream spike M8",
+ "shot_roundtrip_ms_p50":{"s0.5q70":192.4,"s0.5q50":240.0,"s0.25q70":161.4,"s0.25q50":131.0,"s0.25q30":157.0,"s0.15q50":139.2},
+ "stream_eff_fps":{"baseline_s0.5q70":"~6.0 (M4)","s0.25q50_fps10":8.9,"s0.15q50_fps10":10.0},
+ "conclusion":"scale0.25/quality50 preview preset reaches ~9fps (0.15 hits 10fps target cap) in the same architecture — no encoder rewrite; suggest exposing as `stream_start` preset doc"}

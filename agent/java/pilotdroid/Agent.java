@@ -42,7 +42,7 @@ import java.util.Set;
 public final class Agent {
     private static final String SOCKET_NAME = "pilotdroid_agent";
     private static final String MEDIA_SOCKET = "pilotdroid_agent_media";
-    private static final String AGENT_VER = "0.4.0";
+    private static final String AGENT_VER = "0.5.0";
     private static final int PROTO_VER = 0;
 
     // capability bitmap — normative spec is pilotdroid-proto `caps` (bit-for-bit)
@@ -97,12 +97,32 @@ public final class Agent {
             for (;;) {
                 try {
                     final LocalSocket c = srv.accept();
+                    // single-client semantics: a new control conn replaces the
+                    // previous one (closes its socket -> its session read fails
+                    // -> worker exits). Cross-process op interleave is thus
+                    // impossible; last connector wins.
+                    synchronized (Agent.class) {
+                        if (curCtrl != null) {
+                            // close() alone does NOT interrupt another
+                            // thread's blocked read on the same fd — the
+                            // syscall pins the file description and the old
+                            // session keeps working. shutdown() delivers FIN
+                            // -> peer EOF -> session read fails -> exits.
+                            try { curCtrl.shutdownInput(); } catch (Throwable ignore) {}
+                            try { curCtrl.shutdownOutput(); } catch (Throwable ignore) {}
+                            try { curCtrl.close(); } catch (Throwable ignore) {}
+                        }
+                        curCtrl = c;
+                    }
                     new Thread(() -> {
                         try {
                             new Session(c, uia, injector, dumper).run();
                         } catch (Throwable t) {
                             System.out.println("session ended: " + t);
                         } finally {
+                            synchronized (Agent.class) {
+                                if (curCtrl == c) curCtrl = null;
+                            }
                             try { c.close(); } catch (Throwable ignore) {}
                         }
                     }, "pd-session").start();
@@ -115,6 +135,8 @@ public final class Agent {
     }
 
     private static android.os.Handler mainHandler;
+    /** The single live control conn; replaced on new accept (see accept loop). */
+    private static LocalSocket curCtrl;
 
     /** takeScreenshot bound to the connection thread (main); marshal when
      *  called from a worker (session op thread or stream producer). */

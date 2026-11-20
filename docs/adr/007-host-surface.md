@@ -102,3 +102,21 @@ app_stop、app_current。选择器 `class`/`scrollable` 字段已入 wire
 
 即：多 client 并发=设备端多会话并存，工具级互斥只有 stream 一处，
 且以"先占先得 + owner 死即释放"为语义。
+
+## 补注（M8 修订）· 单 client 顶替语义
+
+M6 的"多会话并存"实测暴露跨进程 op 可在同一 agent 上交错——对
+session-bound 状态（elements 快照、stream owner）是未定义行为。
+AGENT_VER 0.5.0 起改为**单 client 顶替**（last-connector-wins）：
+
+- accept 新 control conn → 旧 conn `shutdown+close` → 其 session 与
+  stream 按 §4.8 一并终结（注意：`close()` 不打断阻塞 read，必须
+  `shutdownInput/Output` 先发 FIN）；
+- 被顶替的 serve 保留死 session：后续 conn op 持续 io error，
+  **进程重启才能夺回**（serve 不自动 re-dial，刻意拒绝 dial-steal
+  ping-pong——静默抢锁比显式失败更难调试）；
+- owner serve SIGKILL → 全新 serve 立即接管（崩溃韧性不变）。
+
+`serve_multi.py` 8 断言复跑全过（dump 探活——`app_current` 走 adb shell
+不经 control conn，不能作活性探针）。stream 的 ERR_STREAM_BUSY 语义
+随之过期：现在**永远轮不到第二 owner**——连接层先被顶替。

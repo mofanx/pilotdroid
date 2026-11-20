@@ -11,6 +11,9 @@ requires-python = ">=3.8"
 license = { text = "MIT" }
 dependencies = ["msgpack>=1.0"]
 
+[project.scripts]
+pilotdroid-agent = "pilotdroid.agent_client:main"
+
 [tool.setuptools]
 packages = ["pilotdroid"]
 include-package-data = false

@@ -23,7 +23,7 @@ uiautomator2 `Device` 公共 API 的逐条标注。约定：**drop-in 只承诺�
 | `.exists` | ✅ | property，同 u2 |
 | `.click()` `.long_click(d)` `.set_text(s)` | ✅ | `.set_text` = 先点击再注入文本，同 u2 |
 | `.info` | ✅ | property，同 u2；返回字段为子集（text/id/desc/bounds/class/clickable/enabled/scrollable/pkg） |
-| `.wait(timeout)` | ⚠️ 语义差 | shim 返回 node-or-None；u2 返回 bool |
+| `.wait(timeout)` | ✅ | M8 修正为 u2 语义：返回 bool |
 | `.scroll.<dir>` | ✅ | forward/backward/toEnd/toBeginning（shim 额外需要 `scrollable=True` 选择器先命中） |
 | `.drag_to` `.swipe` `.pinch_in/out` `.gesture` `.fling` | ❌ | |
 
@@ -38,7 +38,14 @@ uiautomator2 `Device` 公共 API 的逐条标注。约定：**drop-in 只承诺�
 | `dump_hierarchy()` | ✅ | 返回 XML 字符串（agent 原生生成，节点属性集与 uiautomator dump 近似） |
 | `info` | ⚠️ 子集 | 仅 displayWidth/displayHeight/sdkInt/agent |
 | `app_start(pkg)` `app_stop(pkg)` `app_current()` | ✅ | app_start 用 `am start`（u2 用 monkey）；`app_current` 返回 `{package,activity}` |
-| `watcher` `app_list` `app_info` `app_wait` `session` `send_keys` `clear_text` `clipboard` `toast` `open_notification` `open_quick_settings` `screen_on/off` `unlock` `orientation` `freeze_rotation` `window_size` `shell`（结构化返回） | ❌ 未实现 | 按需加 |
+| `shell(cmd)` | ✅ | 返回 `ShellResponse(output, exit_code)`，同 u2 |
+| `clear_text()` | ✅ | 聚焦编辑框清空（ACTION_SET_TEXT 空串，免 IME） |
+| `app_list()` `app_info(pkg)` | ✅ | `pm list`/`dumpsys package`；app_info 为 versionName/Code 子集 |
+| `window_size()` | ✅ | `wm size` → `(w,h)` |
+| `screen_on()` `screen_off()` `unlock()` | ✅ | `dumpsys power` 判态 + power keyevent；unlock=wake+上滑 |
+| `orientation` get/set | ✅ | `settings user_rotation`；set 冻结重力旋转（同 u2 语义） |
+| `watcher` | ✅ | `d.watcher.when(...).click()` + `.start()/.run()/.stop()/.reset()`——host 侧轮询线程，规则命中一次即摘除 |
+| `app_wait` `session` `send_keys` `clipboard` `toast` `open_notification` `open_quick_settings` `freeze_rotation` | ❌ 未实现 | 按需加 |
 
 ## 实测数据
 

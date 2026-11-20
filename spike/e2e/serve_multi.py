@@ -5,11 +5,20 @@ Each serve gets its own ephemeral adb-forward port (manager picks a free
 port), so both dial the same localabstract as independent control sessions.
 This script records the actual concurrent behavior:
 
-  A) both initialize + tools/call ops concurrently
-  B) stream ownership: A stream_start, then B stream_start -> expected
-     ERR_STREAM_BUSY (single-owner); A stops -> B can then start
-  C) A dies mid-stream (SIGKILL) -> implicit stop -> B start succeeds
-     (session-binding crash resilience, §4.8)
+Agent 0.5.0 enforces SINGLE-CLIENT semantics: a new control conn replaces
+the previous one (its socket is closed; its session+stream die via §4.8
+session binding). The serve watchdog re-dials on failure, so two serves
+produce a dial-steal pattern — last connector wins, loser sees io errors
+or silently resteals on its next call. Ops never interleave mid-call.
+
+Expected behavior asserted here (probes use `dump`, an op that really
+travels the control conn — `app_current` is adb-shell-only and would pass
+even on a dead conn):
+  A) B initialize -> B owns the agent; A's conn ops io-error (kicked).
+     The kicked serve keeps its dead session — calls stay failing until
+     the serve process restarts (documented: restart to re-take).
+  B) the owning serve ops normally (dump ok, stream start/stop ok)
+  C) owner death (SIGKILL) frees the agent -> a FRESH serve takes over
 
 Usage: serve_multi.py <serial> [cli_binary]
 """
@@ -69,35 +78,44 @@ def main():
             "serverInfo" in str(ra) and "serverInfo" in str(rb),
             f"A={ra.get('result',{}).get('serverInfo')} B={rb.get('result',{}).get('serverInfo')}")
 
-        # A) interleaved ops on both
-        outs = {}
-        def hit(p, name, rid):
-            outs[name] = call(p, "tools/call",
-                              {"name": "app_current", "arguments": {}}, rid)
-        ta = threading.Thread(target=hit, args=(a, "A", 10))
-        tb = threading.Thread(target=hit, args=(b, "B", 10))
-        ta.start(); tb.start(); ta.join(15); tb.join(15)
-        ok_a = "package" in str(outs.get("A")) or "{" in str(outs.get("A"))
-        ok_b = "package" in str(outs.get("B")) or "{" in str(outs.get("B"))
-        rep("interleaved_ops", ok_a and ok_b,
-            f"A={str(outs.get('A'))[:80]} B={str(outs.get('B'))[:80]}")
+        # A) single-client: after B's init conn, A's control conn is dead.
+        #    `dump` travels the conn -> must io-error (kicked). The dead
+        #    session is retained, so further calls keep failing (documented:
+        #    the kicked serve must restart to re-take ownership).
+        ra1 = call(a, "tools/call", {"name": "dump", "arguments": {}}, 10)
+        kicked = "io error" in str(ra1) or "failed to fill" in str(ra1) \
+            or "Broken pipe" in str(ra1) or "isError': True" in str(ra1)
+        rep("A_kicked_after_B_init", kicked, str(ra1)[:140])
+        ra2 = call(a, "tools/call", {"name": "dump", "arguments": {}}, 11)
+        rep("A_stays_dead", "io error" in str(ra2) or "isError" in str(ra2),
+            str(ra2)[:140])
 
-        # B) stream single-owner
-        sa = call(a, "tools/call", {"name": "stream_start", "arguments": {"fps": 2}}, 20)
-        rep("A_stream_start", '"ok": true' in str(sa) or "ok" in str(sa), str(sa)[:120])
+        # B) owning serve works normally on the live conn.
+        rb1 = call(b, "tools/call", {"name": "dump", "arguments": {}}, 10)
+        rep("B_dump_ok", "<hierarchy" in str(rb1) or "hierarchy" in str(rb1),
+            str(rb1)[:100])
         sb = call(b, "tools/call", {"name": "stream_start", "arguments": {"fps": 2}}, 20)
-        busy = "STREAM_BUSY" in str(sb) or "isError" in str(sb)
-        rep("B_stream_busy", busy, str(sb)[:120])
+        rep("B_stream_start", '"ok":true' in str(sb).replace(" ", ""), str(sb)[:120])
+        st = call(b, "tools/call", {"name": "stream_stop", "arguments": {}}, 21)
+        rep("B_stream_stop", "frames_sent" in str(st) or '"ok":true' in str(st).replace(" ", ""),
+            str(st)[:100])
 
-        # C) kill A mid-stream -> implicit stop -> B can start
-        a.send_signal(signal.SIGKILL)
-        a.wait(5)
-        time.sleep(0.8)   # agent notices owner socket EOF
-        sb2 = call(b, "tools/call", {"name": "stream_start", "arguments": {"fps": 2}}, 30)
-        rep("B_stream_after_A_death", '"ok": true' in str(sb2) or "ok" in str(sb2),
-            str(sb2)[:120])
-        st = call(b, "tools/call", {"name": "stream_stop", "arguments": {}}, 31)
-        rep("B_stream_stop", "frames_sent" in str(st) or "ok" in str(st), str(st)[:100])
+        # C) owner death frees the agent: a FRESH serve takes over. The
+        #    previously-kicked A stays dead (session already dead) — only a
+        #    restart re-takes ownership.
+        b.send_signal(signal.SIGKILL)
+        b.wait(5)
+        time.sleep(0.8)
+        ra3 = call(a, "tools/call", {"name": "dump", "arguments": {}}, 12)
+        rep("A_still_dead_after_owner_gone",
+            "io error" in str(ra3) or "isError" in str(ra3), str(ra3)[:120])
+        c = spawn()
+        try:
+            rc = call(c, "tools/call", {"name": "dump", "arguments": {}}, 10)
+            rep("fresh_serve_takes_over",
+                "hierarchy" in str(rc), str(rc)[:120])
+        finally:
+            c.kill()
     finally:
         for p in (a, b):
             try:
