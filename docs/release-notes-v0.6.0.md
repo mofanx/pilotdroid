@@ -62,7 +62,8 @@ stdio MCP server (27 tools).
 - **macOS**: unsigned — `xattr -d com.apple.quarantine pilotdroid-cli`,
   or `brew install mofanx/pilotdroid/pilotdroid`
 - **Windows**: unsigned — SmartScreen "More info → Run anyway", or
-  `Unblock-File` in PowerShell
+  `Unblock-File` in PowerShell. **Compile-verified only** — the build
+  passes CI but hasn't run on a real Windows machine; report issues.
 - **PyPI**: `pip install pilotdroid`
 
 **Full Changelog**: https://github.com/mofanx/pilotdroid/compare/v0.5.0...v0.6.0
