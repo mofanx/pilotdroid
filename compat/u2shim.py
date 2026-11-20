@@ -122,6 +122,9 @@ class _Selector:
         # [268,3312] on a 3200px-tall screen) — an unclamped center
         # injects at coordinates nothing can receive.
         w, h = self.dev.a.hello()["payload"]["display"]
+        if r <= 0 or l >= w or b <= 0 or t >= h:
+            raise LookupError(
+                f"node bounds {node['bounds']} fully outside display {w}x{h}")
         cx = min(max((l + r) / 2, 0), w - 1)
         cy = min(max((t + b) / 2, 0), h - 1)
         half = (r - l) / 2
