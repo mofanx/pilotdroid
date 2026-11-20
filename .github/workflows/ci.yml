@@ -74,11 +74,14 @@ jobs:
         with:
           distribution: temurin
           java-version: "17"
-      - uses: android-actions/setup-android@v3
       - name: install android-34 platform + build-tools 37.0.0
+        # ubuntu-latest runners ship a preinstalled Android SDK at
+        # $ANDROID_HOME — call its sdkmanager directly. (setup-android@v3
+        # breaks: its default `packages: tools platform-tools` requests the
+        # removed legacy `tools` package.)
         run: |
-          yes | sdkmanager --licenses >/dev/null
-          sdkmanager "platforms;android-34" "build-tools;37.0.0"
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-34" "build-tools;37.0.0"
       - name: rebuild agent.jar
         run: |
           SDK="${ANDROID_HOME:-$ANDROID_SDK_ROOT}"
@@ -122,6 +125,5 @@ jobs:
       - name: doc-drift (README tool count ↔ serve.rs, shim methods ↔ SUPPORTED.md)
         run: python3 spike/e2e/doc-drift.py
 
-  # The Java agent dex build needs an Android SDK platform jar + d8
-  # (agent/README.md); it is intentionally out of scope for this workflow
-  # until a dedicated job with SDK setup is added.
+  # Byte-repro of the agent dex build is covered by agent-jar-repro above
+  # (runner SDK platform jar + pinned build-tools d8).
