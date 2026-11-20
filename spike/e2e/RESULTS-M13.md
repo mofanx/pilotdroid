@@ -142,3 +142,18 @@ fd_constant PASS(75) / fd_abs PASS / **watch_residue PASS（26 样本全 0）**
 | README windows 行 | 下载表 +windows x86_64 行 + SmartScreen 注（更多信息→仍要运行 / `Unblock-File`），与 macOS xattr 注同构 | README diff |
 | release notes 草稿 | `docs/release-notes-v0.6.0.md`：agent 0.7.0/caps 0x7ff、异步 WATCH 头条（armed 期 op p50=43ms）、APP_INFO ~2×、SUPPORTED 仅剩 xpath、4 平台 assets、SmartScreen/quarantine 注 | 待 publish 时粘贴 |
 | notify demux 定论 | docs/02 §4.9 尾段：**push=demux not toggle**——media socket 单读者，常驻推会抽空 pull 队列；真方案 = 按帧类型 demux（watch_hit→notification / frame→pull，~50 行）；notification 仅 log 面非结构化事件 → 保留 pull 契约 | docs/02 diff |
+
+## 7. 发布链执行（t4）——draft+notes 就绪，未 publish
+
+- `gh release delete v0.6.0 --yes`：删空壳 draft（0 asset，挡 tag 后 create）
+- `git tag v0.6.0 baf57b9` + push → release.yml run **44769030582 全绿**：
+  verify-tag ✓（v0.6.0 == workspace 0.6.0 == pyproject 0.6.0）+ 3 cli
+  matrix + python-dist + release job
+- 新 draft（tag=v0.6.0, target=main）assets **7 个**：
+  `agent.jar`、`pilotdroid-cli-linux-x86_64`、`pilotdroid-cli-macos-arm64`、
+  `pilotdroid-cli-windows-x86_64.exe`、`pilotdroid-0.6.0-py3-none-any.whl`、
+  `pilotdroid-0.6.0.tar.gz`、`SHA256SUMS.txt`
+- notes 已刷（`docs/release-notes-v0.6.0.md` 第 6 行起为正文体，
+  头部 blockquote 是内部操作注、不入发布页）
+- **待用户**：PyPI pending-publisher 建好 → draft 点 Publish →
+  （assets 上线后）homebrew tap sha256 回填
