@@ -376,11 +376,18 @@ a = ac.Agent(PORT).connect()
 
 # C1 conn-side APP_INFO: foreground pkg without a dumpsys spawn
 try:
-    sh("am", "start", "com.android.settings")
-    time.sleep(1.2)
-    t0 = time.time()
-    p = a.app_info()["payload"]
-    ms = (time.time() - t0) * 1000
+    # Apps with lockscreen-hijack features (e.g. com.kunenglish on
+    # ba0d072d) can steal foreground between am-start and the read —
+    # retry the launch+read up to 3x before calling it a real miss.
+    p, ms = {}, 0
+    for _ in range(3):
+        sh("am", "start", "com.android.settings")
+        time.sleep(1.2)
+        t0 = time.time()
+        p = a.app_info()["payload"]
+        ms = (time.time() - t0) * 1000
+        if p.get("pkg") == "com.android.settings":
+            break
     rep("app_info_conn",
         p.get("pkg") == "com.android.settings" and ms < 150,
         f"pkg={p.get('pkg')} op_ms={ms:.0f}")
@@ -433,7 +440,11 @@ except Exception as e:
 # C4 parallel-drive: while armed, N control ops all land (non-blocking)
 try:
     sh("input", "keyevent", "KEYCODE_HOME")
-    time.sleep(0.8)
+    # HOME→launcher window transition ~1s on this device — every op during
+    # the transition contends on the a11y snapshot (~2.2s vs ~0.2s after,
+    # measured M11). Settle past it or par_ms measures the transition,
+    # not watcher non-blocking.
+    time.sleep(1.5)
     r = a.watch_arm({"pkg": "com.android.settings"}, "none",
                     poll_ms=50)["payload"]
     wid2 = r.get("watch_id")

@@ -11,7 +11,7 @@ uiautomator2 `Device` 公共 API 的逐条标注。约定：**drop-in 只承诺�
 | `text` `resourceId` `description` `className` `packageName` `index` | ✅ | AND 语义同 u2 |
 | `scrollable` | ✅ | wire 原生字段 |
 | `textContains` `textStartsWith` `textMatches` `descriptionContains` `descriptionMatches` `classNameMatches` … | ❌ 显式拒绝 | agent 只做精确匹配；contains/regex 未实现 |
-| `instance` | ❌ | 用 `index` 等价 |
+| `instance` | ✅ | `index` 别名（M11） |
 | `clickable` `checked` `enabled` `focusable` `selected` `longClickable` … | ❌ 显式拒绝 | attrs 过滤语义未实现 |
 | relative selector（`child`/`sibling`/`left`/`right`/`up`/`down`） | ❌ 显式拒绝 | |
 | `xpath` | ❌ **非目标** | u2 xpath 为可选插件，明确不做 |
@@ -49,7 +49,12 @@ uiautomator2 `Device` 公共 API 的逐条标注。约定：**drop-in 只承诺�
 | `screen_off()` | ⚠️ | **MIUI 口袋模式陷阱**：power keyevent 关屏若贴近距离传感器，MIUI 可进入 pocket-mode → 此后全部注入输入被吞、屏幕不可点亮，**仅 reboot 可解**。建议仅在屏幕可受控测试场景使用 |
 | `orientation` get/set | ✅ | `settings user_rotation`；set 冻结重力旋转（同 u2 语义） |
 | `watcher` | ✅ | `d.watcher.when(...).click()` + `.start()/.run()/.stop()/.reset()`——M11 起 agent 0.7.0+（CAP_WATCH_ASYNC）走**设备端异步 watcher**（WATCH_ARM + media 通道 WATCH_HIT 推送，与 u2 server 线程语义对等且 armed 期间不阻塞 control）；旧 agent 回退阻塞 WATCH，再旧回退 host 轮询。规则命中一次即摘除 |
-| `app_wait` `session` `send_keys` `clipboard` `toast` `open_notification` `open_quick_settings` `freeze_rotation` | ❌ 未实现 | 按需加 |
+| `app_wait(pkg,timeout,front)` | ✅ | `pidof`+conn APP_INFO 判前台（M11） |
+| `session(pkg,attach)` | ✅ 简化 | launch+wait foreground；u2 的崩溃看护重启未实现（M11） |
+| `send_keys(text,clear)` | ✅ | TEXT op（ACTION_SET_TEXT 于 focused 节点，M11） |
+| `open_notification()` `open_quick_settings()` | ✅ | `cmd statusbar expand-*`（M11） |
+| `freeze_rotation(bool)` | ✅ 近似 | `settings accelerometer_rotation` 开关（M11） |
+| `clipboard` `toast` | ❌ 未实现 | clipboard 在 API34 service-call 签名漂移不可靠；toast 需注入 overlay |
 
 ## 实测数据
 

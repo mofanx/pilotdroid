@@ -40,7 +40,7 @@ class _Selector:
         self.dev, self.kw = dev, kw
 
     _SUPPORTED = ("text", "resourceId", "description", "className",
-                  "packageName", "scrollable", "index")
+                  "packageName", "scrollable", "index", "instance")
 
     def _sel(self):
         bad = [k for k in self.kw if k not in self._SUPPORTED]
@@ -63,8 +63,8 @@ class _Selector:
             s["pkg"] = self.kw["packageName"]  # exact package match
         if "scrollable" in self.kw:
             s["scrollable"] = bool(self.kw["scrollable"])
-        if "index" in self.kw:
-            s["index"] = int(self.kw["index"])
+        if "index" in self.kw or "instance" in self.kw:
+            s["index"] = int(self.kw.get("index", self.kw.get("instance")))
         return s
 
     def _node(self):
@@ -473,6 +473,48 @@ class Device:
 
     def app_stop(self, pkg):
         return self._sh(["adb", "shell", "am", "force-stop", pkg]) == 0
+
+    def app_wait(self, pkg, timeout=20.0, front=False):
+        """u2 `d.app_wait`: poll until pkg runs (front=True → foreground).
+        Returns pid or None. Foreground check rides the conn APP_INFO path."""
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            pid = self.shell(f"pidof {pkg}").output.strip().split()
+            if pid and (not front or
+                        self.app_current().get("package") == pkg):
+                return int(pid[0])
+            time.sleep(0.5)
+        return None
+
+    def session(self, pkg, attach=False, launch_timeout=None):
+        """u2 `d.session` simplified: launch pkg and wait foreground, return
+        self. u2's crash-watch relaunch loop is NOT implemented."""
+        if not attach:
+            self.app_start(pkg)
+        if self.app_wait(pkg, timeout=launch_timeout or 10.0,
+                         front=True) is None:
+            raise RuntimeError(f"session: {pkg} did not reach foreground")
+        return self
+
+    def send_keys(self, text, clear=False):
+        """u2 `d.send_keys`: type into the focused field — rides the TEXT
+        op (ACTION_SET_TEXT on focused node, no IME round-trip)."""
+        return bool(self.a.text(text, clear=clear)["payload"].get("ok"))
+
+    def open_notification(self):
+        return self._sh(["adb", "shell", "cmd", "statusbar",
+                         "expand-notifications"]) == 0
+
+    def open_quick_settings(self):
+        return self._sh(["adb", "shell", "cmd", "statusbar",
+                         "expand-settings"]) == 0
+
+    def freeze_rotation(self, freeze=True):
+        """u2 `d.freeze_rotation` approximated via the system auto-rotate
+        switch (u2's orientation-service lock is not reproduced)."""
+        return self._sh(["adb", "shell", "settings", "put", "system",
+                         "accelerometer_rotation",
+                         "0" if freeze else "1"]) == 0
 
     def app_current(self):
         """u2 app_current() -> {package, activity}. Prefers the conn-side
