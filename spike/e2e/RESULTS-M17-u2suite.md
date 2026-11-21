@@ -177,8 +177,9 @@ swipe_duration（host-sleep 契约）、**watcher::test_watch_context**
 | SKIP×8 | 7 上游标记 + scroll 内部条件 |
 
 **结论变化**：Tier-A verbatim 0/27 → **8/30 pass**（无 fixture 级
-阻断）；fail 中 10 xpath（既有 ❌）、1 jsonrpc（G6）、1 session
-对象模型（G8）、3 settings 联动（G10）——全部为已登记 defer，
+阻断）；fail 中 **9 xpath**（test_xpath 7 + test_simple 内 2；
+test_watcher 已转出 PASS）、**1 jsonrpc**（G6）、**1 session
+对象模型**（G8）、**3 settings 联动**（G10）= 14 与逐项表自洽——全部为已登记 defer，
 **无未归因 fail**。另注：watch_context 单测偶发 a11y-lag 竞争
 （watcher 自动点击与 Menu tap 时序），单跑 1/3 观察为环境敏感性，
 与 SUPPORTED.md 既有第三类同源。
