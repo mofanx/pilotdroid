@@ -9,6 +9,16 @@
 
 - `main` 只收合并：代码改动走 `feature/*` 分支 + PR，review 通过再合。
 - 仓库暂无 LICENSE——**未经所有者拍板不要添加**；`Cargo.toml` 中也不要写 `license`/`publish` 字段。
+- **tag-内容跟随规则（三连踩坑后固化）**：release tag push 后，任何改动
+  whl/CLI 内容（`python/`、`crates/`、`agent/`）或发布元数据
+  （`server.json`/notes 版本字段）的提交都必须让 tag 跟进（retag 或
+  显式 defer 注记）——whl/asset 是 tag-tree 产物，main 前进不等于
+  draft 内容前进。M16/M18/M19 三次漂移实证：版本 bump 后入、
+  server.json schema 修复后入、u2shim 补齐批后入，每次都是
+  publish 前才发现 tag 不含。
+- **CI 证据纪律**：merge 后的 `gh run watch` 结论才算数，merge 前
+  分支上的绿不能外推到 main（doc-drift shim-methods 检查三连红
+  实证——merge 后无人复查 CI 是流程洞）。
 
 ## 设备测试边界（硬性规定）
 
