@@ -55,13 +55,53 @@ class _LinuxPlatform(unittest.TestCase):
         self.assertTrue(path.endswith(ASSET))
         self.assertEqual(argv, [path, "setup", "-s", "X"])
         self.assertTrue(os.access(path, os.X_OK))
-        # second run: cache hit → zero fetches
+        # second run: cache hit → fetches ONLY SHA256SUMS (re-verify),
+        # no binary re-download
         calls.clear()
         with mock.patch.object(cb, "_fetch", side_effect=fetch), \
                 mock.patch.object(cb.os, "execv") as ex2:
             cb.main()
-        self.assertEqual(calls, [])
+        self.assertEqual(calls, [u for u in calls if u.endswith("SHA256SUMS.txt")])
+        self.assertEqual(len(calls), 1)
         self.assertEqual(ex2.call_args[0][0], path)
+
+    def test_corrupt_cache_redownloads(self):
+        # seed a corrupted cache file, then run — must re-download binary
+        cache_dir = os.path.join(self.tmp.name, ".cache", "pilotdroid", "v0.6.0")
+        os.makedirs(cache_dir)
+        bad = os.path.join(cache_dir, ASSET)
+        with open(bad, "wb") as f:
+            f.write(b"tampered")
+
+        calls = []
+
+        def fetch(url):
+            calls.append(url)
+            if url.endswith("SHA256SUMS.txt"):
+                return _sums().encode()
+            return FAKE_BIN
+
+        with mock.patch.object(cb, "_fetch", side_effect=fetch), \
+                mock.patch.object(cb.os, "execv") as ex:
+            cb.main()
+        # SUMS (cache check) + binary (re-download) fetched
+        self.assertEqual(len(calls), 2)
+        path, argv = ex.call_args[0]
+        with open(path, "rb") as f:
+            self.assertEqual(hashlib.sha256(f.read()).hexdigest(), FAKE_SHA)
+
+    def test_offline_cache_hit_still_execs(self):
+        # valid cached binary + network down → exec anyway (offline)
+        cache_dir = os.path.join(self.tmp.name, ".cache", "pilotdroid", "v0.6.0")
+        os.makedirs(cache_dir)
+        good = os.path.join(cache_dir, ASSET)
+        with open(good, "wb") as f:
+            f.write(FAKE_BIN)
+
+        with mock.patch.object(cb, "_fetch", side_effect=OSError("down")), \
+                mock.patch.object(cb.os, "execv") as ex:
+            cb.main()
+        self.assertEqual(ex.call_args[0][0], good)
 
     def test_sha_mismatch_refuses_exec(self):
         def fetch(url):
