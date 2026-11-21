@@ -8,7 +8,31 @@ Device-side UiAutomation agent for Android: single-jar dex under
 setup/serve/bench) + `import pilotdroid` uiautomator2 drop-in shim +
 stdio MCP server (27 tools).
 
-## What's new in 0.6.1 (M14–M16)
+## What's new in 0.6.1 (M14–M19)
+
+**u2shim API 面补齐 — openatx 官方套件 verbatim 0/27 → 8/30 pass**
+- Ran the pinned upstream `mobile_tests` suite (`openatx/uiautomator2`
+  @96f581d, vendored under `spike/e2e/u2suite/` with a serial-pin-only
+  seam): **8 pass / 14 fail / 8 skip**. All 14 fails attributed — 9
+  xpath (explicitly unsupported), 1 G6 `jsonrpc`, 1 G8 session object
+  model, 3 G10 settings semantics (documented defers in
+  `compat/SUPPORTED.md`).
+- New shim surface (zero protocol changes): `settings` transparent
+  dict, `uiautomator2.exceptions` stubs (`SessionBrokenError`,
+  `UiObjectNotFoundError`), `Session`, `watch_context` ctx-mgr,
+  `_Selector.get_text`, `app_start` front-wait + `stop=`, `click`
+  implicit wait, `swipe` host-side duration sleep, `push`/`pull`
+  (BytesIO), `wlan_ip`, `app_list_running`,
+  `app_auto_grant_permissions`, `app_current.pid`, `_WhenCtx.call`,
+  Device ctx-mgr.
+- Three real bugs the suite exposed, fixed: watcher exited instantly
+  with zero rules (keep-alive until explicit stop); a long
+  `_Selector.wait` starved the single control connection (sliced to
+  ≤1s polls); `_WhenCtx.call` was arming a device-side `click` instead
+  of staying observation-only (now `action:"none"`, callbacks invoked
+  host-side).
+
+
 
 **`pip install pilotdroid` now ships a working CLI**
 - New `pilotdroid-cli`/`pilotdroid` console scripts lazy-download the
