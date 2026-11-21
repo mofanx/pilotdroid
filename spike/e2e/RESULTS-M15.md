@@ -86,3 +86,12 @@ KeyError→0 字节×8 重试全挂。手动复现链全程实证（focus=Confir
 `shot failed: <code> <message> <error>` 替代裸 KeyError。
 复跑 **37/37×2 稳定**。应用锁环境因子至此有了第四种形态：会咬
 verify 自己的 tap 落点（SUPPORTED.md 第三条已覆盖语义，本条为实证）。
+
+## §6 release-chain note (M16-t1)
+
+- `v0.6.0` tag **kept** (baf57b90) as the M13 code snapshot — its draft
+  release was deleted; the published line continues from `v0.6.1`
+  (19a0c9c) which carries M14/M15/M16 (lazy-bootstrap, adb_client 4,
+  env fallback, verify fixes). Do not publish v0.6.0.
+- v0.6.1 draft: 7 assets (whl+sdist+3 CLI+jar+SHA256SUMS), notes =
+  `docs/release-notes-v0.6.1.md`.
