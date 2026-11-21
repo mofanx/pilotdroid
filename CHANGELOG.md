@@ -4,6 +4,47 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.6.1]
+
+### Added
+
+- **whl lazy-bootstrap CLI**: `pip install pilotdroid` now ships
+  `pilotdroid-cli`/`pilotdroid` console scripts that download the matching
+  release binary on first run — sha256-verified against the release's
+  SHA256SUMS.txt (refuses to exec on mismatch, cache-hit re-verified),
+  cached under `~/.cache/pilotdroid/<tag>/`, `os.execv` argv passthrough.
+  Unblocks the MCP registry `uvx` path.
+- `pilotdroid-cli` also accepts `PILOTDROID_SERIAL` as a fallback when
+  `-s/--device` is absent (declared in the MCP registry manifest).
+- CI: `agent-jar-repro` job — rebuilds `agent.jar` from source
+  (javac 25 + build-tools 37.0.0 + android-34, pinned) and asserts
+  byte-identity with the committed jar; upgrades jar-sync from
+  commit-ordering to dex provenance.
+- README: live-view demo GIF (`docs/assets/live-view.gif`, real-device
+  frame-stream capture).
+- `docs/mcp/server.json` registry manifest draft (schema-validated) +
+  `docs/mcp/SUBMIT.md` submission notes.
+
+### Changed
+
+- `adb_client` 2.1.15 → 4.0.0 (server/server_device API restructure);
+  shell exit codes preserved via a trailing `__PD_EXIT_` marker wrapped
+  in a subshell (tolerates `&`-terminated commands).
+- `install-smoke.sh` exercises the real bootstrap chain
+  (`pilotdroid-cli --version` inside the venv), not just `gh download`.
+- compat `u2shim`/`SUPPORTED.md`: selector environment-sensitivity notes —
+  zh-locale for text/desc, first-launch flow-state and MIUI app-lock
+  (FLAG_SECURE) for rid/main-UI misses.
+
+### Fixed
+
+- verify-agent: `shot_scale` deterministic failure — the batch tap opened
+  an app behind MIUI's app-lock gate; KEYCODE_BACK after `batch_results`;
+  `agent_client` shot prints the agent's error payload instead of a bare
+  `KeyError`.
+- Pip on-ramp dead-end: u2shim's failure hint no longer references a
+  `pilotdroid setup` command that doesn't exist in the wheel.
+
 ## [0.6.0]
 
 Versioning note: `AGENT_VER` (device jar, 0.7.0) is the internal protocol

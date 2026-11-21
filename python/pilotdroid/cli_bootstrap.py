@@ -79,21 +79,12 @@ def _cache_dir(tag):
     return os.path.join(os.path.expanduser("~"), ".cache", "pilotdroid", tag)
 
 
-def _ensure_binary():
-    asset, tag = _asset_name(), _tag()
-    path = os.path.join(_cache_dir(tag), asset)
-    if os.path.exists(path):
-        return path
-    try:
-        blob = _fetch(_url(tag, asset))
-        sums = _fetch(_url(tag, "SHA256SUMS.txt")).decode()
-    except Exception as e:
-        raise RuntimeError(
-            f"failed to download {asset} ({tag}): {e}. Check network/proxy, "
-            "or download manually from "
-            f"github.com/{REPO}/releases and put it at {path}")
+def _sums(tag):
+    return _fetch(_url(tag, "SHA256SUMS.txt")).decode()
+
+
+def _write_verified(path, blob, want, asset):
     got = hashlib.sha256(blob).hexdigest()
-    want = _expected_sha(sums, asset)
     if got != want:
         raise RuntimeError(
             f"sha256 mismatch for {asset}: got {got}, want {want} — "
@@ -104,6 +95,43 @@ def _ensure_binary():
         f.write(blob)
     os.chmod(tmp, os.stat(tmp).st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
     os.replace(tmp, path)
+
+
+def _ensure_binary():
+    asset, tag = _asset_name(), _tag()
+    path = os.path.join(_cache_dir(tag), asset)
+    if os.path.exists(path):
+        # Cache hit still verifies: a re-uploaded/corrupted release asset
+        # must not be exec'd. Offline (SUMS unreachable) → run the cache.
+        try:
+            want = _expected_sha(_sums(tag), asset)
+        except Exception:
+            return path
+        with open(path, "rb") as f:
+            if hashlib.sha256(f.read()).hexdigest() == want:
+                return path
+        os.remove(path)  # stale/corrupt cache → fall through to re-download
+        try:
+            return _finish(path, asset, tag, want)
+        except Exception as e:
+            raise RuntimeError(
+                f"cached {asset} failed sha256 re-check and re-download "
+                f"failed: {e}")
+    try:
+        blob = _fetch(_url(tag, asset))
+        want = _expected_sha(_sums(tag), asset)
+    except Exception as e:
+        raise RuntimeError(
+            f"failed to download {asset} ({tag}): {e}. Check network/proxy, "
+            "or download manually from "
+            f"github.com/{REPO}/releases and put it at {path}")
+    _write_verified(path, blob, want, asset)
+    return path
+
+
+def _finish(path, asset, tag, want):
+    blob = _fetch(_url(tag, asset))
+    _write_verified(path, blob, want, asset)
     return path
 
 

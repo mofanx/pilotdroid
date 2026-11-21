@@ -32,6 +32,17 @@ assert "pilotdroid-cli" in src, "error path lacks pilotdroid-cli pointer"
 assert "run `pilotdroid setup`" not in src, "dead-end hint still present"
 PY
 
+echo "=== 3b. bootstrap 真链：venv 内 pilotdroid-cli --version ==="
+# 真用户旅程：pip 装的 console script 首跑下载→SHA256SUMS 校验→
+# ~/.cache 缓存→os.execv。这是 whl lazy-bootstrap 的唯一端到端验
+# （单测全 mock，真 URL 仅此处）。step4 的 gh download 仅作对照。
+if [ "$(uname -s)" = Linux ] && [ "$(uname -m)" = x86_64 ]; then
+  "$V/venv/bin/pilotdroid-cli" --version \
+    && ok "bootstrap download→verify→exec" || bad "bootstrap chain"
+else
+  echo "SKIP: bootstrap 下载路径按 host platform 取 asset，本机非 linux-x86_64"
+fi
+
 echo "=== 4. release 二进制 --version（linux x86_64）==="
 if [ "$(uname -s)" = Linux ] && [ "$(uname -m)" = x86_64 ]; then
   gh release download v0.6.0 -p 'pilotdroid-cli-linux-x86_64' -D "$V" --clobber \

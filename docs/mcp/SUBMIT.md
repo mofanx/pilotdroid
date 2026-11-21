@@ -23,6 +23,9 @@
 - **CLI delivery**: `pilotdroid`/`pilotdroid-cli` console scripts lazy-
   download the matching release binary on first run (sha256-verified
   against SHA256SUMS.txt, cached under `~/.cache/pilotdroid/<tag>/`).
+  **Cold-start caveat**: the first `uvx pilotdroid serve` (per version
+  tag) downloads a ~MB binary — expect a few seconds before the MCP
+  `initialize` responds on a cold cache; later runs exec instantly.
 
 ## Remaining blocker
 

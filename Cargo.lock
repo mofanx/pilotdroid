@@ -715,7 +715,7 @@ dependencies = [
 
 [[package]]
 name = "pilotdroid-adb"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "adb_client",
  "thiserror",
@@ -723,7 +723,7 @@ dependencies = [
 
 [[package]]
 name = "pilotdroid-agent"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "pilotdroid-adb",
  "pilotdroid-proto",
@@ -735,7 +735,7 @@ dependencies = [
 
 [[package]]
 name = "pilotdroid-cli"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "anyhow",
  "clap",
@@ -748,7 +748,7 @@ dependencies = [
 
 [[package]]
 name = "pilotdroid-proto"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "rmp-serde",
  "rmpv",
