@@ -86,3 +86,26 @@ ALL"→"随机播放所有曲目"，均 dump 直证）。en 脚本在 zh 设备 
 消失）。benchmark/verify 跑含此类 app 的脚本前需在系统设置解锁，或
 把被锁 app 移出评测名单（Markor 实测踩到：脚本等 "More options" 但
 屏幕停在应用锁 PIN 盘）。
+
+**第四类环境因子——MIUI 权限复核屏（com.lbe.security.miui）**：
+targetSdk<23 的 app（如 ApiDemos targetSdk19）首启被
+ReviewPermissionsActivity 拦截，`app_current` 停在 lbe 包，目标 UI
+上一切 selector 全 miss；一次性手动「确定」放行后正常。
+benchmark/suite 跑旧 targetSdk app 前需先放行（openatx u2 官方
+套件实跑实证；API34 还需 `pm install --bypass-low-target-sdk-block`
+才能装上此类 apk）。
+
+## u2 API 面缺口（openatx 官方套件 M17 对拍，详见 RESULTS-M17-u2suite.md）
+
+`mobile_tests/` verbatim 对拍：Tier-A 0 pass/27（fixture `d.settings`
+单点阻断）；Tier-B 1 pass / 18 fail——如实分桶 **7 API 面缺 /
+10 xpath（已知 ❌）/ 1 swipe 阻塞语义分歧**，G1–G11 明细见 ledger §5。
+
+- **defer（明示不复制 u2 内部对象模型）**：G8 session 对象
+  （`running()`/上下文管理器/`SessionBrokenError`——`session()` 返回
+  self 已是明示降级）；G10 settings 全语义（类型校验+wait_timeout
+  联动——透明 dict 仅作 fixture 管道）；G6 `wlan_ip`/`jsonrpc` 等
+  u2 内部面。
+- **G4 swipe**：agent 端异步手势是 M10 架构决策，设备端 duration
+  仍生效但调用不阻塞 u2 客户端口径——不改 agent 阻塞。
+- 其余 shim 层补齐进度随 0.6.2 changelog / ledger 更新。
