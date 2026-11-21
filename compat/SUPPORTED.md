@@ -80,3 +80,9 @@ ALL"→"随机播放所有曲目"，均 dump 直证）。en 脚本在 zh 设备 
 
 `resourceId` 选择器**不**随 locale 变化——rid miss 的根因是流程态
 （首启 onboarding/许可证页挡住目标界面）或应用版本漂移，与语言无关。
+
+**MIUI 应用锁（security gate）是第三类环境因子**：被加锁的 app 每次
+启动先弹数字键盘/图案门——永久挡住 main UI（非首启态，重跑不会自己
+消失）。benchmark/verify 跑含此类 app 的脚本前需在系统设置解锁，或
+把被锁 app 移出评测名单（Markor 实测踩到：脚本等 "More options" 但
+屏幕停在应用锁 PIN 盘）。

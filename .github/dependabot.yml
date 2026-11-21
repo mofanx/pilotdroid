@@ -7,7 +7,8 @@ updates:
     open-pull-requests-limit: 5
     ignore:
       # adb_client 4.x restructured server types (issue #6) — take major
-      # bumps deliberately, not via dependabot noise.
+      # bumps deliberately, not via dependabot noise. (4.x landed M15;
+      # keep ignoring future majors on the same grounds.)
       - dependency-name: adb_client
         update-types: ["version-update:semver-major"]
 

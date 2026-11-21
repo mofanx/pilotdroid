@@ -39,8 +39,8 @@ XML ground truth 对照）：
 ## 4. nit 账（t4 复核遗留，t1 负责部分）
 
 - `watcher.running` 入 SUPPORTED watcher 行 → IGNORE.running 可退役（t2 侧改）
-- dump TTL cache：**记 defer**——`_Scroll._to` 靠 dump 变化判定内容稳定，
-  cache 会致立即假命中；mutating-op 失效跟踪面广，复杂度超 ~200ms 收益
+- dump TTL cache：**记 defer**（M14 再评估后关闭，定论见 §8）——`_Scroll._to`
+  靠 dump 变化判定内容稳定，cache 会致立即假命中；mutating-op 失效跟踪面广
 
 ## 5. 验证
 
@@ -110,6 +110,9 @@ UiObjectNotFoundError）/ timeout=超过 200s / error=其他异常。
     中**存在**，但 welcome onboarding 仅首启出现（现态直达
     LoginActivity）；Markor#1698 `action_search` rid 实测主界面
     **存在**——suite 时 miss 因首启许可证页挡住主界面
+  - **第三类：MIUI 应用锁**（M15 补录）：被系统加锁的 app 每次启动
+    先弹 PIN/图案门——永久挡 main UI 且非首启态（重跑不消失），
+    Markor 实测踩到。评测前需解锁或移出名单
 - timeout×3 = app 侧崩溃/权限流：APhotoManager logcat 抓到 MIUI
   ThirdAppAssistant `problemName=JE_IAE`（app 启动即崩——恰是该
   benchmark 要复现的 bug 类），脚本固有 stale-snapshot while-loop

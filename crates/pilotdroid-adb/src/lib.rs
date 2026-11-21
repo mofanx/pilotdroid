@@ -5,13 +5,33 @@
 //! self-hosted smartsocket implementation is the documented exit hatch.
 //! Everything above this crate talks only to [`AdbTransport`].
 
-use std::io::{Read, Write};
+use std::io::Read;
 use std::net::{Ipv4Addr, SocketAddrV4};
 use std::path::Path;
 
-use adb_client::{ADBDeviceExt, ADBServer};
+use adb_client::server::ADBServer;
+use adb_client::server_device::ADBServerDevice;
+use adb_client::ADBDeviceExt;
 
 const DEFAULT_ADB_PORT: u16 = 5037;
+
+/// Strip the trailing `__PD_EXIT_<digits>__\n` marker appended to every
+/// `shell` command (see `AdbTransport::shell`) and return the exit status.
+/// Marker is only honored when it terminates the output; `None` on v1
+/// hosts / unclosed-quote commands where the marker never prints.
+fn take_exit_marker(stdout: &mut Vec<u8>) -> Option<i32> {
+    const MARK: &[u8] = b"__PD_EXIT_";
+    let body = stdout.as_slice().strip_suffix(b"\n").unwrap_or(stdout);
+    let pos = body.windows(MARK.len()).rposition(|w| w == MARK)?;
+    let digits = &body[pos + MARK.len()..];
+    let digits = digits.strip_suffix(b"__")?;
+    if digits.is_empty() || !digits.iter().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    let code = std::str::from_utf8(digits).ok()?.parse().ok()?;
+    stdout.truncate(pos);
+    Some(code)
+}
 
 #[derive(Debug, thiserror::Error)]
 pub enum AdbError {
@@ -92,7 +112,6 @@ pub trait AdbTransport {
 /// Default backend: the `adb_client` crate against the local adb server.
 pub struct AdbClient {
     server: ADBServer,
-    port: u16,
 }
 
 impl AdbClient {
@@ -106,14 +125,13 @@ impl AdbClient {
         let addr = SocketAddrV4::new(Ipv4Addr::LOCALHOST, port);
         Ok(Self {
             server: ADBServer::new(addr),
-            port,
         })
     }
 
     /// Vendor `get_device_by_name`, normalized to our error type. Matching on
     /// the vendor's `DeviceNotFound` variant is fine here — it's an internal
     /// detail, unlike exposing it in `AdbError`'s signature.
-    fn device(&mut self, serial: &str) -> Result<adb_client::ADBServerDevice> {
+    fn device(&mut self, serial: &str) -> Result<ADBServerDevice> {
         self.server.get_device_by_name(serial).map_err(|e| match e {
             adb_client::RustADBError::DeviceNotFound(_) => {
                 AdbError::DeviceNotFound(serial.to_string())
@@ -138,23 +156,30 @@ impl AdbTransport for AdbClient {
     }
 
     fn shell(&mut self, serial: &str, command: &str) -> Result<ShellOutput> {
-        let mut device = self.device(serial)?;
-        let mut raw = Vec::new();
+        const MARK: &str = "__PD_EXIT_";
+        let device = self.device(serial)?;
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+        // adb_client 4.x speaks shell v2 itself when the host supports it
+        // (stdout/stderr arrive de-framed), but 4.0.0's v2 loop returns
+        // Ok(None) on clean EOF — the parsed ExitStatus is discarded, so
+        // the return value never carries the exit code. Recover it with a
+        // trailing marker instead: the shell service runs `sh -c`, so `;`
+        // is legal. A command with an unclosed quote loses the marker and
+        // degrades to exit_code=None — same as a v1-only host.
+        let marked = format!("{command}; printf '{MARK}%d__\\n' $?");
         device
-            .shell_command(&[command], &mut raw)
+            .shell_command(&marked, Some(&mut stdout), Some(&mut stderr))
             .map_err(AdbError::backend)?;
-        // adb_client requests shell v2 when the host supports it but returns
-        // the stream un-de-framed (packet headers included). Parse v2 packets;
-        // anything that doesn't parse cleanly is a v1 raw stream.
-        Ok(deframe_shell_v2(&raw).unwrap_or_else(|| ShellOutput {
-            stdout: raw,
-            stderr: Vec::new(),
-            exit_code: None,
-        }))
+        Ok(ShellOutput {
+            stderr,
+            exit_code: take_exit_marker(&mut stdout),
+            stdout,
+        })
     }
 
     fn push(&mut self, serial: &str, local: &Path, remote: &str) -> Result<()> {
-        let mut device = self.device(serial)?;
+        let device = self.device(serial)?;
         let mut file = std::fs::File::open(local)?;
         let mut buf = Vec::new();
         file.read_to_end(&mut buf)?;
@@ -164,111 +189,26 @@ impl AdbTransport for AdbClient {
     }
 
     fn pull(&mut self, serial: &str, remote: &str, local: &Path) -> Result<()> {
-        let mut device = self.device(serial)?;
+        let device = self.device(serial)?;
         let mut file = std::fs::File::create(local)?;
-        device
-            .pull(&remote, &mut file as &mut dyn Write)
-            .map_err(AdbError::backend)
+        device.pull(remote, &mut file).map_err(AdbError::backend)
     }
 
     fn forward(&mut self, serial: &str, local: &str, remote: &str) -> Result<()> {
-        let mut device = self.device(serial)?;
+        let device = self.device(serial)?;
         device
             .forward(remote.to_string(), local.to_string())
+            .map(|_| ())
             .map_err(AdbError::backend)
     }
 
     fn forward_remove(&mut self, serial: &str, local: &str) -> Result<()> {
-        // adb_client 2.1.19 only exposes killforward-all, which would nuke
-        // other tools' forwards. Per-forward removal is a small raw
-        // smartsocket request — the documented self-hosted fallback
-        // (adr/001), contained inside this crate.
-        let mut stream =
-            std::net::TcpStream::connect(SocketAddrV4::new(Ipv4Addr::LOCALHOST, self.port))?;
-        smartsocket(&mut stream, &format!("host:transport:{serial}"))?;
-        smartsocket(&mut stream, &format!("host:killforward:{local}"))
-    }
-}
-
-/// One adb smartsocket request: 4-hex-length + payload, then read the
-/// 4-byte OKAY/FAIL status (and FAIL's length-prefixed message).
-fn smartsocket(stream: &mut std::net::TcpStream, req: &str) -> Result<()> {
-    write!(stream, "{:04x}", req.len())?;
-    stream.write_all(req.as_bytes())?;
-    let mut status = [0u8; 4];
-    stream.read_exact(&mut status)?;
-    match &status {
-        b"OKAY" => Ok(()),
-        b"FAIL" => {
-            let mut lenb = [0u8; 4];
-            stream.read_exact(&mut lenb)?;
-            let n = std::str::from_utf8(&lenb)
-                .ok()
-                .and_then(|s| usize::from_str_radix(s, 16).ok())
-                .unwrap_or(0)
-                .min(4096);
-            let mut msg = vec![0u8; n];
-            stream.read_exact(&mut msg)?;
-            Err(AdbError::Backend(format!(
-                "adb server FAIL: {}",
-                String::from_utf8_lossy(&msg)
-            )))
-        }
-        _ => Err(AdbError::Protocol(format!(
-            "bad smartsocket status {status:02x?}"
-        ))),
-    }
-}
-
-// ---- shell v2 de-framing ---------------------------------------------------
-// AOSP shell_protocol v2 packet: [id:u8][len:u32 LE][payload]. Ids per
-// packages/services/core/jni/.../shell_protocol: stdin=0, stdout=1, stderr=2,
-// exit=3, close_stdin=4, window_size_change=5.
-
-mod shell_v2 {
-    pub const STDOUT: u8 = 1;
-    pub const STDERR: u8 = 2;
-    pub const EXIT: u8 = 3;
-    pub const MAX_KNOWN_ID: u8 = 5;
-}
-
-/// Parse a complete shell v2 stream into stdout/stderr/exit_code.
-/// Returns `None` when the buffer is not a well-formed v2 stream — callers
-/// then treat it as shell v1 raw output.
-fn deframe_shell_v2(raw: &[u8]) -> Option<ShellOutput> {
-    let mut out = ShellOutput::default();
-    let mut cursor = 0usize;
-    let mut saw_exit = false;
-
-    while cursor < raw.len() {
-        if raw.len() - cursor < 5 {
-            return None;
-        }
-        let id = raw[cursor];
-        let len = u32::from_le_bytes(raw[cursor + 1..cursor + 5].try_into().ok()?) as usize;
-        cursor += 5;
-        if id > shell_v2::MAX_KNOWN_ID || len > raw.len() - cursor {
-            return None;
-        }
-        let payload = &raw[cursor..cursor + len];
-        cursor += len;
-        match id {
-            shell_v2::STDOUT => out.stdout.extend_from_slice(payload),
-            shell_v2::STDERR => out.stderr.extend_from_slice(payload),
-            shell_v2::EXIT => {
-                saw_exit = true;
-                if let Some(&code) = payload.first() {
-                    out.exit_code = Some(code as i32);
-                }
-            }
-            _ => {} // stdin echo / close_stdin / window_size_change: drop
-        }
-    }
-
-    if saw_exit {
-        Some(out)
-    } else {
-        None
+        // adb_client 4.x exposes per-forward removal (2.x only had
+        // killforward-all — the raw smartsocket fallback is retired).
+        let device = self.device(serial)?;
+        device
+            .forward_remove(local.to_string())
+            .map_err(AdbError::backend)
     }
 }
 
@@ -276,11 +216,27 @@ fn deframe_shell_v2(raw: &[u8]) -> Option<ShellOutput> {
 mod tests {
     use super::*;
 
-    fn v2_packet(id: u8, payload: &[u8]) -> Vec<u8> {
-        let mut p = vec![id];
-        p.extend_from_slice(&(payload.len() as u32).to_le_bytes());
-        p.extend_from_slice(payload);
-        p
+    #[test]
+    fn exit_marker_parses_and_strips() {
+        let mut out = b"hello\n__PD_EXIT_7__\n".to_vec();
+        assert_eq!(take_exit_marker(&mut out), Some(7));
+        assert_eq!(out, b"hello\n");
+    }
+
+    #[test]
+    fn exit_marker_without_trailing_content() {
+        let mut out = b"__PD_EXIT_0__\n".to_vec();
+        assert_eq!(take_exit_marker(&mut out), Some(0));
+        assert!(out.is_empty());
+    }
+
+    #[test]
+    fn exit_marker_rejects_non_digits_and_misplaced() {
+        let mut out = b"__PD_EXIT_x__\n".to_vec();
+        assert_eq!(take_exit_marker(&mut out), None);
+        let mut out2 = b"__PD_EXIT_1__ trailing\n".to_vec();
+        assert_eq!(take_exit_marker(&mut out2), None);
+        assert_eq!(out2, b"__PD_EXIT_1__ trailing\n");
     }
 
     #[test]
@@ -295,31 +251,5 @@ mod tests {
         };
         assert!(ready.is_ready());
         assert!(!offline.is_ready());
-    }
-
-    #[test]
-    fn deframe_splits_stdout_stderr_and_exit() {
-        let mut raw = Vec::new();
-        raw.extend_from_slice(&v2_packet(shell_v2::STDOUT, b"hello\n"));
-        raw.extend_from_slice(&v2_packet(shell_v2::STDERR, b"oops\n"));
-        raw.extend_from_slice(&v2_packet(shell_v2::EXIT, &[42]));
-
-        let out = deframe_shell_v2(&raw).expect("well-formed v2 stream");
-        assert_eq!(out.stdout, b"hello\n");
-        assert_eq!(out.stderr, b"oops\n");
-        assert_eq!(out.exit_code, Some(42));
-    }
-
-    #[test]
-    fn deframe_rejects_v1_raw_stream() {
-        // v1 output is just bytes; "34\n" must NOT parse as a v2 stream.
-        assert!(deframe_shell_v2(b"34\n").is_none());
-    }
-
-    #[test]
-    fn deframe_rejects_truncated_packet() {
-        let mut raw = v2_packet(shell_v2::STDOUT, b"abc");
-        raw.truncate(raw.len() - 1);
-        assert!(deframe_shell_v2(&raw).is_none());
     }
 }
