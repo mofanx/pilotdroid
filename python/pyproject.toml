@@ -13,6 +13,10 @@ dependencies = ["msgpack>=1.0"]
 
 [project.scripts]
 pilotdroid-agent = "pilotdroid.agent_client:main"
+pilotdroid-cli = "pilotdroid.cli_bootstrap:main"
+# `uvx pilotdroid ...` resolves an entry named like the package — required
+# for the MCP registry pypi path (docs/mcp/server.json).
+pilotdroid = "pilotdroid.cli_bootstrap:main"
 
 [tool.setuptools]
 packages = ["pilotdroid"]

@@ -1,28 +1,28 @@
 {
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-10-17/server.schema.json",
   "name": "io.github.mofanx/pilotdroid",
-  "description": "Android UI automation over a persistent device-side agent: 27 stdio MCP tools for tap/swipe/selector/watcher/frame-stream, uiautomator2-compatible",
+  "description": "Android UI automation device agent: 27 MCP tools — tap/swipe/selector/watcher/stream",
   "version": "0.6.0",
-  "homepage": "https://github.com/mofanx/pilotdroid",
+  "websiteUrl": "https://github.com/mofanx/pilotdroid",
   "repository": {
     "url": "https://github.com/mofanx/pilotdroid",
     "source": "github"
   },
   "packages": [
     {
-      "registry_type": "pypi",
+      "registryType": "pypi",
       "identifier": "pilotdroid",
       "version": "0.6.0",
-      "runtime_hint": "uvx",
+      "runtimeHint": "uvx",
       "transport": { "type": "stdio" },
-      "package_arguments": [
-        "serve"
+      "packageArguments": [
+        { "type": "positional", "value": "serve" }
       ],
-      "environment_variables": [
+      "environmentVariables": [
         {
           "name": "PILOTDROID_SERIAL",
           "description": "ADB serial of the target device (optional; defaults to the sole connected device)",
-          "is_required": false
+          "isRequired": false
         }
       ]
     }
