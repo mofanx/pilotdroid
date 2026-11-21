@@ -30,8 +30,8 @@
 ## Remaining blocker
 
 **PyPI first** — `name` uses the github namespace but the `packages[]`
-entry points at `pypi/pilotdroid==0.6.0`, which only exists after the
-v0.6.0 release is published (pypi.yml OIDC pending-publisher flow).
+entry points at `pypi/pilotdroid==0.6.1`, which only exists after the
+v0.6.1 release is published (pypi.yml OIDC pending-publisher flow).
 
 ## Submission steps (once unblocked)
 
