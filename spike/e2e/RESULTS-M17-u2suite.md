@@ -33,7 +33,7 @@ serial（本机同时挂着 ba0d072d + 11.0.0.2:5555 两台设备，`adb` 裸调
 会 `more than one device`；套件按单 emulator 写的）。
 
 **0 pass / 27 collected**：fixture `d`/`dev` 在 `_d.settings[...]` 处
-AttributeError（u2shim 无 `settings` 属性）——16 个测试统一死于
+AttributeError（u2shim 无 `settings` 属性）——15 个测试统一死于
 fixture setup；test_session/test_settings 收集期错误
 （`uiautomator2.exceptions` 子模块 / `u2.Session` 符号缺失）；余为上游
 skip 标记。即 verbatim 面被单个 u2 API 面缺口整体阻断，分布无信息量。
@@ -113,9 +113,11 @@ xpath（G 外已知 ❌）、toast、plugin、screenrecord 属既有 unsupported
   阻断全部——这是套件对 u2 API 面的强耦合，不是 selector/gesture 层
   不兼容的证据。
 - **seam 适配（Tier-B）= 1 pass + 1 等价通过路径**：
-  `window_size`、`App` 点击链路实证可用；18 fail 中 **13 为 shim
-  API 面缺失**（AttributeError，非行为错），**8 xpath 已知 ❌**，
-  1 为客户端阻塞语义分歧（G4）。
+  `window_size`、`App` 点击链路实证可用；18 fail 中 **7 为 shim
+  API 面缺失**（get_text/watch_context/session_function_exists/
+  app_mixin/session_app/auto_grant_permissions/push_pull，均为
+  AttributeError 非行为错），**10 xpath 已知 ❌**（test_xpath 8 +
+  test_simple 内 2），**1 为客户端阻塞语义分歧**（G4）。
 - 对拍价值：G1/G2 两条 u2 高频语义差异（隐式等待、前台等待）是
   首次由第三方套件暴露——第三方脚本最常见的两类调用恰好踩中，
   SUPPORTED.md 值得一行注记或 shim 层补齐（工作量小，属 compat
