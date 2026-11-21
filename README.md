@@ -15,6 +15,14 @@
 
 用 Rust 独立开发的 Android 自动化控制库 / CLI。借鉴 uiautomator2-rs 与 scrcpy 的工程思路，但不照抄其架构——核心目标是通过**自研持久二进制协议 + 设备端批量执行**，突破「每条指令一次 HTTP/JSON-RPC 往返」的性能天花板（u2 实测 click ~263ms、exists ~26ms、screenshot ~186ms），拿到数量级的延迟改善。
 
+## Demo — live frame stream
+
+![live-view: real device frames at ~6fps](docs/assets/live-view.gif)
+
+Captured from `python3 spike/e2e/live-view.py <serial>` (MJPEG → browser)
+on a retail device — swipes injected mid-stream. The same frames are
+exposed to MCP clients via `stream_read`.
+
 ## 安装
 
 - **预编译 CLI**（推荐）：从 [Releases](https://github.com/mofanx/pilotdroid/releases)

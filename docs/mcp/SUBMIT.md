@@ -3,28 +3,37 @@
 `server.json` is a draft for the official MCP registry
 (`mcp-publisher` / `modelcontextprotocol/registry`). **Do not submit yet.**
 
-## Blockers, in order
+## Status
 
-1. **PyPI first** — the `name` is `io.github.mofanx/pilotdroid` (github
-   namespace auth) but the `packages[]` entry points at `pypi/pilotdroid`,
-   which only exists after the v0.6.0 release is published (pypi.yml OIDC
-   pending-publisher flow).
-2. **The whl cannot launch `serve` today.** `uvx pilotdroid serve` fails:
-   the wheel ships `pilotdroid-agent` (a Python client entry), not the
-   Rust `pilotdroid-cli` binary. Before the registry accepts this file
-   we need one of:
-   - ship a `pilotdroid-serve` console script in the whl that locates or
-     bootstraps the CLI binary (per-platform wheels or a download shim), or
-   - publish an `mcpb` bundle packaging the binary, or
-   - switch `registry_type` to `oci` and ship a container image.
-   The current file is written for option 1 (`package_arguments: ["serve"]`
-   assuming a future console script forwards to the embedded/downloaded
-   binary).
+- **Schema**: validates clean against the official
+  `2025-10-17/server.schema.json` (checked with python `jsonschema` —
+  camelCase fields, `description` ≤100, typed `packageArguments`).
+  Re-check after any edit:
+  ```bash
+  python3 - <<'PY'
+  import json,urllib.request,jsonschema
+  s=json.load(urllib.request.urlopen("https://static.modelcontextprotocol.io/schemas/2025-10-17/server.schema.json"))
+  jsonschema.validate(json.load(open("server.json")), s); print("OK")
+  PY
+  ```
+- **uvx resolution**: the wheel ships a `pilotdroid` console script alias
+  for `cli_bootstrap.main` so the registry's `uvx pilotdroid serve`
+  resolves (identifier==entry-name requirement). `pilotdroid-cli` also
+  exists for humans.
+- **CLI delivery**: `pilotdroid`/`pilotdroid-cli` console scripts lazy-
+  download the matching release binary on first run (sha256-verified
+  against SHA256SUMS.txt, cached under `~/.cache/pilotdroid/<tag>/`).
+
+## Remaining blocker
+
+**PyPI first** — `name` uses the github namespace but the `packages[]`
+entry points at `pypi/pilotdroid==0.6.0`, which only exists after the
+v0.6.0 release is published (pypi.yml OIDC pending-publisher flow).
 
 ## Submission steps (once unblocked)
 
 ```bash
-pipx install mcp-publisher  # or use the bundled CLI
+pipx install mcp-publisher
 mcp-publisher login github
 cd docs/mcp && mcp-publisher publish   # reads server.json
 ```

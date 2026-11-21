@@ -125,8 +125,12 @@ jobs:
       - name: pip install + import smoke
         run: |
           pip install -e ./python
-          python -c "import pilotdroid, pilotdroid.u2shim, pilotdroid.agent_client"
+          python -c "import pilotdroid, pilotdroid.u2shim, pilotdroid.agent_client, pilotdroid.cli_bootstrap"
           command -v pilotdroid-agent
+          command -v pilotdroid-cli
+
+      - name: cli_bootstrap unittests
+        run: python -m unittest discover -s python/tests -q
 
       - name: doc-drift (README tool count ↔ serve.rs, shim methods ↔ SUPPORTED.md)
         run: python3 spike/e2e/doc-drift.py
