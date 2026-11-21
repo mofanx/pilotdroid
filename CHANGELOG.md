@@ -8,6 +8,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **u2shim API 面补齐批**（openatx 官方套件 verbatim 0/27→8/30 pass）：
+  `settings` 透明 dict、`uiautomator2.exceptions` 桩、
+  `Session`/`watch_context`/`get_text`/`app_start` front-wait、`click`
+  隐式等待、`swipe` host-sleep、`push`/`pull`（BytesIO）、`wlan_ip`、
+  `app_list_running`、`app_auto_grant_permissions`、`app_current.pid`、
+  `_WhenCtx.call`、Device ctx-mgr。defer 口径：G6 jsonrpc、G8 session
+  对象模型、G10 settings 全语义（SUPPORTED.md 登记）。
+- **shim 三个真 bug 修复**（套件暴露）：watcher 零规则秒退（keep-alive
+  到显式 stop）、`_Selector.wait` 长占共享控制 conn 改 ≤1s 分片、
+  `_WhenCtx.call` 回调被误 arm 成 device-side click 改 `action:"none"`
+  观察态。
 - **whl lazy-bootstrap CLI**: `pip install pilotdroid` now ships
   `pilotdroid-cli`/`pilotdroid` console scripts that download the matching
   release binary on first run — sha256-verified against the release's
