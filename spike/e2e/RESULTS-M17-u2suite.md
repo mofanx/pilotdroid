@@ -1,5 +1,10 @@
 # RESULTS-M17 — openatx/uiautomator2 官方套件对拍（u2shim vs ba0d072d）
 
+> **M18 更新（verbatim 复跑，shim 补齐批后）**：§1-§5 为 M17 原始记录
+> （当时未修 shim）；§7 为 M18 复跑结果——**verbatim pass 0→8**，剩余
+> fail 全部归因到明确 defer/已知 ❌。u2shim 补齐均落 `compat/u2shim.py`
+> 本体（非 seam 适配），seam 模块今仅剩 serial pin。
+
 Date: M17. Suite: `openatx/uiautomator2` `mobile_tests/` @
 `96f581d3b95efdf16105b767a5d5401c73f7ec0e`（main, 2026-11-17）.
 Device: ba0d072d（Xiaomi, MIUI, Android API 34, 1440×3200）.
@@ -125,3 +130,58 @@ xpath（G 外已知 ❌）、toast、plugin、screenrecord 属既有 unsupported
 
 复现：`PYTHONPATH=/tmp/u2stubB pytest /tmp/u2suite -v --timeout 120`
 （stubB=seam alias，/tmp/u2suite=verbatim `mobile_tests@96f581d`）。
+
+## 7. M18 复跑（shim 补齐批后，verbatim）
+
+u2shim 本体补齐（非 seam）：`Device.settings` 透明 dict、
+`uiautomator2.exceptions` 子模块桩（SessionBrokenError/
+UiObjectNotFoundError=LookupError）、`Session=Device` 别名、
+`_Selector.get_text`、`app_start` front-wait+`stop=`、`click` 隐式
+等待（8s，agent socket 10s 顶）、`swipe` host-sleep(duration)、
+`push`/`pull`（含 BytesIO/file-like 暂存）、`wlan_ip`、
+`app_list_running`、`app_auto_grant_permissions`、`app_current`+`pid`、
+`watch_context` ctx mgr、`u2.Session`、`_WhenCtx.call`、Device
+`__enter__/__exit__`。
+
+**套件抓出的 3 个真 bug（已修）**：
+- `_Watcher` 线程在**零规则时秒退**——`watch_context`/`watcher.start()`
+  先于 `.when()` 注册的经典竞态；改为 `_running` 标志活到 stop()
+  （u2 语义：watcher 持续运行直到显式停）。
+- `_Selector.wait` 单次 `wait_until(timeout)` **长时间独占共享控制
+  conn**（单 client agent）——watcher 的 watch_arm 饥饿，8s 隐式等待
+  内规则永远没机会 arm；改为 ≤1s 分片轮询（Agent.call 本有锁，
+  分片间隙天然交错）。
+- `_WhenCtx.call(fn)` 规则被 arm 成 device-side `click`——命中后
+  回调被静默丢弃且误点节点；改为 `action:"none"` 观察态 arm，命中
+  后宿主侧跑回调（agent 本就支持 none）。
+
+### 复跑结果（./run.sh，seam 仅 serial pin）
+
+**8 pass / 14 fail / 8 skip（30 collected，0 fixture-block）**
+
+PASS：push_and_pull（BytesIO+pull 往返）、app_mixin（app_list+
+running+app_wait+app_current.pid）、session_window_size、
+auto_grant_permissions（pm grant 循环）、simple::get_text、
+swipe_duration（host-sleep 契约）、**watcher::test_watch_context**
+（armed watcher 自动点 App→Menu→Inflate 链路）、
+**xpath::test_watcher**（`.call` 回调触发——非 xpath 断言，watcher
+功能测试）。
+
+| fail | 归因 |
+|---|---|
+| session_function_exists | `jsonrpc`/`xpath` 缺（G6 defer） |
+| session_app | `sess.running()`/SessionBrokenError（G8 session 对象模型 defer） |
+| settings×3 | settings 类型校验/`wait_timeout` 联动/operation_delay 生效（G10 defer，透明 dict 刻意不联动） |
+| simple::test_xpath, send_keys | `d.xpath` 已知 ❌ |
+| xpath×7 | `d.xpath` 已知 ❌（test_watcher 已转出 PASS） |
+| SKIP×8 | 7 上游标记 + scroll 内部条件 |
+
+**结论变化**：Tier-A verbatim 0/27 → **8/30 pass**（无 fixture 级
+阻断）；fail 中 10 xpath（既有 ❌）、1 jsonrpc（G6）、1 session
+对象模型（G8）、3 settings 联动（G10）——全部为已登记 defer，
+**无未归因 fail**。另注：watch_context 单测偶发 a11y-lag 竞争
+（watcher 自动点击与 Menu tap 时序），单跑 1/3 观察为环境敏感性，
+与 SUPPORTED.md 既有第三类同源。
+
+复现：`PILOTDROID_SERIAL=ba0d072d spike/e2e/u2suite/run.sh`
+（seam alias+verbatim 套件已入库 `spike/e2e/u2suite/`，不再依赖 /tmp）。

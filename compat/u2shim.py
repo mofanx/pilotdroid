@@ -14,11 +14,17 @@ clear_text / dump_hierarchy / screenshot / shell / app_start / app_stop /
 app_current / app_list / app_info / info / window_size / screen_on /
 screen_off / unlock / orientation (get+set) / watcher;
 d(text|resourceId|description|className|packageName|scrollable,index).click() /
-.exists / .wait / .info / .set_text / .long_click /
+.exists / .wait / .info / .set_text / .get_text / .long_click /
 d(scrollable=True).scroll.(forward|backward|toEnd|toBeginning).
+M18 additions (RESULTS-M17 G-gap closure): settings dict (transparent,
+no type-validation/wait_timeout coupling), app_start front-wait +
+stop=True, click implicit wait, swipe host-side duration sleep, push /
+pull / wlan_ip / app_list_running / app_auto_grant_permissions /
+watch_context, uiautomator2.exceptions submodule (SessionBrokenError /
+UiObjectNotFoundError).
 (xpath still rejected with ValueError — see _SUPPORTED.)
 """
-import os, re, socket, subprocess, sys, threading, time
+import os, re, socket, subprocess, sys, threading, time, types
 import xml.etree.ElementTree as ET
 
 try:
@@ -32,6 +38,32 @@ except ImportError:
 _KEYCODES = {"home": 3, "back": 4, "recent": 187, "recents": 187,
              "power": 26, "volume_up": 24, "volume_down": 25,
              "menu": 82, "search": 84, "enter": 66, "del": 67}
+
+# u2's implicit wait budget for click()/exists-style resolves. u2's
+# settings['wait_timeout'] defaults to 20s; the agent control socket
+# times out at 10s so the shim stays under it.
+_IMPLICIT_WAIT = 8.0
+
+
+class SessionBrokenError(Exception):
+    """u2 `uiautomator2.exceptions.SessionBrokenError` — a session's
+    target app died mid-use. The shim does not run u2's crash-watch
+    relaunch loop; the symbol exists so verbatim `import`/`raises` sites
+    compile (they fail honestly if never raised)."""
+
+
+# shim's no-node signal IS u2's UiObjectNotFoundError role — alias so
+# `except u2.UiObjectNotFoundError` catches the same exception.
+UiObjectNotFoundError = LookupError
+
+# `from uiautomator2.exceptions import X` — shim is a module, not a
+# package; register a synthetic submodule so drop-in imports work.
+# setdefault never clobbers a real uiautomator2 install.
+_exc_mod = types.ModuleType("uiautomator2.exceptions")
+_exc_mod.SessionBrokenError = SessionBrokenError
+_exc_mod.UiObjectNotFoundError = UiObjectNotFoundError
+sys.modules.setdefault("uiautomator2.exceptions", _exc_mod)
+sys.modules.setdefault(__name__ + ".exceptions", _exc_mod)
 
 
 def _rid_eq(rid, v):
@@ -217,11 +249,21 @@ class _Selector:
 
     def wait(self, timeout=10.0):
         """u2 semantics: True when the selector appears within timeout,
-        False otherwise."""
-        if self._wireable():
-            r = self.dev.a.wait_until(self._sel(), int(timeout * 1000))
-            return r["payload"]["results"][0]["code"] == "OK"
+        False otherwise. The wireable path polls wait_until in <=1s
+        slices — a single long wait_until would hog the shared control
+        conn and starve concurrent ops (watcher arming; u2suite's
+        test_watch_context deadlocks on exactly this)."""
         deadline = time.time() + timeout
+        if self._wireable():
+            while True:
+                slice_ms = int(min(1000,
+                                   max(50, (deadline - time.time())
+                                       * 1000)))
+                r = self.dev.a.wait_until(self._sel(), slice_ms)
+                if r["payload"]["results"][0]["code"] == "OK":
+                    return True
+                if time.time() >= deadline:
+                    return False
         while time.time() < deadline:
             if self._node() is not None:
                 return True
@@ -265,6 +307,13 @@ class _Selector:
         return self._rel_sel("sibling", other, kw)
 
     def click(self, timeout=None):
+        """u2 `d(...).click(timeout)` — u2 resolves the object with an
+        implicit wait (settings['wait_timeout'], 20s upstream default);
+        M17-G2: the shim previously resolved immediately and raced
+        activity transitions. timeout=None → _IMPLICIT_WAIT (8s, under
+        the agent socket ceiling); timeout=0 opts out (resolve now)."""
+        if timeout is None:
+            timeout = _IMPLICIT_WAIT
         if timeout:
             ok = self.wait(timeout)
             node = self._node() if ok else None
@@ -274,6 +323,13 @@ class _Selector:
             raise LookupError(f"selector {self.kw} found no node")
         l, t, r_, b = node["bounds"]
         return self.dev.click((l + r_) / 2, (t + b) / 2)
+
+    def get_text(self):
+        """u2 `d(...).get_text()` — the matched node's text."""
+        node = self._node()
+        if node is None:
+            raise LookupError(f"selector {self.kw} found no node")
+        return node.get("text")
 
     def set_text(self, s):
         # u2 semantics: click the field first, then set
@@ -438,7 +494,14 @@ class _WhenCtx:
     def click(self):
         def action():
             _Selector(self._w.dev, **self.kw).click()
+        action._pd_click = True  # armed device-side: don't re-click
         self._w._rules.append((self.kw, action))
+        return self._w
+
+    def call(self, func):
+        """u2 `watcher.when(sel).call(fn)` — run arbitrary callback on
+        match (test_xpath::test_watcher uses this)."""
+        self._w._rules.append((self.kw, func))
         return self._w
 
 
@@ -452,6 +515,9 @@ class _Watcher:
         self.dev, self.interval = dev, interval
         self._rules = []        # [(selector_kw, action)]
         self._th = None
+        self._running = False   # u2 watcher runs until .stop(), even
+                                # with zero rules (u2suite caught the
+                                # run-exits-on-empty race)
 
     def when(self, *args, **kw):
         # u2 allows positional text / resourceId strings
@@ -468,12 +534,19 @@ class _Watcher:
             try:
                 s = _Selector(self.dev, **kw)
                 if device_mode and s._wireable():
+                    dev_act = "click" \
+                        if getattr(action, "_pd_click", False) else "none"
                     r = self.dev.a.watch(
-                        s._sel(), "click",
+                        s._sel(), dev_act,
                         timeout_ms=int(self.interval * 1000),
                         poll_ms=50)["payload"]
                     if r.get("matched"):
-                        fired.append(i)  # action already ran device-side
+                        if dev_act == "none":
+                            try:
+                                action()
+                            except Exception:
+                                pass
+                        fired.append(i)
                 elif s.exists:
                     action()
                     fired.append(i)
@@ -484,7 +557,8 @@ class _Watcher:
         return not self._rules
 
     def run(self):
-        while not self._tick():
+        while self._running:
+            self._tick()
             time.sleep(self.interval)
 
     def _run_async(self):
@@ -498,13 +572,16 @@ class _Watcher:
         try:
             ms = media_connect(self.dev._media_forward())
             ms.settimeout(0.5)
-            while self._rules:
+            while self._running:
                 for rule in list(self._rules):
                     if rule not in armed.values():
                         s = _Selector(self.dev, **rule[0])
                         if s._wireable():
+                            dev_act = "click" if getattr(
+                                rule[1], "_pd_click", False) else "none"
                             r = self.dev.a.watch_arm(
-                                s._sel(), "click", poll_ms=50)["payload"]
+                                s._sel(), dev_act,
+                                poll_ms=50)["payload"]
                             armed[r["watch_id"]] = rule
                         elif s.exists:
                             # host-only keys (contains/matches/attrs)
@@ -525,6 +602,11 @@ class _Watcher:
                 rule = armed.pop(p.get("watch_id"), None) \
                     if rtype == 0x0002 else None  # WATCH_HIT
                 if rule is not None and p.get("matched"):
+                    if not getattr(rule[1], "_pd_click", False):
+                        try:
+                            rule[1]()  # .call(fn): agent was armed
+                        except Exception:  # observe-only ("none")
+                            pass
                     for i, r_ in enumerate(list(self._rules)):
                         if r_ is rule:
                             self._rules.pop(i)
@@ -545,10 +627,12 @@ class _Watcher:
             return
         target = self._run_async \
             if getattr(self.dev, "caps", 0) & 0x200 else self.run
+        self._running = True
         self._th = threading.Thread(target=target, daemon=True)
         self._th.start()
 
     def stop(self):
+        self._running = False
         self._rules.clear()
         if self._th:
             self._th.join(timeout=self.interval + 1)
@@ -559,6 +643,25 @@ class _Watcher:
     @property
     def running(self):
         return bool(self._th and self._th.is_alive())
+
+
+class _WatchContext:
+    """Backs `Device.watch_context` — thin ctx-manager over _Watcher."""
+
+    def __init__(self, dev, builtin):
+        self.dev, self.builtin = dev, builtin
+
+    def __enter__(self):
+        self._w = self.dev.watcher
+        self._w.start()
+        return self
+
+    def when(self, *args, **kw):
+        return self._w.when(*args, **kw)
+
+    def __exit__(self, *exc):
+        self._w.stop()
+        return False
 
 
 class ShellResponse:
@@ -589,6 +692,15 @@ class Device:
     def __call__(self, **kw):
         return _Selector(self, **kw)
 
+    def __enter__(self):
+        # `with dev.session(pkg) as sess` — shim session IS the device;
+        # u2's session-death semantics (running()/SessionBrokenError)
+        # are NOT implemented (deferred, RESULTS-M17 §5-G8).
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
     # u2 surface
     def click(self, x, y):
         return self.a.inject_tap(x, y)["payload"]["ok"]
@@ -602,8 +714,15 @@ class Device:
                         "t_ms": ms}]})["payload"]["ok"]
 
     def swipe(self, x1, y1, x2, y2, duration=0.3, steps=10):
-        return self.a.inject_swipe(x1, y1, x2, y2,
-                                   int(duration * 1000), steps)["payload"]["ok"]
+        ok = self.a.inject_swipe(x1, y1, x2, y2,
+                                 int(duration * 1000),
+                                 steps)["payload"]["ok"]
+        # M17-G4 approx: the agent executes the gesture device-side
+        # asynchronously (M10 design decision — not changed); u2's
+        # client-side contract BLOCKS for `duration`. Host-side sleep
+        # approximates the client-visible contract (wall time >= dur).
+        time.sleep(duration)
+        return ok
 
     def press(self, key):
         code = _KEYCODES.get(str(key).lower(), None)
@@ -705,12 +824,23 @@ class Device:
                 f.write(data)
         return data
 
-    def app_start(self, pkg, activity=None):
+    def app_start(self, pkg, activity=None, stop=False, wait_timeout=10.0):
+        """u2 `d.app_start(pkg, stop=...)`. M17-G1: u2's contract is
+        'launched AND frontmost' — this now blocks on
+        `app_wait(front=True)` after the launch and returns False if the
+        app did not reach the foreground (e.g. a MIUI
+        ReviewPermissionsActivity gate is front instead — see
+        RESULTS-M17 §4-E2)."""
+        if stop:
+            self.app_stop(pkg)
         comp = f"{pkg}/{activity}" if activity else pkg
         cmd = ["adb", "shell", "monkey", "-p", pkg, "-c",
                "android.intent.category.LAUNCHER", "1"] if activity is None \
             else ["adb", "shell", "am", "start", "-n", comp]
-        return self._sh(cmd) == 0
+        if self._sh(cmd) != 0:
+            return False
+        return self.app_wait(pkg, timeout=wait_timeout, front=True) \
+            is not None
 
     def app_stop(self, pkg):
         return self._sh(["adb", "shell", "am", "force-stop", pkg]) == 0
@@ -813,7 +943,12 @@ class Device:
         if self.caps & 0x400:
             p = self.a.app_info()["payload"]
             if p.get("pkg"):
-                return {"package": p["pkg"], "activity": p.get("activity")}
+                info = {"package": p["pkg"],
+                        "activity": p.get("activity")}
+                pid = self.shell(f"pidof {info['package']}").output.strip()
+                if pid:
+                    info["pid"] = int(pid.split()[0])
+                return info
         out = subprocess.run(
             self._sh_cmd(["dumpsys", "window"]),
             capture_output=True, text=True).stdout
@@ -821,7 +956,14 @@ class Device:
         m = re.search(r"mCurrentFocus=\S+\s+\S+\s+([\w.]+)/([\w.$]+)", out)
         if not m:  # some ROMs only expose mFocusedApp
             m = re.search(r"([\w.]+)/([\w.$]+)\s", out)
-        return {"package": m.group(1), "activity": m.group(2)} if m else {}
+        if not m:
+            return {}
+        info = {"package": m.group(1), "activity": m.group(2)}
+        # u2 shape includes `pid` — u2suite test_app_mixin reads it
+        pid = self.shell(f"pidof {info['package']}").output.strip()
+        if pid:
+            info["pid"] = int(pid.split()[0])
+        return info
 
     def _media_forward(self):
         """adb forward for the ch=1 media socket (watch hits). Local port
@@ -849,8 +991,89 @@ class Device:
                 "displayHeight": h["display"][1],
                 "sdkInt": h.get("sdk"), "agent": h.get("ver")}
 
+    @property
+    def settings(self):
+        """u2 `d.settings` — transparent dict: keys read/write freely.
+        u2's TYPE validation (`xpath_debug` must be bool) and COUPLING
+        (`wait_timeout`/`implicit_wait`/`operation_delay` actually
+        driving behavior) are NOT implemented — RESULTS-M17 §5-G10."""
+        store = getattr(self, "_settings_store", None)
+        if store is None:
+            store = self._settings_store = {}
+        return store
+
+    def push(self, src, dst="/sdcard/"):
+        """u2 `d.push(local, remote)` — adb spawn; `src` may be a path,
+        bytes, or a file-like object (u2 surface; staged via temp)."""
+        if isinstance(src, (bytes, bytearray)) or hasattr(src, "read"):
+            data = bytes(src) if isinstance(src, (bytes, bytearray)) \
+                else src.read()
+            import tempfile
+            with tempfile.NamedTemporaryFile(delete=False) as f:
+                f.write(data)
+                tmp = f.name
+            try:
+                return self.push(tmp, dst)
+            finally:
+                os.unlink(tmp)
+        cmd = (["adb"] + (["-s", self.serial] if self.serial else [])
+               + ["push", src, dst])
+        return subprocess.run(cmd, capture_output=True).returncode == 0
+
+    def pull(self, src, dst="."):
+        """u2 `d.pull(remote, local)` — adb spawn."""
+        cmd = (["adb"] + (["-s", self.serial] if self.serial else [])
+               + ["pull", src, dst])
+        return subprocess.run(cmd, capture_output=True).returncode == 0
+
+    @property
+    def wlan_ip(self):
+        """u2 `d.wlan_ip` — device IPv4 on wlan0, None if absent."""
+        out = self.shell("ip addr show wlan0").output
+        m = re.search(r"inet (\d+\.\d+\.\d+\.\d+)", out)
+        return m.group(1) if m else None
+
+    def app_list_running(self):
+        """u2 `d.app_list_running()` — installed packages that have a
+        live process (`ps -A` names ∩ `pm list packages`; process names
+        may carry a `:sub` suffix — stripped)."""
+        pkgs = set(self.app_list())
+        running = set()
+        for line in self.shell("ps -A -o NAME").output.splitlines():
+            name = line.strip().split(":")[0]
+            if name in pkgs:
+                running.add(name)
+        return sorted(running)
+
+    def app_auto_grant_permissions(self, pkg):
+        """u2 `d.app_auto_grant_permissions(pkg)` — `pm grant` every
+        permission the manifest requests; non-runtime perms fail
+        harmlessly (pm exits nonzero, ignored)."""
+        out = self.shell(f"dumpsys package {pkg}").output
+        m = re.search(r"requested permissions:(.*?)"
+                      r"(?:install permissions|runtime permissions|"
+                      r"pkg=|Packages:)", out, re.S)
+        if not m:
+            return False
+        for p in re.findall(r"android\.permission\.[\w.]+", m.group(1)):
+            self.shell(f"pm grant {pkg} {p}")
+        return True
+
+    def watch_context(self, builtin=False):
+        """u2 `d.watch_context(builtin)` — context manager over
+        `d.watcher`: `.when(sel).click()` registers rules; __exit__
+        stops the watcher. u2's `builtin` stock-dialog rules are not
+        reproduced (accepted, ignored — ROM dialogs differ anyway)."""
+        return _WatchContext(self, builtin)
+
     def close(self):
         self.a.close()
+
+
+# u2's `u2.Session` is the object `d.session()` returns; the shim's
+# session() returns the Device itself (crash-watch semantics deferred
+# — G8), so the honest type alias is Device.
+Session = Device
 
 
 def _detect_port(serial=None):
