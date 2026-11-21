@@ -19,6 +19,15 @@ const DEFAULT_ADB_PORT: u16 = 5037;
 /// `shell` command (see `AdbTransport::shell`) and return the exit status.
 /// Marker is only honored when it terminates the output; `None` on v1
 /// hosts / unclosed-quote commands where the marker never prints.
+/// Wrap `command` in a subshell and append a printf that emits the exit
+/// marker — see [`AdbClient::shell`] for why (adb_client 4.0.0 drops the
+/// v2 ExitStatus). The subshell keeps `&`-terminated commands (agent
+/// start) parseable: bare `cmd &; printf` is a `sh` syntax error.
+fn marked_shell(command: &str) -> String {
+    const MARK: &str = "__PD_EXIT_";
+    format!("( {command} ); printf '{MARK}%d__\\n' $?")
+}
+
 fn take_exit_marker(stdout: &mut Vec<u8>) -> Option<i32> {
     const MARK: &[u8] = b"__PD_EXIT_";
     let body = stdout.as_slice().strip_suffix(b"\n").unwrap_or(stdout);
@@ -156,7 +165,6 @@ impl AdbTransport for AdbClient {
     }
 
     fn shell(&mut self, serial: &str, command: &str) -> Result<ShellOutput> {
-        const MARK: &str = "__PD_EXIT_";
         let device = self.device(serial)?;
         let mut stdout = Vec::new();
         let mut stderr = Vec::new();
@@ -164,10 +172,8 @@ impl AdbTransport for AdbClient {
         // (stdout/stderr arrive de-framed), but 4.0.0's v2 loop returns
         // Ok(None) on clean EOF — the parsed ExitStatus is discarded, so
         // the return value never carries the exit code. Recover it with a
-        // trailing marker instead: the shell service runs `sh -c`, so `;`
-        // is legal. A command with an unclosed quote loses the marker and
-        // degrades to exit_code=None — same as a v1-only host.
-        let marked = format!("{command}; printf '{MARK}%d__\\n' $?");
+        // trailing marker instead — see marked_shell().
+        let marked = marked_shell(command);
         device
             .shell_command(&marked, Some(&mut stdout), Some(&mut stderr))
             .map_err(AdbError::backend)?;
@@ -237,6 +243,20 @@ mod tests {
         let mut out2 = b"__PD_EXIT_1__ trailing\n".to_vec();
         assert_eq!(take_exit_marker(&mut out2), None);
         assert_eq!(out2, b"__PD_EXIT_1__ trailing\n");
+    }
+
+    #[test]
+    fn marker_wraps_in_subshell() {
+        // `&`-terminated commands (agent start) must land inside the
+        // subshell — bare `cmd &; printf` is a sh syntax error.
+        assert_eq!(
+            marked_shell("nohup setsid env A=b c </dev/null >log 2>&1 &"),
+            "( nohup setsid env A=b c </dev/null >log 2>&1 & ); printf '__PD_EXIT_%d__\\n' $?"
+        );
+        assert_eq!(
+            marked_shell("test -f /x"),
+            "( test -f /x ); printf '__PD_EXIT_%d__\\n' $?"
+        );
     }
 
     #[test]

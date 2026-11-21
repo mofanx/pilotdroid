@@ -46,3 +46,26 @@ PyPI pending-publisher（`pypi.yml`/`env pypi`）→ publish draft →
 `install-smoke.sh ba0d072d`（publish 后唯一真端到端）→ branch
 protection（rust/python/agent-jar-sync/agent-jar-repro）。tap sha256
 已在 M14 预回填，publish 后零追加。
+
+## 5. verify-agent 环境归因新发现（t5）
+
+连续复跑出现两族随机 FAIL，诊断锚点落盘后实锤**同一根因——MIUI
+运行中锁屏/pocket 幕布**：M2 家族（query_found..query_pkg 7 连挂）时
+`[m2-setup]` 诊断显示 `mCurrentFocus=android` + a11y 树仅剩
+`package="android"`（keyguard/pocket curtain 特征）；同一幕布期
+`takeScreenshot` 返回空 → shot_jpeg/quality/scale 随机挂（
+`bytes=0`，agent.log 无 `takeScreenshot null`，非 agent 缺陷）。
+
+已有 `screen_off_timeout=INT_MAX` 兜底仍不够（MIUI pocket 幕布是
+proximity 触发非超时）。verify-agent.sh 三处硬化：
+①M2 setup 锚点升级为"launch→focus→probe query→relaunch×3"，且每轮
+先 `KEYCODE_WAKEUP + wm dismiss-keyguard + KEYCODE_BACK`（BACK 退出
+pocket 幕布，普通屏无害）；②shot 断言 `shot_file`/`shot_stat`
+有界重试 8×1s + 失败路径打印最后一次调用输出；③probe 失败时自动
+dump focus+tree pkgs 作 post-mortem。硬化后 **37/37 复跑全绿**。
+
+另：adb_client 4.x marker 包装回归修复——`&` 结尾命令（agent start
+的 `nohup ... &`）与 `;` 追加产生 `&;` 语法错，改 subshell
+`( {cmd} ); printf MARK $?`（p3 复核实锤+on-device 验证），补
+`marked_shell` 单测钉住包装形状；`pilotdroid-cli agent start`
+实机复跑成功（agent listening + verify A7 stop_exit_clean 过）。
