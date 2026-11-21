@@ -24,6 +24,17 @@ bad() { FAIL=$((FAIL+1)); echo "  FAIL $1 :: $2"; RESULTS["$1"]="fail: $2"; }
 echo "== setup: adb forward tcp:$PORT -> localabstract:pilotdroid_agent =="
 adb -s "$DEV" forward "tcp:$PORT" "localabstract:pilotdroid_agent" >/dev/null
 
+# Forward-hygiene sanity: killed serve/bench sessions leak forward rules
+# (agent conn is single-client — a pile of stale rules is a symptom, not
+# a failure). >4 rules to our sockets = WARN + list; remove with
+# `adb forward --remove tcp:<port>` (the canonical $PORT pair is kept).
+FWD_RULES=$(adb forward --list | grep "$DEV.*localabstract:pilotdroid_agent" || true)
+FWD_COUNT=$(printf '%s\n' "$FWD_RULES" | grep -c . || true)
+if [ "$FWD_COUNT" -gt 4 ]; then
+  echo "  WARN forward_hygiene: $FWD_COUNT rules to pilotdroid_agent on $DEV (>4)"
+  printf '%s\n' "$FWD_RULES" | sed 's/^/    /'
+fi
+
 # Keyguard pre-step: a locked/asleep screen makes every downstream UI
 # assertion flake. Wake + swipe-unlock is best-effort (no-op when already
 # unlocked); MIUI pocket-mode users should keep the screen on manually.
