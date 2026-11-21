@@ -108,4 +108,9 @@ benchmark/suite 跑旧 targetSdk app 前需先放行（openatx u2 官方
   （`wlan_ip` 已实装，M18）。
 - **G4 swipe**：agent 端异步手势是 M10 架构决策，设备端 duration
   仍生效但调用不阻塞 u2 客户端口径——不改 agent 阻塞。
+- **M18 已实装**（shim 层补齐批，verbatim 8/30 pass）：`get_text`、
+  `watch_context`、`push`、`pull`、`app_list_running`、
+  `app_auto_grant_permissions`（及 `settings`、`wlan_ip`、
+  `app_current.pid`、`app_start` front-wait/`stop=`、`click` 隐式等待、
+  `swipe` host-sleep、`watch_context` ctx-mgr）。
 - 其余 shim 层补齐进度随 0.6.2 changelog / ledger 更新。
