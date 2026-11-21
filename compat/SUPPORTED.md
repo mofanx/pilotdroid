@@ -104,8 +104,8 @@ benchmark/suite 跑旧 targetSdk app 前需先放行（openatx u2 官方
 - **defer（明示不复制 u2 内部对象模型）**：G8 session 对象
   （`running()`/上下文管理器/`SessionBrokenError`——`session()` 返回
   self 已是明示降级）；G10 settings 全语义（类型校验+wait_timeout
-  联动——透明 dict 仅作 fixture 管道）；G6 `wlan_ip`/`jsonrpc` 等
-  u2 内部面。
+  联动——透明 dict 仅作 fixture 管道）；G6 `jsonrpc` 等 u2 内部面
+  （`wlan_ip` 已实装，M18）。
 - **G4 swipe**：agent 端异步手势是 M10 架构决策，设备端 duration
   仍生效但调用不阻塞 u2 客户端口径——不改 agent 阻塞。
 - 其余 shim 层补齐进度随 0.6.2 changelog / ledger 更新。
