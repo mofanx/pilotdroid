@@ -17,8 +17,18 @@ pass=0; fail=0
 ok()  { echo "PASS: $1"; pass=$((pass+1)); }
 bad() { echo "FAIL: $1"; fail=$((fail+1)); }
 
+echo "=== 0. PyPI index 可见性轮询（publish 后索引传播有延迟）==="
+python3 -m venv "$V/venv"
+for i in $(seq 1 12); do
+  if "$V/venv/bin/pip" -q index versions pilotdroid 2>/dev/null | grep -qw "$VER"; then
+    ok "pilotdroid==$VER visible on PyPI index (try $i)"; break
+  fi
+  [ "$i" = 12 ] && bad "pilotdroid==$VER not visible after ~60s"
+  sleep 5
+done
+
 echo "=== 1. pip install pilotdroid (venv) ==="
-python3 -m venv "$V/venv" && "$V/venv/bin/pip" -q install "pilotdroid==$VER" \
+"$V/venv/bin/pip" -q install "pilotdroid==$VER" \
   && ok "pip install pilotdroid==$VER" || bad "pip install pilotdroid==$VER"
 
 echo "=== 2. import u2shim ==="
