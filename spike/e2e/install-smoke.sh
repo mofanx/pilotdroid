@@ -1,13 +1,15 @@
 #!/usr/bin/env bash
-# install-smoke.sh — post-publish distribution smoke (run AFTER v0.6.0 publish)
+# install-smoke.sh — post-publish distribution smoke (run AFTER v0.6.1 publish)
 #
-# 前置：v0.6.0 release 已 publish（非 draft）+ PyPI 上 pilotdroid==0.6.0 可见。
+# 前置：v0.6.1 release 已 publish（非 draft）+ PyPI 上 pilotdroid==0.6.1 可见。
 # 本脚本验证分发叙事端到端可用——之前所有 e2e 都跑 dev-tree，安装产物从未
 # 实测过（M14 发现：whl 仅 u2shim+agent_client，无 CLI 二进制无 agent.jar，
-# 纯 pip 用户必须另装 pilotdroid-cli）。
+# 纯 pip 用户必须另装 pilotdroid-cli；M15 起 whl 自带 lazy-bootstrap CLI）。
 #
 # 用法: spike/e2e/install-smoke.sh [serial]   每步打印 PASS/FAIL，末尾汇总。
 set -u
+# 被测发布版本；下个 milestone 只需改这一处（或 env 覆盖）。
+VER="${PILOTDROID_SMOKE_VER:-0.6.1}"
 SERIAL="${1:-}"
 ADB=(adb); [ -n "$SERIAL" ] && ADB+=( -s "$SERIAL" )
 V="$(mktemp -d)"; trap 'rm -rf "$V"' EXIT
@@ -16,8 +18,8 @@ ok()  { echo "PASS: $1"; pass=$((pass+1)); }
 bad() { echo "FAIL: $1"; fail=$((fail+1)); }
 
 echo "=== 1. pip install pilotdroid (venv) ==="
-python3 -m venv "$V/venv" && "$V/venv/bin/pip" -q install "pilotdroid==0.6.0" \
-  && ok "pip install pilotdroid==0.6.0" || bad "pip install pilotdroid==0.6.0"
+python3 -m venv "$V/venv" && "$V/venv/bin/pip" -q install "pilotdroid==$VER" \
+  && ok "pip install pilotdroid==$VER" || bad "pip install pilotdroid==$VER"
 
 echo "=== 2. import u2shim ==="
 "$V/venv/bin/python" -c "from pilotdroid import u2shim" \
@@ -43,9 +45,11 @@ else
   echo "SKIP: bootstrap 下载路径按 host platform 取 asset，本机非 linux-x86_64"
 fi
 
-echo "=== 4. release 二进制 --version（linux x86_64）==="
+echo "=== 4. release 二进制 --version（linux x86_64，对照步）==="
+# 对照：直接 gh 拉裸二进制验证 asset 本体可用；真用户路径是 3b/5 的
+# console script（走 bootstrap）。v0.6.0 draft 已删——勿回退到旧 tag。
 if [ "$(uname -s)" = Linux ] && [ "$(uname -m)" = x86_64 ]; then
-  gh release download v0.6.0 -p 'pilotdroid-cli-linux-x86_64' -D "$V" --clobber \
+  gh release download "v$VER" -p 'pilotdroid-cli-linux-x86_64' -D "$V" --clobber \
     && chmod +x "$V/pilotdroid-cli-linux-x86_64" \
     && "$V/pilotdroid-cli-linux-x86_64" --version \
     && ok "cli --version" || bad "cli download/--version"
@@ -54,7 +58,8 @@ else
 fi
 
 echo "=== 5. CLI setup + serve MCP 握手（需设备）==="
-CLI="$V/pilotdroid-cli-linux-x86_64"
+# 真用户路径：venv console script（bootstrap 缓存命中后零下载 execv）。
+CLI="$V/venv/bin/pilotdroid-cli"
 if [ -n "$SERIAL" ] && "${ADB[@]}" get-state >/dev/null 2>&1 && [ -x "$CLI" ]; then
   "$CLI" -s "$SERIAL" setup && ok "cli setup" || bad "cli setup"
   printf '%s\n' \
