@@ -21,6 +21,29 @@ declare -A RESULTS
 ok()  { PASS=$((PASS+1)); echo "  PASS $1"; RESULTS["$1"]="pass"; }
 bad() { FAIL=$((FAIL+1)); echo "  FAIL $1 :: $2"; RESULTS["$1"]="fail: $2"; }
 
+# MIUI's UiAutomation capture intermittently hands back a null bitmap
+# (`cap: null bitmap` in agent.log — a transient, not an agent defect).
+# Bounded retry before counting a real miss; same precedent as the
+# launch+read retry in the M11 watch section below.
+shot_file() {  # shot_file <out.jpg> [scale] — retry until JPEG magic
+  for _ in 1 2 3 4 5 6 7 8; do
+    $CLI shot "$@" >/dev/null 2>&1 || true
+    [ "$(xxd -p -l2 "$1" 2>/dev/null)" = "ffd8" ] && return 0
+    sleep 1
+  done
+  echo "  [shot-retry] last call: $($CLI shot "$@" 2>&1 | head -2 | tr '\n' ' ')"
+  return 1
+}
+shot_stat() {  # shot_stat <scale> <quality> — echo first output containing <N>B
+  local s=""
+  for _ in 1 2 3 4 5 6 7 8; do
+    s=$($CLI shot-stat "$1" "$2" 2>/dev/null) || true
+    echo "$s" | grep -q '<[0-9]*B>' && break
+    sleep 1
+  done
+  echo "$s"
+}
+
 echo "== setup: adb forward tcp:$PORT -> localabstract:pilotdroid_agent =="
 adb -s "$DEV" forward "tcp:$PORT" "localabstract:pilotdroid_agent" >/dev/null
 
@@ -103,7 +126,7 @@ grep -q "<hierarchy" /tmp/dump.xml && grep -q "<node" /tmp/dump.xml \
 NODES=$(grep -o "<node" /tmp/dump.xml | wc -l); echo "    nodes=$NODES"
 
 echo "== A5 SHOT returns JPEG magic bytes =="
-$CLI shot /tmp/shot.jpg >/dev/null 2>&1 || true
+shot_file /tmp/shot.jpg
 MAGIC=$(xxd -p -l2 /tmp/shot.jpg 2>/dev/null || echo "none")
 [ "$MAGIC" = "ffd8" ] && file /tmp/shot.jpg | grep -qi jpeg \
   && ok "shot_jpeg" || bad "shot_jpeg" "magic=$MAGIC size=$(stat -c%s /tmp/shot.jpg 2>/dev/null)"
@@ -129,8 +152,8 @@ echo "$PTS" | grep -q '"ok": *true\|"ok":true' && echo "$PTS" | grep -q '"events
   && ok "swipe_points" || bad "swipe_points" "resp=$PTS"
 
 echo "== M3-A3 SHOT quality affects bytes (30 < 80) =="
-S30=$($CLI shot-stat 1.0 30 2>&1) || true
-S80=$($CLI shot-stat 1.0 80 2>&1) || true
+S30=$(shot_stat 1.0 30)
+S80=$(shot_stat 1.0 80)
 B30=$(echo "$S30" | sed -n 's/.*<\([0-9]*\)B>.*/\1/p')
 B80=$(echo "$S80" | sed -n 's/.*<\([0-9]*\)B>.*/\1/p')
 [ -n "$B30" ] && [ -n "$B80" ] && [ "$B30" -lt "$B80" ] \
@@ -149,8 +172,35 @@ echo "== M2: setup deterministic editable field =="
 # layout on MIUI and stock AOSP (the old android:id/input anchor is a
 # MIUI-only Settings hint). --activity-clear-task pins a fresh activity
 # so a stacked SubSettings can't skew the a11y tree.
-adb -s "$DEV" shell 'am start -n com.android.quicksearchbox/.SearchActivityTransparent --activity-clear-task' >/dev/null 2>&1
-sleep 1.2
+# The M2-A8..A9 query family anchors on the a11y-tree visibility of
+# `query_text`, which on MIUI can lag mCurrentFocus by seconds after the
+# preceding inject/backend ops — window focus alone is not sufficient.
+# Launch → focus-wait → probe the anchor itself; relaunch up to 3 rounds
+# (~15s worst) before letting the family take its shot.
+for _ in 1 2 3; do
+  # Curtain first: mid-run keyguard/pocket-mode (focus+tree = pkg
+  # `android` only — observed) makes am start land behind it. WAKE +
+  # dismiss-keyguard + BACK (exits the MIUI pocket-mode curtain; harmless
+  # on a normal screen) before relaunching.
+  adb -s "$DEV" shell 'input keyevent KEYCODE_WAKEUP; wm dismiss-keyguard; input keyevent KEYCODE_BACK' >/dev/null 2>&1
+  adb -s "$DEV" shell 'am start -n com.android.quicksearchbox/.SearchActivityTransparent --activity-clear-task' >/dev/null 2>&1
+  for _ in 1 2 3 4 5; do
+    adb -s "$DEV" shell 'dumpsys window | grep mCurrentFocus' 2>/dev/null \
+      | grep -q SearchActivityTransparent && break
+    sleep 1
+  done
+  $CLI query '{"id":"query_text"}' 2>/dev/null | grep -q '"found": *true' && break
+  sleep 1
+done
+# Post-mortem: if the anchor still isn't queryable after 3 relaunches,
+# record which window actually holds focus + which packages the a11y tree
+# sees (MIUI overlay/pocket-mode diagnosis, cf. RESULTS-M13 §6c).
+$CLI query '{"id":"query_text"}' 2>/dev/null | grep -q '"found": *true' || {
+  echo "  [m2-setup] anchor invisible — focus=$(adb -s "$DEV" shell \
+    'dumpsys window | grep mCurrentFocus' | tail -1 | tr -d ' ')"
+  echo "  [m2-setup] tree pkgs=$($CLI dump 2>/dev/null \
+    | grep -o 'package=\"[^\"]*\"' | sort -u | tr '\n' ' ')"
+}
 
 echo "== M2-A8 QUERY found + structured node =="
 Q=$($CLI query '{"id":"query_text"}' 2>&1) || true
@@ -238,7 +288,7 @@ assert p.get("total_ns",0)>0
 print("OK")' >/dev/null 2>&1 && ok "batch_results" || bad "batch_results" "$B"
 
 echo "== M2-A13 SHOT scale=0.5 bytes shrink + JPEG =="
-$CLI shot /tmp/shot-half.jpg 0.5 >/dev/null 2>&1 || true
+shot_file /tmp/shot-half.jpg 0.5
 SZ=$(stat -c%s /tmp/shot-half.jpg 2>/dev/null || echo 0)
 [ "$(xxd -p -l2 /tmp/shot-half.jpg 2>/dev/null)" = "ffd8" ] && [ "$SZ" -lt 250000 ] && [ "$SZ" -gt 5000 ] \
   && ok "shot_scale" || bad "shot_scale" "bytes=$SZ"
