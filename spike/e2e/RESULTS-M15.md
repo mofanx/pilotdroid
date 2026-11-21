@@ -69,3 +69,20 @@ dump focus+tree pkgs 作 post-mortem。硬化后 **37/37 复跑全绿**。
 `( {cmd} ); printf MARK $?`（p3 复核实锤+on-device 验证），补
 `marked_shell` 单测钉住包装形状；`pilotdroid-cli agent start`
 实机复跑成功（agent listening + verify A7 stop_exit_clean 过）。
+
+## 5b. shot_scale 确定性失败根因（t6 复核挖出）+ 修法（t7）
+
+t5 后 verify 在 ba0d072d 仍 36/1×3（p3 复核连挂同一断言，非幕布复发）。
+**真根因**：M2-A11 先 `text("pdtest")`→搜索框建议列表弹出→M2-A12
+batch 的 tap(700,1400) 点开**被 MIUI 应用锁的 app**→
+`applicationlock.ConfirmAccessControl`（FLAG_SECURE）→SHOT 设备端报错
+→agent 回 `{code,message,error}` payload→`agent_client.py` `p["data"]`
+KeyError→0 字节×8 重试全挂。手动复现链全程实证（focus=ConfirmAccessControl
++shot KeyError 'data'；BACK+HOME 后 shot 57KB 恢复）。
+
+修法（t7）：`batch_results` 断言后 `input keyevent KEYCODE_BACK`（点开
+什么退什么，未点开时退出搜索页无副作用——后续断言不依赖其前台）+
+`agent_client.py` shot cmd 把 error payload 打成可读
+`shot failed: <code> <message> <error>` 替代裸 KeyError。
+复跑 **37/37×2 稳定**。应用锁环境因子至此有了第四种形态：会咬
+verify 自己的 tap 落点（SUPPORTED.md 第三条已覆盖语义，本条为实证）。
