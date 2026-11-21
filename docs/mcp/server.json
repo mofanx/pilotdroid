@@ -2,7 +2,7 @@
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-10-17/server.schema.json",
   "name": "io.github.mofanx/pilotdroid",
   "description": "Android UI automation device agent: 27 MCP tools — tap/swipe/selector/watcher/stream",
-  "version": "0.6.0",
+  "version": "0.6.1",
   "websiteUrl": "https://github.com/mofanx/pilotdroid",
   "repository": {
     "url": "https://github.com/mofanx/pilotdroid",
@@ -12,7 +12,7 @@
     {
       "registryType": "pypi",
       "identifier": "pilotdroid",
-      "version": "0.6.0",
+      "version": "0.6.1",
       "runtimeHint": "uvx",
       "transport": { "type": "stdio" },
       "packageArguments": [

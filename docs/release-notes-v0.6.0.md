@@ -1,7 +1,7 @@
-# pilotdroid v0.6.0 — release notes draft
+# pilotdroid v0.6.0 — release notes draft（未发布）
 
-> Paste into the v0.6.0 GitHub Release body. Source of truth for the
-> publish step; keep in sync with `main` until the tag lands.
+> **v0.6.0 未发布**：其 tag 保留为 M13 代码快照（draft 已删），内容已并入
+> `release-notes-v0.6.1.md`。本文件仅作历史记录，勿用于 publish。
 
 Device-side UiAutomation agent for Android: single-jar dex under
 `app_process` + `pilotdroid-cli` (agent.jar embedded — one binary does
