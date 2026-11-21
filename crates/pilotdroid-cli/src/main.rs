@@ -257,7 +257,14 @@ fn build_shell_command(args: &[String]) -> String {
 }
 
 fn main() -> Result<()> {
-    let cli = Cli::parse();
+    let mut cli = Cli::parse();
+    // `-s` wins; PILOTDROID_SERIAL is the ambient fallback (the var
+    // docs/mcp/server.json advertises to MCP clients).
+    if cli.device.is_none() {
+        cli.device = std::env::var("PILOTDROID_SERIAL")
+            .ok()
+            .filter(|s| !s.is_empty());
+    }
     let mut adb = match AdbClient::at(cli.adb_port) {
         Ok(a) => a,
         Err(e) => {

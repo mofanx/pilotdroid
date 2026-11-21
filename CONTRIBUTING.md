@@ -25,7 +25,13 @@
 
 ## 磁盘与 worktree 约定
 
-- 磁盘曾两次 100% 占满（每个 worktree 的 `target/` 独立编译产物）。**worktree 合并完成后立即在其内跑 `cargo clean`**；长期约定建议 `CARGO_TARGET_DIR` 指向共享目录（如 `~/.cargo-target/pilotdroid`），cargo 自带锁可安全并发——多 worktree 共用一份 target 可省数 GB。
+- 磁盘曾三次占满告警（每个 worktree 的 `target/` 独立编译产物）。**新建 worktree 后必做**（非建议）：
+
+  ```bash
+  export CARGO_TARGET_DIR=$HOME/.cargo-target/pilotdroid   # 写进 ~/.bashrc 或 worktree 启用脚本
+  ```
+
+  cargo 自带锁可安全并发——多 worktree 共用一份 target 可省数 GB。不要用 `.cargo/config.toml`：config 文件在各 worktree 内部，无法跨 worktree 共享。**worktree 合并完成后立即在其内跑 `cargo clean`**。
 - `cargo clean` 只影响编译产物，不会丢源码/worktree 元数据。
 
 ## Known limitations（对拍与测试前必读）

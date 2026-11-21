@@ -882,9 +882,9 @@ def _detect_port(serial=None):
             pass
     raise RuntimeError(
         "no adb forward to localabstract:pilotdroid_agent found and "
-        "tcp:17932 is not alive — download pilotdroid-cli from "
-        "github.com/mofanx/pilotdroid/releases and run `pilotdroid-cli setup` "
-        "(the pip package ships no CLI binary), or "
+        "tcp:17932 is not alive — run `pilotdroid-cli setup` (installed "
+        "with `pip install pilotdroid`; without it, download the binary "
+        "from github.com/mofanx/pilotdroid/releases), or "
         "`adb forward tcp:17932 localabstract:pilotdroid_agent`")
 
 
