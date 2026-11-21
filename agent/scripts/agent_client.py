@@ -331,6 +331,11 @@ def main():
             qual = int(args[3]) if len(args) > 3 else 80
             r = a.shot(quality=qual, scale=scale)
             p = r["payload"]
+            if "data" not in p:
+                # agent answered with an error payload (e.g. FLAG_SECURE
+                # window focused — MIUI app-lock/keyguard blocks capture)
+                sys.exit(f"shot failed: {p.get('code', '?')} "
+                         f"{p.get('message', '')} {p.get('error', '')}".strip())
             open(args[1], "wb").write(p["data"])
             print(f"wrote {len(p['data'])}B {p.get('w')}x{p.get('h')} scale={p.get('scale',1)} -> {args[1]}")
         elif cmd == "shot-stat":  # shot-stat SCALE QUALITY -> timing+bytes JSON

@@ -287,6 +287,15 @@ assert all("cost_ns" in r for r in rs), rs
 assert p.get("total_ns",0)>0
 print("OK")' >/dev/null 2>&1 && ok "batch_results" || bad "batch_results" "$B"
 
+# The batch tap lands inside the suggestion list that "pdtest" populated —
+# on this MIUI build it can open an app behind the security-app-lock gate
+# (applicationlock.ConfirmAccessControl, FLAG_SECURE → SHOT returns an
+# error payload). Back out of whatever the tap opened so shot_scale runs
+# on an ordinary screen. Harmless when nothing opened (BACK on the
+# search activity just exits it; later asserts don't need it foreground).
+adb -s "$DEV" shell 'input keyevent KEYCODE_BACK' >/dev/null 2>&1
+sleep 0.5
+
 echo "== M2-A13 SHOT scale=0.5 bytes shrink + JPEG =="
 shot_file /tmp/shot-half.jpg 0.5
 SZ=$(stat -c%s /tmp/shot-half.jpg 2>/dev/null || echo 0)
