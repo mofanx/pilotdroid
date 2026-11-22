@@ -6,9 +6,12 @@ Step-by-step for cutting a release. Written for v0.6.1 (draft
 
 ## Pre-publish checklist (already verified for v0.6.1)
 
-- [ ] `git rev-parse v<VER>` == intended HEAD (tag-follow rule: any
-      whl/CLI/metadata commit after tagging requires a retag — see
-      CONTRIBUTING.md "tag-内容跟随规则").
+- [ ] `git rev-parse v<VER>` points at the intended release commit —
+      for v0.6.1 that is `6acb534`. This does **not** have to equal
+      main HEAD: only commits touching asset content
+      (`crates/`/`python/`/`compat/`/`agent/`/`Cargo.*`) require the
+      tag to follow (tag-follow rule — see CONTRIBUTING.md
+      "tag-内容跟随规则"); docs/workflow/test-script commits do not.
 - [ ] Draft has exactly the expected assets (v0.6.1: 7 — linux/macos/
       windows binaries, whl, sdist, agent.jar, SHA256SUMS.txt).
 - [ ] **No stale same-tag drafts** — `gh release list` should show ONE
@@ -75,6 +78,10 @@ GitHub → Settings → Branches → protect `main`, required status checks:
 
 - Homebrew tap formula sha256s are prefilled from the v0.6.1 draft
   assets — verify against the published `SHA256SUMS.txt` once more.
-- MCP registry submission: `docs/mcp/SUBMIT.md` (after PyPI is live).
+- **Step 6 (post-publish): MCP registry submission** — follow
+  `docs/mcp/SUBMIT.md`. Prerequisite: `pilotdroid==0.6.1` must be
+  visible on the PyPI index (step-3 polling covers this; the registry
+  resolves `uvx pilotdroid` live). SUBMIT.md intentionally says
+  "Do not submit yet" until then — including its cold-start caveat.
 - Housekeeping: remove stale worktrees (`pilotdroid-m10dist` is
   outdated — `git worktree remove`), check `df -h` (disk was at 97%).
