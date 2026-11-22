@@ -20,7 +20,7 @@ bad() { echo "FAIL: $1"; fail=$((fail+1)); }
 echo "=== 0. PyPI index 可见性轮询（publish 后索引传播有延迟）==="
 python3 -m venv "$V/venv"
 for i in $(seq 1 12); do
-  if "$V/venv/bin/pip" -q index versions pilotdroid 2>/dev/null | grep -qw "$VER"; then
+  if "$V/venv/bin/pip" index versions pilotdroid 2>/dev/null | grep -qw "$VER"; then
     ok "pilotdroid==$VER visible on PyPI index (try $i)"; break
   fi
   [ "$i" = 12 ] && bad "pilotdroid==$VER not visible after ~60s"
