@@ -182,7 +182,8 @@ test_watcher 已转出 PASS）、**1 jsonrpc**（G6）、**1 session
 对象模型**（G8）、**3 settings 联动**（G10）= 14 与逐项表自洽——全部为已登记 defer，
 **无未归因 fail**。另注：watch_context 单测偶发 a11y-lag 竞争
 （watcher 自动点击与 Menu tap 时序），单跑 1/3 观察为环境敏感性，
-与 SUPPORTED.md 既有第三类同源。
+与 SUPPORTED.md 既有第三类同源。（M21 已演化为本环境 3/3 稳定
+复现，见 §8）
 
 复现：`PILOTDROID_SERIAL=ba0d072d spike/e2e/u2suite/run.sh`
 （seam alias+verbatim 套件已入库 `spike/e2e/u2suite/`，不再依赖 /tmp）。
@@ -198,10 +199,11 @@ session_app、session_window_size、auto_grant_permissions）、
 | fail | 归因 |
 |---|---|
 | xpath×7 + simple::{test_xpath, send_keys} | `d.xpath` 已知 ❌（=9） |
-| watcher::test_watch_context | 环境 flaky——M18 同测曾 PASS，本轮 `Inflate from XML` wait 超时；与 §7 末注的 a11y-lag 竞争同源（SUPPORTED.md 环境敏感性） |
+| watcher::test_watch_context | 当前环境 **3/3 稳定挂**（单测连跑实证，21-23s 同点超时）：M18 同测曾 PASS，本轮 `Inflate from XML` wait 超时；a11y-lag 环境敏感，非代码缺陷（SUPPORTED.md 环境敏感性） |
 
 **结论**：8→12 pass，剩余 10 fail = 9 xpath（明示 ❌）+ 1 环境
-flaky，**无未归因 fail、无新代码缺陷**。
+敏感项（a11y-lag，本环境 3/3 稳定复现非偶发），**无未归因
+fail、无新代码缺陷**。
 
 **抽查抓到的第 4 个真 bug（复核轮，非套件）**：`Device()` 不消费
 `PILOTDROID_SERIAL`——`d.shell()`/`app_wait`/`app_info`/`session()`
