@@ -16,12 +16,20 @@ screen_off / unlock / orientation (get+set) / watcher;
 d(text|resourceId|description|className|packageName|scrollable,index).click() /
 .exists / .wait / .info / .set_text / .get_text / .long_click /
 d(scrollable=True).scroll.(forward|backward|toEnd|toBeginning).
-M18 additions (RESULTS-M17 G-gap closure): settings dict (transparent,
-no type-validation/wait_timeout coupling), app_start front-wait +
+M18 additions (RESULTS-M17 G-gap closure): app_start front-wait +
 stop=True, click implicit wait, swipe host-side duration sleep, push /
 pull / wlan_ip / app_list_running / app_auto_grant_permissions /
 watch_context, uiautomator2.exceptions submodule (SessionBrokenError /
 UiObjectNotFoundError).
+M21 additions (G8/G10 gap closure): Session object model — session(pkg,
+attach) returns a scoped Session (running() foreground poll,
+SessionBrokenError on ops after the app dies, `with` exit stops the
+app; crash-watching is a lazy poll, NOT u2's resident watcher —
+RESULTS-M17 §5-G8); settings full semantics — known-key type
+validation (xpath_debug must be bool etc.), wait_timeout couples into
+wait()/wait_gone()/click implicit wait via d.wait_timeout +
+implicitly_wait(), operation_delay=(before,after) seconds applies to
+methods in operation_delay_methods (click/swipe/press by default).
 (xpath still rejected with ValueError — see _SUPPORTED.)
 """
 import os, re, socket, subprocess, sys, threading, time, types
@@ -39,17 +47,17 @@ _KEYCODES = {"home": 3, "back": 4, "recent": 187, "recents": 187,
              "power": 26, "volume_up": 24, "volume_down": 25,
              "menu": 82, "search": 84, "enter": 66, "del": 67}
 
-# u2's implicit wait budget for click()/exists-style resolves. u2's
-# settings['wait_timeout'] defaults to 20s; the agent control socket
-# times out at 10s so the shim stays under it.
-_IMPLICIT_WAIT = 8.0
+# u2's implicit wait budget for click()/exists-style resolves is
+# settings['wait_timeout'] (20s upstream default — G10 coupling).
+# The agent control socket times out at 10s per CALL; wait() polls in
+# <=1s slices so longer budgets stay safe.
+_IMPLICIT_WAIT = 8.0  # fallback when a Device has no settings store yet
 
 
 class SessionBrokenError(Exception):
     """u2 `uiautomator2.exceptions.SessionBrokenError` — a session's
-    target app died mid-use. The shim does not run u2's crash-watch
-    relaunch loop; the symbol exists so verbatim `import`/`raises` sites
-    compile (they fail honestly if never raised)."""
+    target app died mid-use. Raised by Session-scoped ops once
+    `running()` is False (M21-G8)."""
 
 
 # shim's no-node signal IS u2's UiObjectNotFoundError role — alias so
@@ -134,6 +142,62 @@ def _info(el):
             "index": int(a.get("index", 0)),
             "attrs": {k: a.get(v) == "true"
                       for k, v in _BOOL_KEYS.items()}}
+
+
+_SETTINGS_DEFAULTS = {
+    "wait_timeout": 20.0,          # u2 default; couples into wait paths
+    "operation_delay": (0.0, 0.0),  # (before, after) seconds per op
+    "operation_delay_methods": ["click", "swipe", "press"],
+    "xpath_debug": False,
+    "xpath_debug_click": False,
+    "debug": False,
+    "httpd_started": False,
+    "uiobject_mock": {},
+}
+_SETTINGS_BOOL_KEYS = frozenset(
+    k for k, v in _SETTINGS_DEFAULTS.items() if isinstance(v, bool))
+_SETTINGS_NUM_KEYS = {"wait_timeout", "implicit_wait"}
+
+
+class _Settings(dict):
+    """u2 `d.settings` — dict with u2's known-key TYPE validation
+    (M21-G10). `xpath_debug = 1` raises TypeError (bool required);
+    `wait_timeout`/`implicit_wait` take numbers (negative → ValueError);
+    `operation_delay` takes a 2-number tuple/list;
+    `operation_delay_methods` takes a list of method names. Unknown keys
+    stay transparent (shim fixtures use the store freely)."""
+
+    def __init__(self):
+        super().__init__(_SETTINGS_DEFAULTS)
+
+    def __setitem__(self, key, value):
+        if key in _SETTINGS_BOOL_KEYS:
+            if type(value) is not bool:
+                raise TypeError(
+                    f"settings['{key}'] requires bool, got {type(value).__name__}")
+        elif key in _SETTINGS_NUM_KEYS:
+            if type(value) is bool or not isinstance(value, (int, float)):
+                raise TypeError(
+                    f"settings['{key}'] requires a number, got {type(value).__name__}")
+            if value < 0:
+                raise ValueError(f"settings['{key}'] must be >= 0")
+        elif key == "operation_delay":
+            if (not isinstance(value, (tuple, list)) or len(value) != 2
+                    or any(type(v) is bool
+                           or not isinstance(v, (int, float))
+                           for v in value)):
+                raise TypeError(
+                    "settings['operation_delay'] requires a "
+                    "(before, after) tuple of numbers")
+            value = tuple(value)
+        elif key == "operation_delay_methods":
+            if (not isinstance(value, (list, tuple))
+                    or any(not isinstance(v, str) for v in value)):
+                raise TypeError(
+                    "settings['operation_delay_methods'] requires a "
+                    "list of method names")
+            value = list(value)
+        super().__setitem__(key, value)
 
 
 class _Selector:
@@ -247,12 +311,15 @@ class _Selector:
     def info(self):
         return self._node()
 
-    def wait(self, timeout=10.0):
+    def wait(self, timeout=None):
         """u2 semantics: True when the selector appears within timeout,
-        False otherwise. The wireable path polls wait_until in <=1s
-        slices — a single long wait_until would hog the shared control
-        conn and starve concurrent ops (watcher arming; u2suite's
-        test_watch_context deadlocks on exactly this)."""
+        False otherwise. timeout=None → settings['wait_timeout']
+        (u2 implicit-wait coupling, M21-G10). The wireable path polls
+        wait_until in <=1s slices — a single long wait_until would hog
+        the shared control conn and starve concurrent ops (watcher
+        arming; u2suite's test_watch_context deadlocks on exactly this)."""
+        if timeout is None:
+            timeout = self.dev.wait_timeout
         deadline = time.time() + timeout
         if self._wireable():
             while True:
@@ -270,8 +337,11 @@ class _Selector:
             time.sleep(0.1)
         return False
 
-    def wait_gone(self, timeout=10.0):
-        """u2 `d(...).wait_gone(t)` — True once no node matches."""
+    def wait_gone(self, timeout=None):
+        """u2 `d(...).wait_gone(t)` — True once no node matches.
+        timeout=None → settings['wait_timeout']."""
+        if timeout is None:
+            timeout = self.dev.wait_timeout
         deadline = time.time() + timeout
         while time.time() < deadline:
             if self._node() is None:
@@ -308,12 +378,12 @@ class _Selector:
 
     def click(self, timeout=None):
         """u2 `d(...).click(timeout)` — u2 resolves the object with an
-        implicit wait (settings['wait_timeout'], 20s upstream default);
-        M17-G2: the shim previously resolved immediately and raced
-        activity transitions. timeout=None → _IMPLICIT_WAIT (8s, under
-        the agent socket ceiling); timeout=0 opts out (resolve now)."""
+        implicit wait = settings['wait_timeout'] (20s upstream default,
+        M21-G10 coupling); M17-G2: the shim previously resolved
+        immediately and raced activity transitions. timeout=0 opts out
+        (resolve now)."""
         if timeout is None:
-            timeout = _IMPLICIT_WAIT
+            timeout = getattr(self.dev, "wait_timeout", _IMPLICIT_WAIT)
         if timeout:
             ok = self.wait(timeout)
             node = self._node() if ok else None
@@ -693,9 +763,6 @@ class Device:
         return _Selector(self, **kw)
 
     def __enter__(self):
-        # `with dev.session(pkg) as sess` — shim session IS the device;
-        # u2's session-death semantics (running()/SessionBrokenError)
-        # are NOT implemented (deferred, RESULTS-M17 §5-G8).
         return self
 
     def __exit__(self, *exc):
@@ -703,7 +770,10 @@ class Device:
 
     # u2 surface
     def click(self, x, y):
-        return self.a.inject_tap(x, y)["payload"]["ok"]
+        self._op_delay("click", "before")
+        ok = self.a.inject_tap(x, y)["payload"]["ok"]
+        self._op_delay("click", "after")
+        return ok
 
     def long_click(self, x, y, duration=0.5):
         ms = int(duration * 1000)
@@ -714,6 +784,7 @@ class Device:
                         "t_ms": ms}]})["payload"]["ok"]
 
     def swipe(self, x1, y1, x2, y2, duration=0.3, steps=10):
+        self._op_delay("swipe", "before")
         ok = self.a.inject_swipe(x1, y1, x2, y2,
                                  int(duration * 1000),
                                  steps)["payload"]["ok"]
@@ -722,13 +793,17 @@ class Device:
         # client-side contract BLOCKS for `duration`. Host-side sleep
         # approximates the client-visible contract (wall time >= dur).
         time.sleep(duration)
+        self._op_delay("swipe", "after")
         return ok
 
     def press(self, key):
+        self._op_delay("press", "before")
         code = _KEYCODES.get(str(key).lower(), None)
         if code is None:
             code = int(key)
-        return self.a.inject_key(code)["payload"]["ok"]
+        ok = self.a.inject_key(code)["payload"]["ok"]
+        self._op_delay("press", "after")
+        return ok
 
     def set_text(self, s):
         p = self.a.text(s)["payload"]
@@ -858,14 +933,13 @@ class Device:
         return None
 
     def session(self, pkg, attach=False, launch_timeout=None):
-        """u2 `d.session` simplified: launch pkg and wait foreground, return
-        self. u2's crash-watch relaunch loop is NOT implemented."""
-        if not attach:
-            self.app_start(pkg)
-        if self.app_wait(pkg, timeout=launch_timeout or 10.0,
-                         front=True) is None:
-            raise RuntimeError(f"session: {pkg} did not reach foreground")
-        return self
+        """u2 `d.session(pkg, attach=False, launch_timeout=None)` — a
+        package-scoped Session object (M21-G8): `running()` polls
+        foreground, ops raise SessionBrokenError once the app dies,
+        `with sess` stops the app on exit. The crash watch is a lazy
+        poll at op time — NOT u2's resident server watcher."""
+        return Session(self, pkg, attach=attach,
+                       launch_timeout=launch_timeout)
 
     def send_keys(self, text, clear=False):
         """u2 `d.send_keys`: type into the focused field — rides the TEXT
@@ -993,14 +1067,52 @@ class Device:
 
     @property
     def settings(self):
-        """u2 `d.settings` — transparent dict: keys read/write freely.
-        u2's TYPE validation (`xpath_debug` must be bool) and COUPLING
-        (`wait_timeout`/`implicit_wait`/`operation_delay` actually
-        driving behavior) are NOT implemented — RESULTS-M17 §5-G10."""
+        """u2 `d.settings` — _Settings dict: known keys are type-checked
+        (`xpath_debug` bool, `wait_timeout` number, `operation_delay`
+        (before, after) tuple, `operation_delay_methods` list — wrong
+        types raise TypeError/ValueError like u2); unknown keys stay
+        transparent. `wait_timeout` couples into wait()/wait_gone()/
+        click implicit wait; `operation_delay` couples into
+        click/swipe/press (M21-G10)."""
         store = getattr(self, "_settings_store", None)
         if store is None:
-            store = self._settings_store = {}
+            store = self._settings_store = _Settings()
         return store
+
+    @property
+    def wait_timeout(self):
+        """u2 `d.wait_timeout` — current implicit-wait budget (reads
+        settings['wait_timeout'])."""
+        return self.settings["wait_timeout"]
+
+    def implicitly_wait(self, timeout):
+        """u2 `d.implicitly_wait(t)` — set settings['wait_timeout']."""
+        self.settings["wait_timeout"] = timeout
+
+    def _op_delay(self, method, phase):
+        """u2 operation_delay=(before, after) seconds, applied only to
+        methods in settings['operation_delay_methods']."""
+        s = self.settings
+        if method not in s.get("operation_delay_methods", ()):
+            return
+        delay = s.get("operation_delay", (0, 0))
+        d = delay[0] if phase == "before" else delay[1]
+        if d:
+            time.sleep(float(d))
+
+    @property
+    def jsonrpc(self):
+        """u2 `d.jsonrpc` — raw rpc surface. The shim maps it to the
+        agent client (named ops, not u2's full jsonrpc object model —
+        RESULTS-M17 §5-G6 still documents that defer)."""
+        return self.a
+
+    @property
+    def xpath(self):
+        """u2 `d.xpath` — xpath is a documented NON-goal; the attribute
+        exists so `dev.xpath` checks don't AttributeError. Any use
+        raises honestly."""
+        return _XPathStub()
 
     def push(self, src, dst="/sdcard/"):
         """u2 `d.push(local, remote)` — adb spawn; `src` may be a path,
@@ -1070,10 +1182,101 @@ class Device:
         self.a.close()
 
 
-# u2's `u2.Session` is the object `d.session()` returns; the shim's
-# session() returns the Device itself (crash-watch semantics deferred
-# — G8), so the honest type alias is Device.
-Session = Device
+class _SessionSelector(_Selector):
+    """Selector created via `sess(...)` — every resolution re-checks the
+    session: ops raise SessionBrokenError once the app is gone."""
+
+    def __init__(self, sess, **kw):
+        self._sess = sess
+        super().__init__(sess._dev, **kw)
+
+    def _node(self):
+        self._sess._check()
+        return super()._node()
+
+    def _nodes(self):
+        self._sess._check()
+        return super()._nodes()
+
+    def wait(self, timeout=None):
+        self._sess._check()
+        return super().wait(timeout)
+
+    def wait_gone(self, timeout=None):
+        self._sess._check()
+        return super().wait_gone(timeout)
+
+
+class Session:
+    """u2 `d.session(pkg, attach=False, launch_timeout=None)` — a
+    package-scoped device view (M21-G8).
+
+    - attach=False launches the app; attach=True binds a running app.
+    - `sess(...)` returns a _SessionSelector; any op raises
+      SessionBrokenError once the app is no longer foreground —
+      checked lazily per op, NOT by a resident watcher like u2's
+      server-side session (RESULTS-M17 §5-G8 approximation note).
+    - `with sess` exits by force-stopping the app (u2 semantics).
+    - Everything else delegates to the device (`sess.click(x,y)`,
+      `sess.settings`, …) via __getattr__."""
+
+    def __init__(self, dev, pkg, attach=False, launch_timeout=None):
+        self._dev, self._pkg, self._closed = dev, pkg, False
+        if not attach:
+            dev.app_start(pkg)
+        if dev.app_wait(pkg, timeout=launch_timeout or 10.0,
+                        front=True) is None:
+            raise RuntimeError(f"session: {pkg} did not reach foreground")
+
+    def __call__(self, **kw):
+        self._check()
+        return _SessionSelector(self, **kw)
+
+    def __getattr__(self, name):
+        dev = self.__dict__.get("_dev")
+        if dev is None:
+            raise AttributeError(name)
+        return getattr(dev, name)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self._closed = True
+        self._dev.app_stop(self._pkg)
+        return False
+
+    def running(self):
+        """u2 `sess.running()` — is the session app still foreground.
+        Shim: polls app_current() per call (lazy crash detection —
+        a crash surfaces on the next op, not eagerly)."""
+        if self._closed:
+            return False
+        try:
+            return self._dev.app_current().get("package") == self._pkg
+        except Exception:
+            return False
+
+    def close(self):
+        """u2 `sess.close()` — stop the app and seal the session."""
+        self._closed = True
+        self._dev.app_stop(self._pkg)
+
+    def _check(self):
+        if not self.running():
+            raise SessionBrokenError(
+                f"session app {self._pkg} is not running")
+
+
+class _XPathStub:
+    """Placeholder behind `d.xpath` — xpath is a documented non-goal.
+    Any attribute/call raises NotImplementedError honestly."""
+
+    def __call__(self, *a, **kw):
+        raise NotImplementedError("u2shim: xpath not supported")
+
+    def __getattr__(self, name):
+        raise NotImplementedError("u2shim: xpath not supported")
 
 
 def _detect_port(serial=None):

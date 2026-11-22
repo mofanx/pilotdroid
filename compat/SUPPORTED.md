@@ -60,7 +60,7 @@ uiautomator2 `Device` 公共 API 的逐条标注。约定：**drop-in 只承诺�
 | `orientation` get/set | ✅ | `settings user_rotation`；set 冻结重力旋转（同 u2 语义） |
 | `watcher` | ✅ | `d.watcher.when(...).click()` + `.start()/.run()/.stop()/.reset()/.running`——M11 起 agent 0.7.0+（CAP_WATCH_ASYNC）走**设备端异步 watcher**（WATCH_ARM + media 通道 WATCH_HIT 推送，与 u2 server 线程语义对等且 armed 期间不阻塞 control）；旧 agent 回退阻塞 WATCH，再旧回退 host 轮询。规则命中一次即摘除 |
 | `app_wait(pkg,timeout,front)` | ✅ | `pidof`+conn APP_INFO 判前台（M11） |
-| `session(pkg,attach)` | ✅ 简化 | launch+wait foreground；u2 的崩溃看护重启未实现（M11） |
+| `session(pkg,attach)` | ✅ 近似 | 返回 Session 对象：`running()` 前台轮询、app 消亡后 ops 抛 `SessionBrokenError`、`with` 退出 force-stop（M21-G8）。**崩溃看护是 op 时惰性轮询，非 u2 server 常驻看护**——崩溃在下一次操作时暴露而非即时 |
 | `send_keys(text,clear)` | ✅ | TEXT op（ACTION_SET_TEXT 于 focused 节点，M11） |
 | `open_notification()` `open_quick_settings()` | ✅ | `cmd statusbar expand-*`（M11） |
 | `freeze_rotation(bool)` | ✅ 近似 | `settings accelerometer_rotation` 开关（M11） |
@@ -101,11 +101,19 @@ benchmark/suite 跑旧 targetSdk app 前需先放行（openatx u2 官方
 单点阻断）；Tier-B 1 pass / 18 fail——如实分桶 **7 API 面缺 /
 10 xpath（已知 ❌）/ 1 swipe 阻塞语义分歧**，G1–G11 明细见 ledger §5。
 
-- **defer（明示不复制 u2 内部对象模型）**：G8 session 对象
-  （`running()`/上下文管理器/`SessionBrokenError`——`session()` 返回
-  self 已是明示降级）；G10 settings 全语义（类型校验+wait_timeout
-  联动——透明 dict 仅作 fixture 管道）；G6 `jsonrpc` 等 u2 内部面
-  （`wlan_ip` 已实装，M18）。
+- **defer（明示不复制 u2 内部对象模型）**：G6 `jsonrpc` 等 u2 内部面
+  ——`d.jsonrpc` 现为 agent client 透传（可访问 shim 底层 ops，非 u2
+  jsonrpc 对象模型）；`d.xpath` 返回 stub，任何调用诚实报错（xpath
+  仍为明确非目标）。
+- **M21 已实装（近似注记）**：G8 session 对象模型（`Session`/
+  `running()`/`with` 退出 stop/`SessionBrokenError`——惰性轮询非
+  常驻看护）；G10 settings 全语义（已知键类型校验——
+  `xpath_debug` bool/`wait_timeout` 数值/`operation_delay` (before,
+  after) tuple/`operation_delay_methods` 列表；`wait_timeout` 联动
+  `wait()`/`wait_gone()`/`click` 隐式等待 + `d.wait_timeout`/
+  `implicitly_wait()`；`operation_delay` 联动 click/swipe/press）。
+  未知 settings 键仍透明放行（shim fixture 管道——宽于 u2 的
+  NameError 口径）。
 - **G4 swipe**：agent 端异步手势是 M10 架构决策，设备端 duration
   仍生效但调用不阻塞 u2 客户端口径——不改 agent 阻塞。
 - **M18 已实装**（shim 层补齐批，verbatim 8/30 pass）：`get_text`、
@@ -113,4 +121,8 @@ benchmark/suite 跑旧 targetSdk app 前需先放行（openatx u2 官方
   `app_auto_grant_permissions`（及 `settings`、`wlan_ip`、
   `app_current.pid`、`app_start` front-wait/`stop=`、`click` 隐式等待、
   `swipe` host-sleep、`watch_context` ctx-mgr）。
+- **M21 方法面**（doc-drift 注册）：`session()`→`Session` 对象
+  （`running`/`close`/`__enter__`/`__exit__`/委托 `__getattr__`）、
+  `implicitly_wait`、`wait_timeout`、`jsonrpc`（透传）、`xpath`（stub）、
+  `_Settings` 校验字典。
 - 其余 shim 层补齐进度随 0.6.2 changelog / ledger 更新。
