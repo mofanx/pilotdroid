@@ -32,5 +32,5 @@
 - [x] ②publish draft（自动化执行）
 - [x] ③pypi.yml 结论已知（红，可信发布未配——见上）
 - [x] ④install-smoke 8/8
-- [ ] ⑤branch protection 4 checks（rust/python/agent-jar-sync/agent-jar-repro）
+- [x] ⑤branch protection：4 checks+strict=true（gh api PUT 实证返回）
 - [ ] ⑥MCP registry 提交（docs/mcp/SUBMIT.md）
