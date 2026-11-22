@@ -4,6 +4,8 @@ uiautomator2-compatible Python client over the pilotdroid device agent.
 Persistent socket, no per-op uiautomator server — ~10x device-op latency vs
 stock u2 (see repo `spike/e2e/RESULTS-*.md`).
 
+mcp-name: io.github.mofanx/pilotdroid
+
 ## Install
 
 ```bash

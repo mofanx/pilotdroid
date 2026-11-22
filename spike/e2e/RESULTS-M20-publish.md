@@ -34,3 +34,15 @@
 - [x] ④install-smoke 8/8
 - [x] ⑤branch protection：4 checks+strict=true（gh api PUT 实证返回）
 - [ ] ⑥MCP registry 提交（docs/mcp/SUBMIT.md）
+
+## MCP registry（post1 收尾）
+
+- `mcp-publisher`（Go `publisher`）+ GitHub PAT（gh token）登录；
+  device-flow 浏览器代点三次 not_found（code 服务端拒）→ 改 `-token` 直登。
+- 首 publish 400：registry 要求 PyPI README 含
+  `mcp-name: io.github.mofanx/pilotdroid`——0.6.1 不可改 →
+  **0.6.1.post1**（PEP440 post-release）：README +mcp-name 行、
+  `_tag()` 剥 `.postN`（仍指向 v0.6.1 release 二进制）、
+  server.json 两处 version→0.6.1.post1、pytest 7/7、twine 上传。
+- `publisher publish` → **io.github.mofanx/pilotdroid@0.6.1.post1
+  已上官方 registry**（`/v0/servers?search=pilotdroid` 回读实证）。

@@ -49,7 +49,8 @@ def _asset_name():
 
 def _tag():
     try:
-        return "v" + importlib.metadata.version("pilotdroid")
+        # post-releases (0.6.1.post1) ship the same release binary — strip
+        return "v" + importlib.metadata.version("pilotdroid").split(".post")[0]
     except importlib.metadata.PackageNotFoundError:
         return "latest"  # dev tree without install
 
