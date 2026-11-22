@@ -186,3 +186,27 @@ test_watcher 已转出 PASS）、**1 jsonrpc**（G6）、**1 session
 
 复现：`PILOTDROID_SERIAL=ba0d072d spike/e2e/u2suite/run.sh`
 （seam alias+verbatim 套件已入库 `spike/e2e/u2suite/`，不再依赖 /tmp）。
+
+## 8. M21 复跑（G8 session 对象模型 + G10 settings 全语义后）
+
+**12 pass / 10 fail / 8 skip（30 collected）** — G6/G8/G10 三桶清零：
+`test_session` 5/5 PASS（session_function_exists、app_mixin、
+session_app、session_window_size、auto_grant_permissions）、
+`test_settings` 3/3 PASS（xpath_debug/wait_timeout/operation_delay
+类型校验+联动）。
+
+| fail | 归因 |
+|---|---|
+| xpath×7 + simple::{test_xpath, send_keys} | `d.xpath` 已知 ❌（=9） |
+| watcher::test_watch_context | 环境 flaky——M18 同测曾 PASS，本轮 `Inflate from XML` wait 超时；与 §7 末注的 a11y-lag 竞争同源（SUPPORTED.md 环境敏感性） |
+
+**结论**：8→12 pass，剩余 10 fail = 9 xpath（明示 ❌）+ 1 环境
+flaky，**无未归因 fail、无新代码缺陷**。
+
+**抽查抓到的第 4 个真 bug（复核轮，非套件）**：`Device()` 不消费
+`PILOTDROID_SERIAL`——`d.shell()`/`app_wait`/`app_info`/`session()`
+等 adb 通道在多设备环境静默空输出（exit=1 被吞）；套件靠 seam
+显式传 serial 掩盖。已在 `Device.__init__` 加 env fallback（与
+Rust CLI `Cli::parse` 后的同名逻辑对齐，显式 `serial=` 参数优先）。
+复验：`d.shell('pidof')` 恢复、`session(attach=True)`+
+`running()→False`+op→`SessionBrokenError` 全链实证。

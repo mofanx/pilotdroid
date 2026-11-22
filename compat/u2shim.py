@@ -753,6 +753,7 @@ _ORIENTATION_SET = {"natural": 0, "n": 0, "left": 1, "l": 1, "90": 1,
 
 class Device:
     def __init__(self, port=None, serial=None, agent=None):
+        serial = serial or os.environ.get("PILOTDROID_SERIAL") or None
         port = port or _detect_port(serial)
         self.a = agent or Agent(port).connect()
         self._port = port
