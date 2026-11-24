@@ -182,8 +182,9 @@ test_watcher 已转出 PASS）、**1 jsonrpc**（G6）、**1 session
 对象模型**（G8）、**3 settings 联动**（G10）= 14 与逐项表自洽——全部为已登记 defer，
 **无未归因 fail**。另注：watch_context 单测偶发 a11y-lag 竞争
 （watcher 自动点击与 Menu tap 时序），单跑 1/3 观察为环境敏感性，
-与 SUPPORTED.md 既有第三类同源。（M21 已演化为本环境 3/3 稳定
-复现，见 §8）
+与 SUPPORTED.md 既有第三类同源。（M21 起在本环境 3/3 稳定复现；
+M22 取证定稿：fixture app 被卸 + 画报锁屏/Shade 遮罩两层环境
+失败，watcher arm/hit 链路完好——见 §8）
 
 复现：`PILOTDROID_SERIAL=ba0d072d spike/e2e/u2suite/run.sh`
 （seam alias+verbatim 套件已入库 `spike/e2e/u2suite/`，不再依赖 /tmp）。
@@ -199,10 +200,11 @@ session_app、session_window_size、auto_grant_permissions）、
 | fail | 归因 |
 |---|---|
 | xpath×7 + simple::{test_xpath, send_keys} | `d.xpath` 已知 ❌（=9） |
-| watcher::test_watch_context | 当前环境 **3/3 稳定挂**（单测连跑实证，21-23s 同点超时）：M18 同测曾 PASS，本轮 `Inflate from XML` wait 超时；a11y-lag 环境敏感，非代码缺陷（SUPPORTED.md 环境敏感性） |
+| watcher::test_watch_context | 当前环境 **3/3 稳定挂**，M22 取证定稿为**两层环境失败，非代码缺陷**：① **fixture app 被卸载**——`pm path io.appium.android.apis` rc=1，全部 `io.appium.*` 包消失、`/data/local/tmp/pilotdroid/` 同被清空（launcher 留有"卸载"确认弹窗、`INSTALL_FAILED_USER_RESTRICTED` 示 USB 安装被关——设备有 agent 之外的操作）；此态下 "App" 节点根本不存在→watcher 无的放矢→`Menu` 永不出现，失败点前移至 line 11。② **画报锁屏+NotificationShade 遮罩**——`isKeyguardShowing=true`/`mWakefulness=Dozing`/`mCurrentFocus=NotificationShade`/`mUserActivityTimeoutOverride=10000`，a11y 树全空一切 selector 落空；此态下失败点在 `Inflate from XML` wait（t3 两轮复跑所见）。watcher arm/hit 链路手动探针实证完好（`watch_arm→{'armed':True,'watch_id':5}` 正常应答），**归因定稿：环境失败两类叠加，shim/agent 代码无可疑点**。缓解已落地：`svc power stayon true`、run.sh 前置 KEYCODE_WAKEUP+statusbar collapse、conftest `_device_fixture_guard` 坏态秒报 |
 
 **结论**：8→12 pass，剩余 10 fail = 9 xpath（明示 ❌）+ 1 环境
-敏感项（a11y-lag，本环境 3/3 稳定复现非偶发），**无未归因
+敏感项（a11y-lag/设备态，本环境 3/3 稳定复现非偶发——M22 取证：
+fixture app 被卸 + 锁屏/Shade 遮罩双层原因，见上行），**无未归因
 fail、无新代码缺陷**。
 
 **抽查抓到的第 4 个真 bug（复核轮，非套件）**：`Device()` 不消费
@@ -212,3 +214,13 @@ fail、无新代码缺陷**。
 Rust CLI `Cli::parse` 后的同名逻辑对齐，显式 `serial=` 参数优先）。
 复验：`d.shell('pidof')` 恢复、`session(attach=True)`+
 `running()→False`+op→`SessionBrokenError` 全链实证。
+
+**Fixture 恢复（需用户操作，M22 实测仍受阻）**：`pm install`
+返回 `INSTALL_FAILED_USER_RESTRICTED`（apk 已暂存
+`/data/local/tmp/unknown.apk`），MIUI 侧"USB 安装"处于关闭态。
+用户需在设备上操作：**设置 → 更多设置 → 开发者选项 → 「USB
+安装」/「通过 USB 验证并安装应用」开启**（MIUI 常要求登录小米
+账号）；随后 `adb -s ba0d072d shell pm install -r -t
+--bypass-low-target-sdk-block /data/local/tmp/unknown.apk`
+即可。恢复后 `PILOTDROID_SERIAL=ba0d072d spike/e2e/u2suite/run.sh`
+复跑定分（conftest `_device_fixture_guard` 会先秒验 fixture）。
