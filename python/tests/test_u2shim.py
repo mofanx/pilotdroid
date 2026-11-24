@@ -185,6 +185,83 @@ class TestStubs(unittest.TestCase):
         with self.assertRaises(NotImplementedError):
             stub("//node")
 
+    def test_xpath_stub_hasattr_not_blown(self):
+        # __getattr__ must raise AttributeError so hasattr() probing
+        # returns False instead of surfacing NIE.
+        d = _bare_device()
+        stub = d.xpath("anything") if False else u2shim._XPathStub()
+        self.assertFalse(hasattr(stub, "parent"))
+        with self.assertRaises(NotImplementedError):
+            stub("App")
+
+
+class TestSerialEnv(unittest.TestCase):
+    """Device() falls back to PILOTDROID_SERIAL; explicit arg wins —
+    same contract as the Rust CLI's env fallback."""
+
+    def _mk(self, serial=None):
+        class _A:
+            def hello(self):
+                return {"payload": {"caps": 0}}
+
+        return u2shim.Device(port=1, serial=serial, agent=_A())
+
+    def test_env_fallback(self):
+        old = os.environ.get("PILOTDROID_SERIAL")
+        os.environ["PILOTDROID_SERIAL"] = "envdev"
+        try:
+            self.assertEqual(self._mk().serial, "envdev")
+        finally:
+            if old is None:
+                del os.environ["PILOTDROID_SERIAL"]
+            else:
+                os.environ["PILOTDROID_SERIAL"] = old
+
+    def test_explicit_serial_wins(self):
+        os.environ["PILOTDROID_SERIAL"] = "envdev"
+        try:
+            self.assertEqual(self._mk(serial="explicit").serial,
+                             "explicit")
+        finally:
+            del os.environ["PILOTDROID_SERIAL"]
+
+
+class TestPidofFallback(unittest.TestCase):
+    """app_wait must not die when `pidof` returns nothing — custom
+    android:process names (pkg:remote) are found via the ps scan."""
+
+    def test_remote_process_name(self):
+        d = _bare_device()
+        outputs = {"pidof io.test": "",
+                   "ps -A -o PID,NAME": "PID NAME\n777 io.test:remote\n"}
+        d.shell = lambda c: u2shim.ShellResponse(
+            outputs.get(c, ""), 0)
+        d.app_current = lambda: {"package": "com.other"}
+        self.assertEqual(d.app_wait("io.test", timeout=1, front=False),
+                         777)
+
+
+class TestWatcherError(unittest.TestCase):
+    def test_run_async_failure_observable(self):
+        # media_connect blowing up must surface via last_error +
+        # running()==False, not a silently dead thread.
+        import socket as _s
+        d = _bare_device()
+        d._media_forward = lambda: ("x", 0)
+        d.caps = 0x400
+        w = u2shim._Watcher(d)
+        def boom(_):
+            raise _s.timeout("media refused")
+        old = u2shim.media_connect
+        u2shim.media_connect = boom
+        try:
+            w._running = True
+            w._run_async()
+        finally:
+            u2shim.media_connect = old
+        self.assertIsInstance(w.last_error, _s.timeout)
+        self.assertFalse(w._running)
+
 
 if __name__ == "__main__":
     unittest.main()

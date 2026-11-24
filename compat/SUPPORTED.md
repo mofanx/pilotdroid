@@ -50,7 +50,7 @@ uiautomator2 `Device` 公共 API 的逐条标注。约定：**drop-in 只承诺�
 | `screenshot(path)` | ✅ | shim 额外 `scale`/`quality` 参数；返回 JPEG bytes |
 | `dump_hierarchy()` | ✅ | 返回 XML 字符串（agent 原生生成，节点属性集与 uiautomator dump 近似） |
 | `info` | ⚠️ 子集 | 仅 displayWidth/displayHeight/sdkInt/agent |
-| `app_start(pkg)` `app_stop(pkg)` `app_current()` | ✅ | app_start 用 `am start`（u2 用 monkey）；`app_current` 返回 `{package,activity}`——M11 起有 CAP_APP_INFO 时走 conn op（~ms），`activity` 为 `null`（a11y 不暴露）；否则回退 dumpsys |
+| `app_start(pkg)` `app_stop(pkg)` `app_current()` | ✅ | app_start 用 `am start`（u2 用 monkey）；`app_current` 返回 `{package,activity}`——M11 起有 CAP_APP_INFO 时走 conn op（~ms），`activity` 为 `null`（a11y 不暴露，**设计边界**，勿依赖该键）；否则回退 dumpsys |
 | `shell(cmd)` | ✅ | 返回 `ShellResponse(output, exit_code)`，同 u2 |
 | `clear_text()` | ✅ | 聚焦编辑框清空（ACTION_SET_TEXT 空串，免 IME） |
 | `app_list()` `app_info(pkg)` | ✅ | `pm list`/`dumpsys package`；app_info 为 versionName/Code 子集 |
