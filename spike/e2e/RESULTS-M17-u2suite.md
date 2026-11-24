@@ -224,3 +224,21 @@ Rust CLI `Cli::parse` 后的同名逻辑对齐，显式 `serial=` 参数优先�
 --bypass-low-target-sdk-block /data/local/tmp/unknown.apk`
 即可。恢复后 `PILOTDROID_SERIAL=ba0d072d spike/e2e/u2suite/run.sh`
 复跑定分（conftest `_device_fixture_guard` 会先秒验 fixture）。
+
+## 附：fixture 恢复后复跑定稿（v0.6.2 发布后补记）
+
+用户开启 MIUI「USB 安装」后 `INSTALL_FAILED_USER_RESTRICTED`
+仍现——实证根因非开关未开，而是 `com.miui.securitycenter/
+permcenter.install.AdbInstallActivity` 确认弹窗 10s 倒计时无
+人点按自动拒绝（logcat 实证该 Activity 弹起又超时）。解法：
+agent a11y dump 定位「继续安装」按钮 bounds 后 `inject_tap`
+自动确认——`adb install --bypass-low-target-sdk-block` 一次过
+（第二道闸 `DEPRECATED_SDK_VERSION` 由该 flag 解，与预留一致）。
+
+**fixture 恢复后全量复跑：13 pass / 9 fail / 8 skip（30
+collected，34.8s）**——`watch_context` **PASS**（M22 归因
+实证闭环：两层环境失败定稿无误，shim/agent 零代码改动即转正）；
+剩余 9 fail 全部为 `d.xpath` NotImplementedError（明示非目标）。
+插曲：复装后首启被 `com.lbe.security.miui` ReviewPermissions
+拦（SUPPORTED.md 已登记环境敏感项）导致 session 两测先挂，
+手动启动一次 ApiDemos 过审后全绿——该拦截属一次性首启行为。

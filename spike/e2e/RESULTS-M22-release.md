@@ -48,8 +48,11 @@
 
 ## 已登记环境项（如实，非回归）
 
-- ApiDemos fixture 未恢复（MIUI USB-install 受限，用户操作项——
-  步骤见 RESULTS-M17 §8）；smoke 设备步骤不依赖 fixture app，
-  setup/MCP 握手不受影响。
-- `watch_context` 归因维持：两层环境失败（fixture 缺失 + 锁屏/
-  Shade），非代码缺陷。
+- ApiDemos fixture **已恢复**（发布后用户开「USB 安装」+ agent
+  a11y 自动点掉 `AdbInstallActivity` 10s 倒计时确认框，
+  `adb install --bypass-low-target-sdk-block` Success）。
+- `watch_context` 归因**实证闭环**：fixture 恢复后全量复跑
+  **13 pass / 9 fail / 8 skip**——watch_context PASS，剩余
+  9 fail 全为 xpath 明示非目标，零代码改动。两层环境失败
+  （fixture 缺失 + 锁屏/Shade）定稿无误。详见
+  RESULTS-M17-u2suite.md 末附记。
