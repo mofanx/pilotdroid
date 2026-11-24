@@ -31,9 +31,9 @@ def _fixture_precheck(serial):
     out, rc = sh("pm", "path", _FIXTURE_PKG)
     if rc != 0 or "package:" not in out:
         return (f"{_FIXTURE_PKG} not installed (pm path rc={rc}) — "
-                f"reinstall ApiDemos-debug.apk; MIUI needs the "
-                f"'USB install' toggle + "
-                f"pm install --bypass-low-target-sdk-block")
+                f"run `spike/e2e/u2suite/fixture-doctor.sh` to restore "
+                f"(auto-confirms the MIUI AdbInstallActivity dialog "
+                f"via agent a11y)")
     out, _ = sh("dumpsys", "power")
     for line in out.splitlines():
         if "mWakefulness=" in line:
