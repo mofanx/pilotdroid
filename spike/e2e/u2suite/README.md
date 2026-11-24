@@ -23,7 +23,11 @@ PYTHONPATH=. python3 -m pytest suite/test_simple.py -v   # one file
 - ApiDemos `io.appium.android.apis` must be installed
   (targetSdk 19 → API34 needs `pm install --bypass-low-target-sdk-block`,
   plus one manual「确定」tap on MIUI's ReviewPermissionsActivity —
-  `com.lbe.security.miui`, see RESULTS-M17 §4-E2).
+  `com.lbe.security.miui`, see RESULTS-M17 §4-E2). MIUI's
+  `AdbInstallActivity` USB-install confirm has a **10s auto-deny
+  countdown** — it's not the「USB 安装」toggle; script a tap on
+  「继续安装」via the agent a11y dump (`u2shim` selector → click)
+  during `adb install`, see RESULTS-M22 ledger.
 - adb forward tcp:17932(+17933) → localabstract:pilotdroid_agent(_media).
 
 Verdicts/attribution: ../RESULTS-M17-u2suite.md.
