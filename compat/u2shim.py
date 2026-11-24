@@ -588,6 +588,9 @@ class _Watcher:
         self._running = False   # u2 watcher runs until .stop(), even
                                 # with zero rules (u2suite caught the
                                 # run-exits-on-empty race)
+        self.last_error = None  # fatal watcher-thread failure (e.g.
+                                # media_connect refused) — observable
+                                # instead of a silently-dead thread
 
     def when(self, *args, **kw):
         # u2 allows positional text / resourceId strings
@@ -681,6 +684,11 @@ class _Watcher:
                         if r_ is rule:
                             self._rules.pop(i)
                             break
+        except Exception as e:
+            # media_connect refused / frame decode died — surface it via
+            # last_error + running()==False instead of a silent thread.
+            self.last_error = e
+            self._running = False
         finally:
             for wid in armed:
                 try:
@@ -926,11 +934,29 @@ class Device:
         Returns pid or None. Foreground check rides the conn APP_INFO path."""
         deadline = time.time() + timeout
         while time.time() < deadline:
-            pid = self.shell(f"pidof {pkg}").output.strip().split()
-            if pid and (not front or
+            pid = self._pidof(pkg)
+            if pid is not None and (not front or
                         self.app_current().get("package") == pkg):
-                return int(pid[0])
+                return pid
             time.sleep(0.5)
+        return None
+
+    def _pidof(self, pkg):
+        """First pid whose process name is `pkg` or `pkg:<sub>`. `pidof
+        <pkg>` alone misses custom `android:process` names and
+        `:remote`-only states — u2 consults running-tasks, so we fall
+        back to a `ps` scan (same source as `app_list_running`)."""
+        out = self.shell(f"pidof {pkg}").output.strip().split()
+        if out:
+            return int(out[0])
+        for line in self.shell("ps -A -o PID,NAME").output.splitlines():
+            parts = line.split()
+            if len(parts) == 2 and (parts[1] == pkg or
+                                    parts[1].startswith(pkg + ":")):
+                try:
+                    return int(parts[0])
+                except ValueError:
+                    pass
         return None
 
     def session(self, pkg, attach=False, launch_timeout=None):
@@ -1277,7 +1303,9 @@ class _XPathStub:
         raise NotImplementedError("u2shim: xpath not supported")
 
     def __getattr__(self, name):
-        raise NotImplementedError("u2shim: xpath not supported")
+        # AttributeError (not NIE) so hasattr()/duck-probing isn't
+        # blown through — calling still raises NIE honestly.
+        raise AttributeError(name)
 
 
 def _detect_port(serial=None):
