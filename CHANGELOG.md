@@ -4,6 +4,59 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.6.2] — Unreleased
+
+### Added
+
+- **u2shim G8 Session 对象模型 + G10 settings 全语义**（M21，openatx
+  官方套件 verbatim 8→12 pass）：`session()` 返回 Session 对象
+  （`running()` 惰性崩溃检测、ctx-mgr `__exit__` 停 app、attach）、
+  `SessionBrokenError`；`settings` 已知键类型校验
+  （`xpath_debug`/`wait_timeout`/`operation_delay`）、`wait_timeout`
+  与 `_Selector.wait` 联动、`operation_delay` 操作间隔、未知键透明
+  dict 透传。剩余 10 fail = 9 xpath（明示不支持）+ 1 `watch_context`
+  （环境敏感，非代码缺陷）。
+- **u2shim watcher 错误可观测面**（M22）：`_Watcher.last_error` —
+  `_run_async` 的 `media_connect` 拒绝/帧解码失败不再静默死线程，
+  异常写入 `last_error` 并使 `running` 变 False。
+- **u2suite conftest fixture 预检 + 设备前置**（M22）：session 级
+  fixture 查 `pm path io.appium.android.apis` + `mWakefulness`/
+  keyguard，坏则秒报 fixture broken（不再 20s 超时）；run.sh 加
+  wakeup + `cmd statusbar collapse` 前置。
+
+### Fixed
+
+- **`Device()` 消费 `PILOTDROID_SERIAL` 环境变量**（serial bug4）：
+  显式 `serial=` 优先、env 兜底——此前多设备环境下 adb 路径静默空
+  serial。单测钉死两级优先级。
+- **`_XPathStub.__getattr__` 改抛 `AttributeError`**（`__call__` 仍为
+  `NotImplementedError`）——`hasattr(d.xpath, 'x')` 探测不再被
+  NIE 击穿。
+- **`app_wait` 进程判定兜底**：`pidof` 落空时扫 `ps -A -o PID,NAME`
+  匹配 `pkg`/`pkg:<sub>`（自定义 `android:process` 进程名场景，
+  u2 走 running-tasks 而非 pidof）；`app_current().pid` 同路径统一。
+- **release.yml**：存在 `docs/release-notes-<tag>.md` 时用
+  `--notes-file`，仅缺失时才回退 `--generate-notes`——修掉 curated
+  notes 被 dependabot-only 生成稿覆写的坑。
+- **install-smoke.sh**：安装前轮询 `pip index versions`（12×5s 有界
+  等待），并修掉 `pip -q` 静默列表输出导致索引可见性误判的问题。
+
+### Documentation / infra
+
+- **MCP registry 首次发布**：`io.github.mofanx/pilotdroid@0.6.1.post1`
+  （README 加 `mcp-name` 所有权标记；`cli_bootstrap._tag()` 剥
+  `.postN` 使 post 版仍解析主 release tag）。
+- **`docs/PUBLISH.md` 发布 runbook**：五步用户闸 + 预发布 checklist；
+  明确 tag=发布基准≠HEAD 语义；Step 6 记录 registry 快照不跟随、
+  每次 release 需重跑 `mcp-publisher publish`。
+- **GitHub 环境 `pypi` + trusted publisher 已配**（owner/repo/workflow/
+  environment 四元组）——0.6.2 起 PyPI 发布走 OIDC 全自动。
+- **分支保护启用**：main 强制 4 required checks（rust/python/
+  agent-jar-sync/agent-jar-repro）。
+- `RESULTS-M17-u2suite.md`：`watch_context` 归因定稿——fixture app
+  缺失 + 锁屏/Shade 遮罩两层环境失败（当前环境 3/3 稳定复现，
+  watcher arm/hit 链路已证完好，非代码缺陷）。
+
 ## [0.6.1]
 
 ### Added
