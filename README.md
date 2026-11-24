@@ -56,8 +56,8 @@ exposed to MCP clients via `stream_read`.
   pilotdroid-cli -s <serial> setup
   ```
 - **源码构建**：`cargo install --locked --path crates/pilotdroid-cli`（Rust 1.74+）。
-- **Python u2 shim**：`pip install pilotdroid`（v0.6.1 publish 后生效；
-  此前用 git 安装 `pip install "git+https://github.com/mofanx/pilotdroid#subdirectory=python"`）
+- **Python u2 shim**：`pip install pilotdroid`（已上 PyPI；
+  亦可用 git 安装 `pip install "git+https://github.com/mofanx/pilotdroid#subdirectory=python"`）
 
   仓库内可用 `pip install ./python`；随后 `from pilotdroid import u2shim`。
 - agent.jar 亦可单独取用：Release assets 或仓库 `agent/agent.jar`（与 CLI 内嵌字节一致）。

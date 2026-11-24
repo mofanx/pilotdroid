@@ -77,8 +77,12 @@ GitHub → Settings → Branches → protect `main`, required status checks:
 
 ## Follow-ups after publish
 
-- Homebrew tap formula sha256s are prefilled from the v<VER> draft
-  assets — verify against the published `SHA256SUMS.txt` once more.
+- **Required: bump the Homebrew tap** — `mofanx/homebrew-pilotdroid`
+  `Formula/pilotdroid.rb`: `version`, both `url`s (v<VER>), and both
+  `sha256`s from the published `SHA256SUMS.txt`, then commit+push.
+  Skipping this leaves `brew install/upgrade` pinned to the previous
+  release (it stayed on 0.6.1 until manually bumped after v0.6.2
+  shipped).
 - **Step 6 (post-publish): MCP registry submission** — follow
   `docs/mcp/SUBMIT.md`. Prerequisite: `pilotdroid==<VER>` must be
   visible on the PyPI index (step-3 polling covers this; the registry
