@@ -1046,9 +1046,9 @@ class Device:
             if p.get("pkg"):
                 info = {"package": p["pkg"],
                         "activity": p.get("activity")}
-                pid = self.shell(f"pidof {info['package']}").output.strip()
+                pid = self._pidof(info["package"])
                 if pid:
-                    info["pid"] = int(pid.split()[0])
+                    info["pid"] = pid
                 return info
         out = subprocess.run(
             self._sh_cmd(["dumpsys", "window"]),
@@ -1061,9 +1061,9 @@ class Device:
             return {}
         info = {"package": m.group(1), "activity": m.group(2)}
         # u2 shape includes `pid` — u2suite test_app_mixin reads it
-        pid = self.shell(f"pidof {info['package']}").output.strip()
+        pid = self._pidof(info["package"])
         if pid:
-            info["pid"] = int(pid.split()[0])
+            info["pid"] = pid
         return info
 
     def _media_forward(self):

@@ -83,5 +83,10 @@ GitHub → Settings → Branches → protect `main`, required status checks:
   visible on the PyPI index (step-3 polling covers this; the registry
   resolves `uvx pilotdroid` live). SUBMIT.md intentionally says
   "Do not submit yet" until then — including its cold-start caveat.
+  The registry entry is a **snapshot, not a follower**: bump
+  `docs/mcp/server.json` to the new version and re-run
+  `mcp-publisher publish` on **every** release — skipping this leaves
+  the registry pinned at the previous version (as it stayed on
+  `0.6.1.post1` after that one-off post release).
 - Housekeeping: remove stale worktrees (`pilotdroid-m10dist` is
   outdated — `git worktree remove`), check `df -h` (disk was at 97%).
