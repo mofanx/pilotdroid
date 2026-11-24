@@ -1,7 +1,4 @@
-# pilotdroid v0.6.2 — release notes draft
-
-> Paste into the v0.6.2 GitHub Release body. Source of truth for the
-> publish step; keep in sync with `main` until the tag lands.
+# pilotdroid v0.6.2
 
 Device-side UiAutomation agent for Android: single-jar dex under
 `app_process` + `pilotdroid-cli` (agent.jar embedded — one binary does
