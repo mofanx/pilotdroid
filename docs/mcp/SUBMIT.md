@@ -1,7 +1,10 @@
 # MCP registry submission notes
 
-`server.json` is a draft for the official MCP registry
-(`mcp-publisher` / `modelcontextprotocol/registry`). **Do not submit yet.**
+`server.json` is submitted to the official MCP registry
+(`mcp-publisher` / `modelcontextprotocol/registry`) as
+`io.github.mofanx/pilotdroid`. The registry is a snapshot — it does not
+follow releases, so `mcp-publisher publish` must be re-run after every
+release once the new version is visible on PyPI.
 
 ## Status
 
@@ -27,18 +30,20 @@
   tag) downloads a ~MB binary — expect a few seconds before the MCP
   `initialize` responds on a cold cache; later runs exec instantly.
 
-## Remaining blocker
+## Republish steps (every release)
 
-**PyPI first** — `name` uses the github namespace but the `packages[]`
-entry points at `pypi/pilotdroid==0.6.1`, which only exists after the
-v0.6.1 release is published (pypi.yml OIDC pending-publisher flow).
-
-## Submission steps (once unblocked)
+Bump both `version` fields in `server.json` to the new release, wait
+until that version is visible on PyPI, then:
 
 ```bash
 pipx install mcp-publisher
 mcp-publisher login github
 cd docs/mcp && mcp-publisher publish   # reads server.json
 ```
+
+Note: `mcp-publisher login github` uses the device-code flow; if it
+stalls, `mcp-publisher login github -token "$(gh auth token)"` works
+as an alternative auth source (registry JWT is stored locally and
+expires — re-login when publish returns 401).
 
 Registry docs: https://github.com/modelcontextprotocol/registry
