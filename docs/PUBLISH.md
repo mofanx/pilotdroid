@@ -93,5 +93,12 @@ GitHub → Settings → Branches → protect `main`, required status checks:
   `mcp-publisher publish` on **every** release — skipping this leaves
   the registry pinned at the previous version (as it stayed on
   `0.6.1.post1` after that one-off post release).
+- **Required: bump the install-smoke default** —
+  `spike/e2e/install-smoke.sh` `VER="${PILOTDROID_SMOKE_VER:-<VER>}"`
+  to the version just shipped (one line; also refresh the stale
+  header comment if it names an old cycle). Skipping this leaves
+  the distribution smoke testing the *previous* release by default
+  (it stayed on 0.6.2 after v0.6.3 shipped — caught in the M25
+  read-only review).
 - Housekeeping: remove stale worktrees (`pilotdroid-m10dist` is
   outdated — `git worktree remove`), check `df -h` (disk was at 97%).

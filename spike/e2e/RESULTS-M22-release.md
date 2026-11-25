@@ -56,3 +56,23 @@
   9 fail 全为 xpath 明示非目标，零代码改动。两层环境失败
   （fixture 缺失 + 锁屏/Shade）定稿无误。详见
   RESULTS-M17-u2suite.md 末附记。
+
+## v0.6.3 发布链（M23/M24 成果兑现，2026-11-25）
+
+| 项 | 值 | 证据 |
+|---|---|---|
+| tag | `v0.6.3` @ `d6d32c2` | `git rev-parse v0.6.3^{}` |
+| release.yml | run `45521202140` → success | gh run list |
+| release 状态 | published，assets 恰 7（agent.jar/whl/sdist/linux/macos-arm64/windows.exe/SHA256SUMS.txt） | `gh release view --json assets,isDraft` |
+| sha256 | `sha256sum -c` 6/6 OK | 本机下载实测 |
+| notes 正文 | `docs/release-notes-v0.6.3.md` curated（M23/M24 真实内容） | `gh release view --json body` |
+| pypi.yml | run `45521551479` → success（**OIDC 第二次绿**） | gh run list |
+| PyPI | `pilotdroid 0.6.3` whl+sdist，`latest=0.6.3` | `/pypi/pilotdroid/json` |
+| install-smoke | `PILOTDROID_SMOKE_VER=0.6.3` → **9 pass / 0 fail**——step 2b `Device.xpath`+`_xp_eval` 罐头 eval **真断言通过**（非 SKIP；0.6.3 wheel 首个含 xpath-lite 的发布件） | t3 实跑 |
+| MCP registry | `io.github.mofanx/pilotdroid`：`0.6.3`→active+isLatest / `0.6.2`→active / `0.6.1.post1`→deprecated | `/v0/servers/.../versions` 读回 |
+| Homebrew tap | `mofanx/homebrew-pilotdroid` `384afa1`：version+url×2+sha256×2=0.6.3（取自发布 SUMS） | `gh api` 读回 |
+
+**发版尾巴遗留（M25 本批修）**：`install-smoke.sh` VER 默认
+滞留 0.6.2（裸跑测的是上一版）——根因是 runbook 无此步，
+本批同步在 PUBLISH.md 补 Required 条目 + VER→0.6.3 +
+CHANGELOG 加 `## [Unreleased]` 桩。

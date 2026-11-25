@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# install-smoke.sh — post-publish distribution smoke (run AFTER v0.6.1 publish)
+# install-smoke.sh — post-publish distribution smoke (run AFTER <VER> publish)
 #
-# 前置：v0.6.1 release 已 publish（非 draft）+ PyPI 上 pilotdroid==0.6.1 可见。
+# 前置：v<VER> release 已 publish（非 draft）+ PyPI 上 pilotdroid==<VER> 可见。
 # 本脚本验证分发叙事端到端可用——之前所有 e2e 都跑 dev-tree，安装产物从未
 # 实测过（M14 发现：whl 仅 u2shim+agent_client，无 CLI 二进制无 agent.jar，
 # 纯 pip 用户必须另装 pilotdroid-cli；M15 起 whl 自带 lazy-bootstrap CLI）。
@@ -9,7 +9,7 @@
 # 用法: spike/e2e/install-smoke.sh [serial]   每步打印 PASS/FAIL，末尾汇总。
 set -u
 # 被测发布版本；下个 milestone 只需改这一处（或 env 覆盖）。
-VER="${PILOTDROID_SMOKE_VER:-0.6.2}"
+VER="${PILOTDROID_SMOKE_VER:-0.6.3}"
 SERIAL="${1:-}"
 ADB=(adb); [ -n "$SERIAL" ] && ADB+=( -s "$SERIAL" )
 V="$(mktemp -d)"; trap 'rm -rf "$V"' EXIT
