@@ -52,6 +52,7 @@ impl<T: AdbTransport> Device<T> {
             adb,
             serial,
             port,
+            socket: socket.to_string(),
             client,
             hello,
             media: None,
@@ -84,6 +85,9 @@ pub struct Session<T: AdbTransport> {
     adb: T,
     serial: String,
     port: u16,
+    /// Control localabstract socket name — retained so mid-session
+    /// crash recovery can re-forward the same socket.
+    socket: String,
     client: AgentClient,
     media: Option<MediaClient>,
     media_port: Option<u16>,
@@ -107,48 +111,101 @@ impl<T: AdbTransport> Session<T> {
         self.hello.caps
     }
 
+    /// Run a control-channel op, transparently recovering a dead agent
+    /// first (atx-agent semantics — docs/03 §5 watchdog). A dead socket
+    /// (`Io` on read EOF/reset, `Protocol(Io)` on write) is definitive:
+    /// the daemon is gone, so the recovery ladder runs and the op is
+    /// replayed once against the fresh session.
+    ///
+    /// Replay caveat: the original request may have reached the device
+    /// before the conn died — replaying a side-effecting op can double
+    /// it (tap twice). `Timeout` is NOT recovered (can't distinguish a
+    /// hung agent from a slow op; replay would be blind).
+    ///
+    /// Watcher/stream state is session-bound on the agent: recovery
+    /// loses armed watchers (`watch_id`s are re-allocated from scratch,
+    /// so a stale id may collide with a new live one) and any active
+    /// stream. Media-side callers surface the error after healing the
+    /// control conn for the next op.
+    fn with_client<R>(&mut self, f: impl Fn(&mut AgentClient) -> Result<R>) -> Result<R> {
+        match f(&mut self.client) {
+            Err(e) if is_dead_transport(&e) => {
+                self.recover()?;
+                f(&mut self.client)
+            }
+            r => r,
+        }
+    }
+
+    /// Tear down dead session state and re-run the watchdog ladder:
+    /// media conn/forwards die with the agent; the stale control forward
+    /// is removed; `connect_recover` restarts (or reinstalls) the daemon
+    /// and re-handshakes. `port`/`hello` are refreshed — the media
+    /// `port+1` strategy keeps working afterwards.
+    fn recover(&mut self) -> Result<()> {
+        self.teardown_media();
+        self.streaming = false;
+        let socket = self.socket.clone();
+        let _ = AgentManager::new(&mut self.adb).disconnect(&self.serial, self.port);
+        // Re-forward the SAME port: keeps the media `port+1` heuristic
+        // and any external forward bookkeeping valid, and lets test
+        // transports that pin a fake agent on one port keep working.
+        let (client, port, hello) = AgentManager::new(&mut self.adb).connect_recover(
+            &self.serial,
+            Some(self.port),
+            &socket,
+            None,
+        )?;
+        self.client = client;
+        self.port = port;
+        self.hello = hello;
+        Ok(())
+    }
+
     pub fn tap(&mut self, x: f32, y: f32) -> Result<InjectAck> {
-        self.client.tap(x, y, true)
+        self.with_client(|c| c.tap(x, y, true))
     }
 
     pub fn press(&mut self, keycode: u32, meta: Option<u32>) -> Result<InjectAck> {
-        self.client.press(keycode, meta)
+        self.with_client(|c| c.press(keycode, meta))
     }
 
     pub fn swipe(&mut self, x1: f32, y1: f32, x2: f32, y2: f32, ms: u64) -> Result<InjectAck> {
-        self.client.swipe(x1, y1, x2, y2, ms)
+        self.with_client(|c| c.swipe(x1, y1, x2, y2, ms))
     }
 
     /// u2-parity long_click: DOWN at t=0, UP at `ms` — same Tap kind,
     /// wait_finish=false (compat/u2shim.py long_click semantics).
     pub fn long_click(&mut self, x: f32, y: f32, ms: u64) -> Result<InjectAck> {
-        self.client.inject(InjectReq {
-            kind: InjectKind::Tap,
-            points: vec![
-                MotionPoint {
-                    action: ACTION_DOWN,
-                    x,
-                    y,
-                    t_ms: 0,
-                    pid: None,
-                },
-                MotionPoint {
-                    action: ACTION_UP,
-                    x,
-                    y,
-                    t_ms: ms,
-                    pid: None,
-                },
-            ],
-            wait_finish: false,
-            keycode: None,
-            meta: None,
-            backend: None,
+        self.with_client(|c| {
+            c.inject(InjectReq {
+                kind: InjectKind::Tap,
+                points: vec![
+                    MotionPoint {
+                        action: ACTION_DOWN,
+                        x,
+                        y,
+                        t_ms: 0,
+                        pid: None,
+                    },
+                    MotionPoint {
+                        action: ACTION_UP,
+                        x,
+                        y,
+                        t_ms: ms,
+                        pid: None,
+                    },
+                ],
+                wait_finish: false,
+                keycode: None,
+                meta: None,
+                backend: None,
+            })
         })
     }
 
     pub fn set_text(&mut self, text: &str, clear: bool) -> Result<()> {
-        self.client.set_text(text, clear)
+        self.with_client(|c| c.set_text(text, clear))
     }
 
     /// Two-pointer pinch (CAP_MULTI_PTR): both fingers start `r0` px from
@@ -211,13 +268,15 @@ impl<T: AdbTransport> Session<T> {
             t_ms: 10 + duration_ms + 10,
             pid: Some(0),
         });
-        self.client.inject(InjectReq {
-            kind: InjectKind::Swipe,
-            points,
-            wait_finish: true,
-            keycode: None,
-            meta: None,
-            backend: None,
+        self.with_client(|c| {
+            c.inject(InjectReq {
+                kind: InjectKind::Swipe,
+                points: points.clone(),
+                wait_finish: true,
+                keycode: None,
+                meta: None,
+                backend: None,
+            })
         })
     }
 
@@ -231,18 +290,20 @@ impl<T: AdbTransport> Session<T> {
         action: &str,
         timeout_ms: Option<u64>,
     ) -> Result<WatchArmAck> {
-        self.client.watch_arm(WatchArmReq {
-            selector,
-            action: Some(WatchAction {
-                r#type: action.to_string(),
-            }),
-            timeout_ms,
-            poll_ms: None,
+        self.with_client(|c| {
+            c.watch_arm(WatchArmReq {
+                selector: selector.clone(),
+                action: Some(WatchAction {
+                    r#type: action.to_string(),
+                }),
+                timeout_ms,
+                poll_ms: None,
+            })
         })
     }
 
     pub fn watch_disarm(&mut self, watch_id: u32) -> Result<bool> {
-        Ok(self.client.watch_disarm(watch_id)?.disarmed)
+        Ok(self.with_client(|c| c.watch_disarm(watch_id))?.disarmed)
     }
 
     /// Attach the media socket for watch events (no stream needed — the
@@ -260,29 +321,40 @@ impl<T: AdbTransport> Session<T> {
         if let Some(ms) = timeout_ms {
             m.set_read_timeout(Duration::from_millis(ms))?;
         }
-        m.recv_event()
+        match m.recv_event() {
+            Err(e) if is_dead_transport(&e) => {
+                // Media conn dead ⇒ agent gone ⇒ the armed watcher is
+                // lost (session-bound). Heal the control conn for the
+                // next op, then surface the failure — callers re-arm.
+                let _ = self.recover();
+                Err(e)
+            }
+            r => r,
+        }
     }
 
     /// APP_INFO — foreground pkg inside UiAutomation (~ms), no adb spawn.
     /// `activity` is None by design (CAP_APP_INFO).
     pub fn app_info(&mut self) -> Result<AppInfoAck> {
-        self.client.app_info()
+        self.with_client(|c| c.app_info())
     }
 
     /// WATCH — device-side selector→action loop (CAP_WATCH, docs/02 §4.9).
     pub fn watch(&mut self, selector: Selector, action: &str, timeout_ms: u64) -> Result<WatchAck> {
-        self.client.watch(WatchReq {
-            selector,
-            action: Some(WatchAction {
-                r#type: action.into(),
-            }),
-            timeout_ms: Some(timeout_ms),
-            poll_ms: None,
+        self.with_client(|c| {
+            c.watch(WatchReq {
+                selector: selector.clone(),
+                action: Some(WatchAction {
+                    r#type: action.into(),
+                }),
+                timeout_ms: Some(timeout_ms),
+                poll_ms: None,
+            })
         })
     }
 
     pub fn dump(&mut self) -> Result<String> {
-        self.client.dump()
+        self.with_client(|c| c.dump())
     }
 
     /// Snapshot the UI tree as a flat, index-addressable element list —
@@ -321,14 +393,16 @@ impl<T: AdbTransport> Session<T> {
     }
 
     pub fn query(&mut self, selector: Selector) -> Result<QueryAck> {
-        self.client.query(QueryReq {
-            selector,
-            attrs: None,
+        self.with_client(|c| {
+            c.query(QueryReq {
+                selector: selector.clone(),
+                attrs: None,
+            })
         })
     }
 
     pub fn exists(&mut self, selector: Selector) -> Result<bool> {
-        self.client.exists(selector)
+        self.with_client(|c| c.exists(selector.clone()))
     }
 
     /// `wait_until` wrapped in a single-op BATCH (§4.3). Returns
@@ -338,15 +412,17 @@ impl<T: AdbTransport> Session<T> {
         selector: Selector,
         timeout_ms: u64,
     ) -> Result<(bool, Option<NodeInfo>)> {
-        let ack = self.client.batch(BatchReq {
-            ops: vec![BatchOp::WaitUntil(WaitUntilReq {
-                selector,
-                timeout_ms,
+        let ack = self.with_client(|c| {
+            c.batch(BatchReq {
+                ops: vec![BatchOp::WaitUntil(WaitUntilReq {
+                    selector: selector.clone(),
+                    timeout_ms,
+                    poll_ms: None,
+                })],
+                fail_policy: FailPolicy::Stop,
+                deadline_ms: None,
                 poll_ms: None,
-            })],
-            fail_policy: FailPolicy::Stop,
-            deadline_ms: None,
-            poll_ms: None,
+            })
         })?;
         let r = ack.results.into_iter().next().unwrap_or(OpResult {
             index: 0,
@@ -375,7 +451,7 @@ impl<T: AdbTransport> Session<T> {
     }
 
     pub fn batch(&mut self, ops: Vec<BatchOp>) -> Result<BatchAck> {
-        self.client.batch_ops(ops)
+        self.with_client(|c| c.batch_ops(ops.clone()))
     }
 
     /// SCREENSHOT, written to `path` when given; returns (format, bytes).
@@ -385,7 +461,7 @@ impl<T: AdbTransport> Session<T> {
         quality: u8,
         scale: Option<f32>,
     ) -> Result<(String, Vec<u8>)> {
-        let (fmt, bytes) = self.client.screenshot("jpeg", quality, scale)?;
+        let (fmt, bytes) = self.with_client(|c| c.screenshot("jpeg", quality, scale))?;
         if let Some(p) = path {
             std::fs::write(p, &bytes).map_err(AgentError::Io)?;
         }
@@ -477,7 +553,7 @@ impl<T: AdbTransport> Session<T> {
         } else {
             (t as f32 + h * 0.2, t as f32 + h * 0.8)
         };
-        self.client.swipe(cx, y_from, cx, y_to, 200)?;
+        self.with_client(|c| c.swipe(cx, y_from, cx, y_to, 200))?;
         Ok(true)
     }
 
@@ -493,12 +569,14 @@ impl<T: AdbTransport> Session<T> {
         scale: Option<f32>,
         quality: Option<u8>,
     ) -> Result<StreamStartAck> {
-        let ack = self.client.stream_start(StreamCtrlReq {
-            op: StreamOp::Start,
-            fps,
-            scale,
-            quality,
-            format: None,
+        let ack = self.with_client(|c| {
+            c.stream_start(StreamCtrlReq {
+                op: StreamOp::Start,
+                fps,
+                scale,
+                quality,
+                format: None,
+            })
         })?;
         self.streaming = true;
         self.media_socket = Some(ack.socket.clone());
@@ -551,7 +629,7 @@ impl<T: AdbTransport> Session<T> {
 
     /// STREAM_CTRL stop + media teardown. Safe to call when not streaming.
     pub fn stream_stop(&mut self) -> Result<StreamStopAck> {
-        let ack = self.client.stream_stop();
+        let ack = self.with_client(|c| c.stream_stop());
         self.teardown_media();
         self.streaming = false;
         ack
@@ -620,6 +698,17 @@ impl<T: AdbTransport> Drop for Session<T> {
         self.teardown_media();
         let _ = AgentManager::new(&mut self.adb).disconnect(&self.serial, self.port);
     }
+}
+
+/// Dead-socket predicate for crash recovery: `Io` covers read EOF/reset
+/// and write failures surface as `Protocol(ProtocolError::Io)` — both
+/// mean the forwarded conn is gone. `Timeout` is deliberately excluded
+/// (hung vs dead is undecidable; replay could double-execute the op).
+fn is_dead_transport(e: &AgentError) -> bool {
+    matches!(
+        e,
+        AgentError::Io(_) | AgentError::Protocol(pilotdroid_proto::ProtocolError::Io(_))
+    )
 }
 
 /// `mCurrentFocus=Window{...} pkg/activity}` — string-parse without a
@@ -767,4 +856,307 @@ fn parse_bounds(s: &str) -> Option<[i32; 4]> {
         x2.parse().ok()?,
         y2.parse().ok()?,
     ])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use pilotdroid_adb::{DeviceInfo, Result as AdbResult, ShellOutput};
+    use pilotdroid_proto::payload::encode;
+    use pilotdroid_proto::{Channel, Frame, OpCode};
+    use std::collections::HashMap;
+    use std::net::{TcpListener, TcpStream};
+    use std::sync::atomic::{AtomicBool, AtomicU16, Ordering};
+    use std::sync::{Arc, Mutex};
+    use std::thread;
+
+    /// AdbTransport stub: `forward` spawns a localhost relay on the
+    /// requested tcp:N port that proxies each accepted conn to the
+    /// CURRENT `active` agent port — models real adb's accept-then-
+    /// close (dial succeeds, upstream failure closes the conn).
+    /// `app_process` in a shell cmd swaps `active` to `revive`
+    /// (None = agent stays dead). All shell cmds + removed forwards
+    /// are recorded for assertions.
+    struct TestAdb {
+        active: Arc<AtomicU16>,
+        revive: Option<u16>,
+        shells: Arc<Mutex<Vec<String>>>,
+        removed: Arc<Mutex<Vec<String>>>,
+        /// port → relay alive flag, so `forward_remove` can release the
+        /// bound port and a later `forward` can re-bind it.
+        listeners: HashMap<u16, Arc<AtomicBool>>,
+    }
+
+    impl AdbTransport for TestAdb {
+        fn list_devices(&mut self) -> AdbResult<Vec<DeviceInfo>> {
+            Ok(vec![])
+        }
+        fn shell(&mut self, _s: &str, cmd: &str) -> AdbResult<ShellOutput> {
+            self.shells.lock().unwrap().push(cmd.to_string());
+            if cmd.contains("app_process") {
+                if let Some(p) = self.revive {
+                    self.active.store(p, Ordering::SeqCst);
+                }
+            }
+            Ok(ShellOutput {
+                stdout: vec![],
+                stderr: vec![],
+                exit_code: Some(0),
+            })
+        }
+        fn push(&mut self, _s: &str, _l: &Path, _r: &str) -> AdbResult<()> {
+            Ok(())
+        }
+        fn pull(&mut self, _s: &str, _r: &str, _l: &Path) -> AdbResult<()> {
+            Ok(())
+        }
+        fn forward(&mut self, _s: &str, local: &str, _r: &str) -> AdbResult<()> {
+            let port: u16 = local.trim_start_matches("tcp:").parse().unwrap();
+            let active = self.active.clone();
+            if self.listeners.contains_key(&port) {
+                // Recovery re-forwards the same port — the relay is
+                // already bound; keep it (real adb replaces the rule).
+                return Ok(());
+            }
+            // Bind synchronously — the dial right after `forward` must
+            // not race the relay listener.
+            let l = TcpListener::bind(("127.0.0.1", port)).unwrap();
+            l.set_nonblocking(true).unwrap();
+            let alive = Arc::new(AtomicBool::new(true));
+            self.listeners.insert(port, alive.clone());
+            thread::spawn(move || {
+                while alive.load(Ordering::SeqCst) {
+                    match l.accept() {
+                        Ok((mut down, _)) => {
+                            let target = active.load(Ordering::SeqCst);
+                            thread::spawn(move || {
+                                if let Ok(mut up) = TcpStream::connect(("127.0.0.1", target)) {
+                                    let mut d2 = down.try_clone().unwrap();
+                                    let mut u2 = up.try_clone().unwrap();
+                                    thread::spawn(move || {
+                                        let _ = std::io::copy(&mut d2, &mut u2);
+                                    });
+                                    let _ = std::io::copy(&mut up, &mut down);
+                                }
+                            });
+                        }
+                        Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                            thread::sleep(Duration::from_millis(5));
+                        }
+                        Err(_) => break,
+                    }
+                }
+            });
+            Ok(())
+        }
+        fn forward_remove(&mut self, _s: &str, l: &str) -> AdbResult<()> {
+            // Record only — the relay stays bound so idempotent
+            // `forward` on the same port keeps working (recovery path).
+            self.removed.lock().unwrap().push(l.to_string());
+            Ok(())
+        }
+    }
+
+    /// Minimal fake agent: HELLO + DUMP, tracks accepted conns so the
+    /// test can kill them (simulating process death).
+    fn spawn_fake() -> (u16, Arc<Mutex<Vec<TcpStream>>>) {
+        let l = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = l.local_addr().unwrap().port();
+        let conns = Arc::new(Mutex::new(Vec::new()));
+        let conns2 = conns.clone();
+        thread::spawn(move || {
+            while let Ok((mut s, _)) = l.accept() {
+                s.set_nodelay(true).ok();
+                conns2.lock().unwrap().push(s.try_clone().unwrap());
+                thread::spawn(move || {
+                    while let Ok(req) = Frame::read_from(&mut s) {
+                        let (ty, payload) = match OpCode::try_from(req.header.msg_type) {
+                            Ok(OpCode::Hello) => (
+                                OpCode::HelloAck as u16,
+                                encode(&HelloAck {
+                                    agent: "fake".into(),
+                                    caps: 0,
+                                    ver: Some("0.0.0".into()),
+                                    proto: None,
+                                    sdk: None,
+                                    abi: None,
+                                    display: None,
+                                    inject: None,
+                                })
+                                .unwrap(),
+                            ),
+                            Ok(OpCode::Dump) => (
+                                OpCode::Dump as u16,
+                                encode(&DumpAck {
+                                    xml: "<hierarchy><node text=\"x\"/></hierarchy>".into(),
+                                })
+                                .unwrap(),
+                            ),
+                            _ => continue,
+                        };
+                        if Frame::new(
+                            Channel::Control,
+                            ty,
+                            req.header.flags & 0x8000,
+                            req.header.req_id,
+                            payload,
+                        )
+                        .write_to(&mut s)
+                        .is_err()
+                        {
+                            break;
+                        }
+                    }
+                });
+            }
+        });
+        (port, conns)
+    }
+
+    /// A port guaranteed to refuse connections (bound then dropped).
+    fn dead_port() -> u16 {
+        TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port()
+    }
+
+    /// Crash the fake agent: accepted conns die (client sees EOF/reset)
+    /// and `active` points at a dead port so recovery's first dial
+    /// fails just like a real dead localabstract.
+    fn kill_agent(conns: &Arc<Mutex<Vec<TcpStream>>>, active: &Arc<AtomicU16>) {
+        for c in conns.lock().unwrap().drain(..) {
+            let _ = c.shutdown(std::net::Shutdown::Both);
+        }
+        active.store(dead_port(), Ordering::SeqCst);
+    }
+
+    #[allow(clippy::type_complexity)]
+    fn adb(
+        active: Arc<AtomicU16>,
+        revive: Option<u16>,
+    ) -> (TestAdb, Arc<Mutex<Vec<String>>>, Arc<Mutex<Vec<String>>>) {
+        let shells = Arc::new(Mutex::new(Vec::new()));
+        let removed = Arc::new(Mutex::new(Vec::new()));
+        (
+            TestAdb {
+                active,
+                revive,
+                shells: shells.clone(),
+                removed: removed.clone(),
+                listeners: HashMap::new(),
+            },
+            shells,
+            removed,
+        )
+    }
+
+    #[test]
+    fn dead_agent_op_recovers_and_replays() {
+        let (a, conns_a) = spawn_fake();
+        let (b, _conns_b) = spawn_fake();
+        let active = Arc::new(AtomicU16::new(a));
+        let (adb_t, shells, removed) = adb(active.clone(), Some(b));
+        let mut s = Device::with_transport(adb_t, "fake")
+            .session_opts(None, "pilotdroid_agent")
+            .unwrap();
+        assert!(s.dump().unwrap().contains("hierarchy"));
+        let old_port = s.port;
+
+        kill_agent(&conns_a, &active);
+
+        // Next op: dead socket → restart ladder → replay on revived agent.
+        assert!(s.dump().unwrap().contains("hierarchy"));
+        assert_eq!(s.port, old_port, "recovery re-forwards the same port");
+        let sh = shells.lock().unwrap().clone();
+        assert!(
+            sh.iter().any(|c| c.contains("pkill")),
+            "restart stop: {sh:?}"
+        );
+        assert!(
+            sh.iter().any(|c| c.contains("app_process")),
+            "restart launch: {sh:?}"
+        );
+        assert!(
+            removed
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|r| r == &format!("tcp:{old_port}")),
+            "stale forward removed"
+        );
+    }
+
+    #[test]
+    fn dead_agent_recovery_exhausted_propagates_error() {
+        let (a, conns_a) = spawn_fake();
+        let active = Arc::new(AtomicU16::new(a));
+        let (adb_t, _shells, _r) = adb(active.clone(), None); // never revives
+        let mut s = Device::with_transport(adb_t, "fake")
+            .session_opts(None, "pilotdroid_agent")
+            .unwrap();
+        assert!(s.dump().is_ok());
+        kill_agent(&conns_a, &active);
+        let err = s.dump().unwrap_err();
+        assert!(
+            matches!(err, AgentError::Recover { .. }),
+            "expected Recover ladder error, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn hung_agent_timeout_is_not_recovered() {
+        // Agent accepts but never answers — Timeout must propagate
+        // unchanged, NOT trigger the restart ladder (replay safety).
+        let l = TcpListener::bind("127.0.0.1:0").unwrap();
+        let hung = l.local_addr().unwrap().port();
+        thread::spawn(move || {
+            while let Ok((s, _)) = l.accept() {
+                thread::spawn(move || {
+                    let mut s = s;
+                    // Answer HELLO so the session establishes, then go silent.
+                    if let Ok(req) = Frame::read_from(&mut s) {
+                        let payload = encode(&HelloAck {
+                            agent: "hung".into(),
+                            caps: 0,
+                            ver: Some("0.0.0".into()),
+                            proto: None,
+                            sdk: None,
+                            abi: None,
+                            display: None,
+                            inject: None,
+                        })
+                        .unwrap();
+                        let _ = Frame::new(
+                            Channel::Control,
+                            OpCode::HelloAck as u16,
+                            req.header.flags & 0x8000,
+                            req.header.req_id,
+                            payload,
+                        )
+                        .write_to(&mut s);
+                    }
+                    loop {
+                        thread::sleep(Duration::from_secs(60));
+                    }
+                });
+            }
+        });
+        let active = Arc::new(AtomicU16::new(hung));
+        let (adb_t, shells, _r) = adb(active, Some(dead_port()));
+        let mut s = Device::with_transport(adb_t, "fake")
+            .session_opts(None, "pilotdroid_agent")
+            .unwrap();
+        let err = s.dump().unwrap_err();
+        assert!(matches!(err, AgentError::Timeout), "got {err:?}");
+        assert!(
+            !shells
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|c| c.contains("app_process")),
+            "timeout must not trigger restart"
+        );
+    }
 }

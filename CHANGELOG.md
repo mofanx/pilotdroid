@@ -8,6 +8,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **Session 看护——agent 崩溃透明自恢复**（Track B，`crates/
+  pilotdroid-agent` `Session::with_client`，atx-agent 语义）：控制
+  通道 op 遇死 socket（读 EOF/reset、`Protocol(Io)` 写失败）→
+  自动跑 watchdog 阶梯（停尸→重拉 daemon→复用同端口 re-forward→
+  HELLO 握手）→原位重放本次 op——调用侧「崩溃后下一次 op 前已
+  重启」，不再暴露 `Io` 错误。边界明示：`Timeout` 不恢复（挂起
+  vs 死亡不可判定，盲重放会双执行）；重放幂等限定——请求可能在
+  conn 断前已下发，副作用 op 存在双执行理论窗口；armed watcher
+  与 stream 是 agent-session-bound，崩溃即丢失（media 侧
+  `watch_recv` 遇死连接先治愈控制通道再原样抛错，调用方 re-arm；
+  watch_id 重新分配，陈旧 id 可能撞新 id）。恢复阶梯穷尽时报
+  `Recover{stage}` 具名错。真机实测：`pkill -f pilotdroid.Agent`
+  后下一 `describe_screen` 1.11s 透明成功（含 800ms 拉起 settle），
+  再次 op 恢复 0.02s 常态。
+
 - **SoM 感知 MCP 工具面**（Track A·M29，`crates/pilotdroid-cli` 新
   `som.rs`——编号空间与 `compat/som.py` 逐字一致）：`describe_screen`
   返回 `{elements, text}`（id↔center↔label/rid/class/C）；

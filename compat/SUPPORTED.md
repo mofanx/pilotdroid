@@ -143,3 +143,11 @@ benchmark/suite 跑旧 targetSdk app 前需先放行（openatx u2 官方
   `describe_screen`/`screenshot_annotated`（SoM-lite 感知，编号空间
   与 `compat/som.py` 一致）、`verify_after`（操作后 dump 断言闭环，
   u2 无此能力）、`watch_arm{push}`（上条）。
+- **Session 看护（M30，atx-agent 语义）**：Rust `Session` 控制通道
+  op 遇死 socket 自动恢复并重放——崩溃在下一次 op 内透明治愈，
+  非惰性抛错（serve/MCP 全工具面受益）。边界：`Timeout` 不恢复
+  （挂起/死亡不可判定）；重放幂等限定（conn 断前请求可能已下发，
+  副作用 op 有双执行窗口）；**armed watcher 与 stream 是
+  agent-session-bound，崩溃即丢失**——`watch_recv` 遇死连接先治愈
+  控制通道再原样抛错，调用方 re-arm 即可；watch_id 重新分配，陈旧
+  id 可能撞新 id。恢复阶梯穷尽 → `Recover{stage}` 具名错。

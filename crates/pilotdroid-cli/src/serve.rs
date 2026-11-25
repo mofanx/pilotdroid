@@ -1688,8 +1688,10 @@ mod tests {
     #[test]
     fn dead_conn_self_heals_next_call() {
         // The fake kills conn 1 right after HELLO (a newer conn took over
-        // — ADR-007). Call 1 hits EOF mid-op → tool error; call 2 lazily
-        // reconnects and the op succeeds — serve survives being replaced.
+        // — ADR-007). Call 1 hits EOF mid-op → Session::with_client runs
+        // the recovery ladder and replays it transparently (t14 session
+        // watchdog / atx-agent semantics) — the caller never sees the
+        // crash; call 2 continues on the healed conn.
         let addr = spawn_fake_kill_first();
         let mut out = Vec::new();
         run(
@@ -1716,13 +1718,17 @@ mod tests {
             .map(|l| serde_json::from_str(l).unwrap())
             .collect();
         assert_eq!(resps.len(), 2);
-        assert_eq!(resps[0]["result"]["isError"], true);
-        assert_eq!(resps[1]["result"]["isError"], false);
-        let text = resps[1]["result"]["content"][0]["text"].as_str().unwrap();
-        assert!(
-            text.contains("\"ok\":true") || text.contains("ok"),
-            "got {text}"
-        );
+        for (i, r) in resps.iter().enumerate() {
+            assert_eq!(
+                r["result"]["isError"], false,
+                "call {i} should succeed via transparent recovery: {r}"
+            );
+            let text = r["result"]["content"][0]["text"].as_str().unwrap();
+            assert!(
+                text.contains("\"ok\":true") || text.contains("ok"),
+                "call {i} got {text}"
+            );
+        }
     }
 
     #[test]
