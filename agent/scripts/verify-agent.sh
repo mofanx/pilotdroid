@@ -89,7 +89,7 @@ miss=[k for k in need if k not in p]
 print("OK "+json.dumps(p) if not miss else "MISS:"+",".join(miss))' > /tmp/hello.res 2>/dev/null \
   || echo "PARSE_FAIL $HELLO" > /tmp/hello.res
 grep -q "^OK" /tmp/hello.res && ok "hello_ack_fields" || bad "hello_ack_fields" "$(cat /tmp/hello.res)"
-echo "$HELLO" | grep -q '"ver": *"0\.7\.1"\|"ver":"0\.7\.1"' \
+echo "$HELLO" | grep -q '"ver": *"0\.7\.2"\|"ver":"0\.7\.2"' \
   && ok "agent_ver" || bad "agent_ver" "$(echo "$HELLO" | head -c 200)"
 
 echo "== A1b CAPS bitmap == INJECT=1 DUMP=2 SHOT=4 QUERY=8 BATCH=16 STREAM=32 TEXT=64 MPTR=128 WATCH=256 WATCH_ASYNC=512 APP_INFO=1024 =="
@@ -322,7 +322,7 @@ adb -s "$DEV" shell 'input keyevent KEYCODE_HOME' >/dev/null 2>&1 || true
 echo "== M4 STREAM (§4.8: one owner session held for start->frames->stop) =="
 adb -s "$DEV" forward tcp:17933 localabstract:pilotdroid_agent_media >/dev/null 2>&1
 STREAM_OUT=$(python3 - "$HERE" "$PORT" 17933 <<'PYEOF' 2>&1
-import sys, time, json
+import sys, time, json, socket, struct
 sys.path.insert(0, sys.argv[1])
 import agent_client as ac
 PORT, MPORT = int(sys.argv[2]), int(sys.argv[3])
@@ -429,6 +429,65 @@ try:
         f"n={n} wall={round(wall,1)}s fps={round(fps,1)}")
 except Exception as e:
     rep("stream_fps", False, e)
+
+# A6 media reserve (agent >=0.7.2, t4 ghost-conn): a second media conn
+# queues behind the owner instead of being busy-rejected, and self-heals
+# into the reader the moment the owner conn dies — mediaDead promotes
+# the reserve rather than halting the stream.
+try:
+    b.stream_start(5, 0.5, 70)
+    m1 = ac.media_connect(MPORT); m1.settimeout(10)
+    if ac.read_frame(m1) is None:
+        raise Exception("owner conn got no frame")
+    m2 = ac.media_connect(MPORT); m2.settimeout(1.5)
+    queued = False
+    try:
+        ac.read_frame(m2)          # reserve gets no frames while waiting
+    except Exception:
+        queued = True              # timeout/read-block = conn held open
+    rep("stream_reserve_hold", queued,
+        "reserve conn must stay open (queued, not busy-closed)")
+    m1.close()                     # owner dies abruptly
+    m2.settimeout(8)
+    f = ac.read_frame(m2)
+    rep("stream_reserve_heal", f is not None and f[1] == 1,
+        f"promoted reserve delivered frame={f is not None}")
+    m2.close()
+    b.stream_stop()
+except Exception as e:
+    rep("stream_reserve_hold", False, e)
+    rep("stream_reserve_heal", False, e)
+    try:
+        b.stream_stop()
+    except Exception:
+        pass
+
+# A7 ghost-conn classification (t4/t6): a dead-peer conn already queued
+# in the accept backlog when the stream starts must not kill the stream —
+# the agent promotes it, sees the first write fail (never wrote ok),
+# drops it, and the real reader still gets frames. Before the fix the
+# reader was busy-rejected and its first read saw EOF.
+try:
+    b.stream_start(5, 0.5, 70)
+    # backlog ghost: connect then RST (SO_LINGER=0) so accept() hands the
+    # agent an already-dead peer
+    g = socket.create_connection(("127.0.0.1", MPORT), timeout=3)
+    g.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER,
+                 struct.pack("ii", 1, 0))
+    g.close()
+    time.sleep(0.15)               # let the ghost reach promote/write-fail
+    mr = ac.media_connect(MPORT); mr.settimeout(10)
+    f = ac.read_frame(mr)
+    rep("stream_ghost_drop", f is not None and f[1] == 1,
+        f"reader frame after ghost={f is not None}")
+    mr.close()
+    b.stream_stop()
+except Exception as e:
+    rep("stream_ghost_drop", False, e)
+    try:
+        b.stream_stop()
+    except Exception:
+        pass
 
 if b is not None:
     b.close()

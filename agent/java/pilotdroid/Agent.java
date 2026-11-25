@@ -42,7 +42,7 @@ import java.util.Set;
 public final class Agent {
     private static final String SOCKET_NAME = "pilotdroid_agent";
     private static final String MEDIA_SOCKET = "pilotdroid_agent_media";
-    private static final String AGENT_VER = "0.7.1";
+    private static final String AGENT_VER = "0.7.2";
     private static final int PROTO_VER = 0;
 
     // capability bitmap — normative spec is pilotdroid-proto `caps` (bit-for-bit)
@@ -102,10 +102,19 @@ public final class Agent {
             final LocalServerSocket msrv = new LocalServerSocket(MEDIA_SOCKET);
             new Thread(() -> {
                 for (;;) {
+                    LocalSocket s;
                     try {
-                        Streamer.attach(msrv.accept());
+                        s = msrv.accept();
                     } catch (Throwable t) {
-                        return;
+                        return;        // server socket dead — agent exiting
+                    }
+                    try {
+                        Streamer.attach(s);
+                    } catch (Throwable t) {
+                        // A dead/stale backlog conn must never kill the
+                        // accept thread — every later conn would sit in
+                        // the backlog un-served (t4 ghost mechanism).
+                        System.out.println("media attach dropped: " + t);
                     }
                 }
             }, "pd-media-accept").start();
@@ -891,29 +900,75 @@ public final class Agent {
         private static int frames, dropped, seq;
         private static LocalSocket curSock;
         private static DataOutputStream curOut;
+        /** Queued reader while a stream already owns curSock — newest
+         *  wins. A stale backlog conn (t4: killed host leaves conns
+         *  queued on the media socket; FIFO accept can promote a ghost
+         *  ahead of the real reader) no longer gets the real reader
+         *  busy-rejected: it waits here and is promoted by mediaDead
+         *  the moment the ghost's writes fail. */
+        private static LocalSocket resvSock;
+        private static DataOutputStream resvOut;
+        /** Stream generation: a write failure reported by a previous
+         *  generation's writer must never halt the new stream — the
+         *  dirty-kill race (mediaDead arriving after the next start()
+         *  killed the fresh stream, t4 residual). volatile: writeLoop
+         *  reads it in its exit condition outside the monitor. */
+        private static volatile int gen;
+        /** True once the current curSock has accepted at least one
+         *  successful write — a conn that dies without ever writing is
+         *  a backlog ghost (t4): drop it and keep waiting for the real
+         *  reader instead of halting the stream. A conn that wrote ok
+         *  and then dies is a genuine reader loss -> halt (§4.8). */
+        private static boolean curWrote;
         private static int sFps, sQuality;
         private static float sScale;
         private static boolean nullWarned;
         private static int capNulls;
         private static long capNsSum, encNsSum;
 
-        /** New media connection: becomes pending (pre-start) or is
-         *  rejected — at most one media conn at a time. */
-        static synchronized void attach(LocalSocket s) throws Exception {
+        /** New media connection: pending (pre-start), promoted stream
+         *  reader, or reserve behind the current reader — at most one
+         *  conn serving, one waiting. */
+        static synchronized void attach(LocalSocket s) {
+            int id = System.identityHashCode(s);
+            DataOutputStream out;
+            try {
+                out = new DataOutputStream(s.getOutputStream());
+            } catch (Throwable t) {
+                // peer already gone (killed host, RST'd backlog conn)
+                System.out.println("media attach #" + id + ": dead-peer drop");
+                try { s.close(); } catch (Throwable ignore) {}
+                return;
+            }
             if (running && curSock == null) {          // stream waiting for a reader
                 curSock = s;
-                curOut = new DataOutputStream(s.getOutputStream());
+                curOut = out;
+                curWrote = false;
+                System.out.println("media attach #" + id + ": promote g" + gen);
                 return;
             }
             if (pendSock != null) {
                 try { pendSock.close(); } catch (Throwable ignore) {}
+                pendSock = null; pendOut = null;
             }
             if (running) {                             // already serving one conn
-                try { s.close(); } catch (Throwable ignore) {}
+                // Queue as reserve (newest waiter wins) instead of
+                // busy-rejecting: if the serving conn is a backlog ghost
+                // its first write fails and mediaDead promotes this
+                // reserve; if the serving conn is live, the reserve
+                // just waits — a stray conn must not displace a live
+                // reader mid-stream.
+                if (resvSock != null) {
+                    try { resvSock.close(); } catch (Throwable ignore) {}
+                }
+                resvSock = s;
+                resvOut = out;
+                System.out.println("media attach #" + id + ": reserve g" + gen);
                 return;
             }
             pendSock = s;
-            pendOut = new DataOutputStream(s.getOutputStream());
+            pendOut = out;
+            System.out.println("media attach #" + id + ": pending");
         }
 
         static synchronized Map<String, Object> start(
@@ -929,11 +984,18 @@ public final class Agent {
             // conn may already be dead (can't be probed without IO) — drop
             // it rather than promote a corpse that kills the new stream.
             if (pendSock != null) {
+                System.out.println("stream start g" + (gen + 1) + ": drop pend #"
+                        + System.identityHashCode(pendSock));
                 try { pendSock.close(); } catch (Throwable ignore) {}
                 pendSock = null; pendOut = null;
             }
-            producer = new Thread(() -> produce(uia), "pd-stream-prod");
-            writer = new Thread(Streamer::writeLoop, "pd-stream-wr");
+            if (resvSock != null) {   // can't be set while !running — defensive
+                try { resvSock.close(); } catch (Throwable ignore) {}
+                resvSock = null; resvOut = null;
+            }
+            final int g = ++gen;
+            producer = new Thread(() -> produce(uia, g), "pd-stream-prod");
+            writer = new Thread(() -> writeLoop(g), "pd-stream-wr");
             producer.start(); writer.start();
             Map<String, Object> m = new LinkedHashMap<>();
             m.put("ok", true);
@@ -965,11 +1027,40 @@ public final class Agent {
             }
         }
 
-        /** media conn write failed -> client gone -> stop per §4.8. */
-        static synchronized void mediaDead() {
-            if (running) {
-                try { halt(); } catch (Throwable ignore) {}
+        /** media conn write failed: promote the queued reader if one
+         *  is waiting (the dead conn may have been a backlog ghost
+         *  promoted ahead of it, t4); a dead conn with no reserve
+         *  still stops the stream per §4.8. */
+        static synchronized void mediaDead() { mediaDead(gen); }
+
+        static synchronized void mediaDead(int g) {
+            if (!running || g != gen) {
+                System.out.println("mediaDead g" + g + " ignored (running="
+                        + running + " gen=" + gen + ")");
+                return;
             }
+            if (resvSock != null) {
+                try { if (curSock != null) curSock.close(); } catch (Throwable ignore) {}
+                // a reserve conn was never written to — it re-enters
+                // untested, so a promoted dead reserve still counts as
+                // ghost on its first failed write.
+                curSock = resvSock; curOut = resvOut; curWrote = false;
+                resvSock = null; resvOut = null;
+                System.out.println("mediaDead g" + g + ": reserve #"
+                        + System.identityHashCode(curSock) + " promoted");
+                return;
+            }
+            if (!curWrote) {
+                // conn died without a single successful write — backlog
+                // ghost promoted ahead of the real reader: drop it and
+                // keep waiting; the reader's attach re-promotes.
+                try { if (curSock != null) curSock.close(); } catch (Throwable ignore) {}
+                curSock = null; curOut = null;
+                System.out.println("mediaDead g" + g + ": ghost dropped, awaiting reader");
+                return;
+            }
+            System.out.println("mediaDead g" + g + ": no reserve, halting stream");
+            try { halt(); } catch (Throwable ignore) {}
         }
 
         private static void halt() {
@@ -977,7 +1068,9 @@ public final class Agent {
             if (producer != null) producer.interrupt();
             // closing the socket also unblocks a writer stuck in write()
             try { if (curSock != null) curSock.close(); } catch (Throwable ignore) {}
-            curSock = null; curOut = null;
+            curSock = null; curOut = null; curWrote = false;
+            try { if (resvSock != null) resvSock.close(); } catch (Throwable ignore) {}
+            resvSock = null; resvOut = null;
             joinQuiet(producer); joinQuiet(writer);
             producer = writer = null; owner = null;
         }
@@ -989,10 +1082,11 @@ public final class Agent {
 
 
 
-        private static void produce(UiAutomation uia) {
+        private static void produce(UiAutomation uia, int myGen) {
             long intervalNs = 1_000_000_000L / sFps;
+            java.util.concurrent.ArrayBlockingQueue<byte[]> q = queue;
             ByteArrayOutputStream bos = new ByteArrayOutputStream(1 << 16);
-            while (running) {
+            while (myGen == gen && running) {
                 long t0 = System.nanoTime();
                 byte[] f;
                 try {
@@ -1035,7 +1129,7 @@ public final class Agent {
                     System.out.println("produce err: " + t);
                     continue;
                 }
-                if (!queue.offer(f)) dropped++;          // backpressure: drop
+                if (!q.offer(f)) dropped++;              // backpressure: drop
                 long rest = intervalNs - (System.nanoTime() - t0);
                 if (rest > 1_000_000L) {
                     try { Thread.sleep(rest / 1_000_000L); }
@@ -1044,10 +1138,14 @@ public final class Agent {
             }
         }
 
-        private static void writeLoop() {
-            while (running || (queue != null && !queue.isEmpty())) {
+        private static void writeLoop(int myGen) {
+            // pin this generation's queue — the static `queue` field is
+            // replaced by the next start() while this thread may still
+            // be unwinding.
+            java.util.concurrent.ArrayBlockingQueue<byte[]> q = queue;
+            while (myGen == gen && (running || !q.isEmpty())) {
                 byte[] f;
-                try { f = queue.take(); }
+                try { f = q.take(); }
                 catch (InterruptedException e) { return; }
                 DataOutputStream o;
                 synchronized (Streamer.class) { o = curOut; }
@@ -1058,10 +1156,12 @@ public final class Agent {
                 try {
                     o.write(f);
                     o.flush();
-                    synchronized (Streamer.class) { frames++; }
+                    synchronized (Streamer.class) { frames++; curWrote = true; }
                 } catch (Throwable t) {
-                    mediaDead();
-                    return;
+                    mediaDead(myGen);
+                    // reserve promoted -> running still true, keep
+                    // draining to the new curSock; stale-gen failure or
+                    // halt -> the loop exits on `running`/`queue` state.
                 }
             }
         }

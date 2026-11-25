@@ -602,3 +602,94 @@ agent——id 空间碰撞属协议固有，文档口径「id 按 epoch 绑定�
 路径新 Session generation=0——若恰在顶替期间 agent 亦重启则 epoch 无信号，
 双故障叠加角例；(c) push watcher 媒体死时 `retain(!*p)` 先于 epoch 检查清
 场——语义一致（armed 空→无 warn）但使 warn 覆盖变窄，已实测确认。
+
+## §附13 t6 —— media 幽灵 conn 竞态修复（agent 0.7.2, ba0d072d）
+
+**机制实证链（三层叠加，复现脚本逐层剥离）**：
+
+1. t4 原机制：脏退出遗留 media conn 滞留 accept backlog，`start()` 只清
+   已 accept 的 `pendSock`——backlog 幽灵在 start 之后才 accept，于
+   `running && curSock==null` 下无判别 promote；真 reader 到 busy 分支被
+   close→首 `stream_read` EOF。
+2. 深挖出的第二层：media accept 线程在 `attach` 抛异常（死 conn
+   `getOutputStream`）时 `catch→return` **永久退出**→所有后续 conn 滞留
+   backlog 永不服务。
+3. 第三层（日志钉死）：脏流 writer 的写失败 `mediaDead→halt` 可在新
+   `start()` 之后才执行→**跨代绞杀**新流；且 `mediaDead` 只认 resv——
+   幽灵被 promote 后首写即死、真 reader 尚未 attach（毫秒级检测 vs
+   ~200ms connect 延迟）→无 resv 直接 halt→真 reader 晚到落 pend
+   starve 超时。
+
+**修法（最终形态）**：`Agent.java` Streamer ——
+
+- `attach`：`getOutputStream` 失败→dead-peer 静默关闭；`running&&
+  curSock==null`→promote；`running`→进 reserve 槽（newest waiter wins，
+  弃 busy-reject）；否则 pend。accept 循环：`accept()` 失败 return
+  （server 死）、`attach` 失败 log+continue（线程永生）。
+- `mediaDead(g)`：**代际守卫**——旧 writer 的写失败不作用新流；
+  有 resv→提升续流；无 resv 且 `curWrote==false`（conn 从未成功写过=
+  ghost）→丢弃回 waiting 态等真 reader；`curWrote==true`（真 reader
+  死亡）→halt 保留 §4.8 原语义。
+- `writeLoop`/`produce` 钉住 `myGen`+`q=queue` 局部引用——旧代线程
+  不抢新代 queue；写失败不再 `return`（mediaDead 可能已自愈）。
+- `curWrote` 判别替代早期被否的 read-timeout 探针——LocalSocket
+  超时在此环境不可靠（活 reader 帧间静默会被误判死）。
+
+**验证**：
+
+| 项 | 命令 | 结果 |
+|---|---|---|
+| 脏杀+幽灵注入 20 轮 | `python3 spike/e2e/agent-loop/ghost_repro.py 20` | **20/20 PASS**（基线：无幽灵 10/10、有幽灵修复前 0~13/20 间歇 timeout/EOF） |
+| 干净态 parity 回归 | `pytest spike/e2e/test_parity_extra.py` | **12/12**（一次 flake=app 滚动位置，force-stop 重置后过——非 media 相关） |
+| 判别语义 e2e 钉 | `verify-agent.sh ba0d072d` | **40/0** 含新断言 `stream_reserve_hold`/`stream_reserve_heal`/`stream_ghost_drop` |
+| Rust 三件套 | fmt+clippy(-D warnings)+`cargo test --workspace` | 全绿 94/0 |
+
+设备端日志实证三条自愈路径均开火：`ghost dropped, awaiting
+reader`（g4/g12/g18）、`reserve promoted`（g20×2）、`ignored
+(running=...gen=...)`（代际守卫挡陈旧 mediaDead）。
+
+**取舍注记**：(a) reserve 槽 newest-wins（丢旧 waiter）而非 newest-wins
+抢位——后者让任意 stray conn 顶掉活 reader，失败面更差；(b) 半开黑洞
+ghost（写不报错地吞帧）理论残留——RST'd conn 首/次写必失败，实测无影
+响；(c) `curWrote` 语义=「曾写过一帧」，live reader 首帧前死亡会被判
+ghost 回 waiting——等价行为无害；(d) Java 无单测基建，判别语义由
+verify A6/A7 e2e 断言+`ghost_repro.py` 统计钉住。
+
+改动面：`agent/java/pilotdroid/Agent.java`（Streamer 状态机+gen+curWrote，
+AGENT_VER 0.7.1→0.7.2）、`agent/agent.jar`（重建部署）、
+`agent/scripts/verify-agent.sh`（AGENT_VER pin 0.7.2+A6 reserve/A7 ghost
+断言+socket/struct import）、`spike/e2e/agent-loop/ghost_repro.py`（幽灵
+注入复现+stage 标注）。
+
+## 附14 t7 复核——t6 幽灵 conn 竞态修复独立判定（2026-11-25，复核人 p2）
+
+**① 代码审（attach/reserve/promote 语义）——pass。** `Streamer` 重写的四
+分支判别正确：dead-peer 早丢（`getOutputStream` 探针）、`running&&
+curSock==null` promote、`running` 进 reserve（newest-wins）、否则 pend。
+三层机制均被对症：accept 循环 `attach` 异常 continue（线程永生）；
+`mediaDead(g)` 代际守卫挡旧代 writer 绞杀；`curWrote` 判别区分 ghost
+（从未写过→丢+await）与真 reader（写过→halt，§4.8 语义保留）。
+`writeLoop`/`produce` 钉 `myGen`+局部 `q` 引用无跨代污染。非阻塞 nit：
+`resvWrote` 恒 false（对称占位）；真 reader 居 reserve 位时仍可能被后至
+ghost 顶替（残余窗更窄，ledger §附13 取舍 (a) 已记录）；`produce` 的
+`dropped/seq` 非同步沿用旧风格。
+
+**② t4 原始场景独立复现——pass。** 复核者 t4 时的失败序列（serve arm
+push watcher+stream 后 SIGKILL 脏杀，立即新 serve 同序列）在修复前实测
+~30-50% 失败；修复后同序列 **0/15 失败**。t6 复现器 `ghost_repro.py 20`
+（脏杀+RST 幽灵注入×2/轮）独立复跑 **20/20 PASS**。
+
+**③ 回归无劣化——pass。** `loop.py` 全量 **10/10**（含
+stream_watch_coexist 11.7s）；cargo workspace **94/0** 失败；
+parity **12/12**；u2suite 抽样（watcher/swipe/session）**7/7**。
+
+**④ 并存实测定论——pass，正式成立。** t4 的 partial 裁决解除：SUPPORTED
+的交错/stash/pull/push-恢复语义在修复后完整成立，幽灵竞态残余风险收敛
+为 §附13 取舍注记 (a)-(c) 的明示边界。
+
+**随行缺口（记档给 t6 commit 时补齐）**：`CHANGELOG.md` Unreleased 尚缺
+ghost-conn 修复条目（doc-drift 第 5 闸会随 commit 检查）；`resvWrote`
+占位变量可在下一卫生批清理或改注释说明。
+
+验证环境：设备 ba0d072d，agent 0.7.2（t6 部署态），CLI=~/.cargo-target
+构建（内嵌同版 jar）。复核期间产生的孤儿 adb forward 已清账。

@@ -38,6 +38,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   relay 上游拨号拨回自身成自连死循环（CI 曾见首红 rerun 绿）；
   改常驻 accept-close `corpse_port()`；并行测试抢端口时 relay
   `bind` 遇 AddrInUse 由 panic 改为返回 Err 让阶梯换端口重试。
+- **media 幽灵 conn 竞态——脏退出后首 `stream_read` 失败**（agent
+  0.7.2，`Agent.java` Streamer）：host 脏杀遗留的 media conn 滞留
+  accept backlog，新流 `start()` 只清已 accept 的 pending——幽灵
+  在 start 之后才 accept，于 `running && curSock==null` 下被无
+  判别 promote，真 reader 被 busy-close→首读 EOF；且旧流 writer
+  的写失败 `mediaDead→halt` 可跨代绞杀刚启动的新流，accept 线程
+  还会因 `attach` 异常永久退出。修复：attach 死 conn
+  `getOutputStream` 失败即弃；运行中第二 conn 进 reserve 槽
+  （newest waiter wins，不再 busy-reject；stray conn 不抢位）；
+  `mediaDead(g)` 代际守卫挡旧 writer；`curWrote` 判别——从未成功
+  写过的 conn 死后丢回 waiting 态等真 reader（ghost），写活过的
+  才判真 reader 死亡 halt（§4.8 语义保留）；accept 线程 attach
+  异常 log+continue 永生；`writeLoop`/`produce` 钉代际号+局部
+  queue 引用。e2e 断言 `stream_reserve_hold`/`stream_reserve_heal`/
+  `stream_ghost_drop`+`spike/e2e/agent-loop/ghost_repro.py` 统计
+  钉判别语义：脏杀+RST 幽灵注入 20/20（修复前 0~13/20 间歇失败）。
 
 ## [0.7.0] — 2026-11-25
 
