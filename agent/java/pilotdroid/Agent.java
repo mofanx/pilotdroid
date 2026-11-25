@@ -42,7 +42,7 @@ import java.util.Set;
 public final class Agent {
     private static final String SOCKET_NAME = "pilotdroid_agent";
     private static final String MEDIA_SOCKET = "pilotdroid_agent_media";
-    private static final String AGENT_VER = "0.7.2";
+    private static final String AGENT_VER = "0.7.3";
     private static final int PROTO_VER = 0;
 
     // capability bitmap — normative spec is pilotdroid-proto `caps` (bit-for-bit)
@@ -891,8 +891,6 @@ public final class Agent {
      *  to the media conn — a slow reader can never stall capture or the
      *  control channel (backpressure = drop). */
     private static final class Streamer {
-        private static LocalSocket pendSock;
-        private static DataOutputStream pendOut;
         private static volatile Session owner;
         private static volatile boolean running;
         private static Thread producer, writer;
@@ -920,6 +918,38 @@ public final class Agent {
          *  reader instead of halting the stream. A conn that wrote ok
          *  and then dies is a genuine reader loss -> halt (§4.8). */
         private static boolean curWrote;
+        /** Watch-mode (non-streaming) held conns — the ui_event push
+         *  sinks while no stream runs (§4.9 watchers hold the pending
+         *  media socket). A capped set, not a single pend conn: a one
+         *  shot push write into a half-dead adb-forward pipe can return
+         *  success (adbd absorbs it before reaping), so promote+retry
+         *  on a single reserve can still eat the hit. Writing to EVERY
+         *  held conn makes the hit reach any live reader; a conn whose
+         *  write fails is the corpse judge (t4 curWrote equivalent —
+         *  it distinguishes ghost-vs-reader for the log only) and is
+         *  dropped. Oldest evicted at cap — backlog ghosts are always
+         *  the oldest conns. */
+        private static final class WatchConn {
+            LocalSocket s; DataOutputStream o; boolean wrote;
+            WatchConn(LocalSocket s, DataOutputStream o) {
+                this.s = s; this.o = o;
+            }
+        }
+        private static final java.util.ArrayDeque<WatchConn> watchConns =
+                new java.util.ArrayDeque<>();
+        private static final int WATCH_CONN_CAP = 4;
+        /** Hits that found NO live watch conn — stashed and flushed to
+         *  the next attaching watch conn (t4): covers the arm-attach
+         *  race (armed watcher fires before the agent-side accept
+         *  registers the media conn) and the all-corpse window after a
+         *  dirty kill. Bounded + expires; a hit written to at least one
+         *  conn is considered delivered (a silently-absorbed write
+         *  into a half-dead forward can't be detected host-blind). */
+        private static final java.util.ArrayDeque<Map<String, Object>>
+                pendingHits = new java.util.ArrayDeque<>();
+        private static final int PENDING_HIT_CAP = 8;
+        private static final long PENDING_HIT_TTL_MS = 15_000;
+        private static long lastHitDropTs;
         private static int sFps, sQuality;
         private static float sScale;
         private static boolean nullWarned;
@@ -947,10 +977,6 @@ public final class Agent {
                 System.out.println("media attach #" + id + ": promote g" + gen);
                 return;
             }
-            if (pendSock != null) {
-                try { pendSock.close(); } catch (Throwable ignore) {}
-                pendSock = null; pendOut = null;
-            }
             if (running) {                             // already serving one conn
                 // Queue as reserve (newest waiter wins) instead of
                 // busy-rejecting: if the serving conn is a backlog ghost
@@ -966,9 +992,39 @@ public final class Agent {
                 System.out.println("media attach #" + id + ": reserve g" + gen);
                 return;
             }
-            pendSock = s;
-            pendOut = out;
-            System.out.println("media attach #" + id + ": pending");
+            // !running — watch conn (armed watchers hold a media conn
+            // for ui_event pushes, §4.9). Held in a capped set: every
+            // conn gets the push, write-failure drops the corpse —
+            // no conn ever displaces a live reader (t4 pendOut guard).
+            if (watchConns.size() >= WATCH_CONN_CAP) {
+                WatchConn old = watchConns.pollFirst();
+                try { old.s.close(); } catch (Throwable ignore) {}
+                System.out.println("media attach #" + id
+                        + ": evict oldest watch conn (cap "
+                        + WATCH_CONN_CAP + ")");
+            }
+            watchConns.addLast(new WatchConn(s, out));
+            System.out.println("media attach #" + id + ": watch conn n="
+                    + watchConns.size());
+            // flush hits stashed while no live conn existed (arm-attach
+            // race / all-corpse window) — the newest conn is the most
+            // likely real reader.
+            if (!pendingHits.isEmpty()) {
+                int flushed = 0;
+                for (Map<String, Object> h : pendingHits) {
+                    try {
+                        push(out, h);
+                        flushed++;
+                    } catch (Throwable ignore) {
+                        break;      // dead conn — it drops on next push
+                    }
+                }
+                pendingHits.clear();
+                if (flushed > 0) {
+                    System.out.println("watch attach #" + id
+                            + ": flushed " + flushed + " stashed hit(s)");
+                }
+            }
         }
 
         static synchronized Map<String, Object> start(
@@ -980,14 +1036,12 @@ public final class Agent {
             sFps = Math.max(1, Math.min(30, fps));
             sScale = scale; sQuality = quality;
             queue = new java.util.concurrent.ArrayBlockingQueue<>(1);
-            // §4.8 order is start-ack -> media connect; a pre-start pending
-            // conn may already be dead (can't be probed without IO) — drop
-            // it rather than promote a corpse that kills the new stream.
-            if (pendSock != null) {
-                System.out.println("stream start g" + (gen + 1) + ": drop pend #"
-                        + System.identityHashCode(pendSock));
-                try { pendSock.close(); } catch (Throwable ignore) {}
-                pendSock = null; pendOut = null;
+            // §4.8 order is start-ack -> media connect; a pre-start held
+            // conn may already be dead (can't be probed without IO) —
+            // drop ALL watch conns rather than promote a corpse.
+            for (WatchConn c = watchConns.pollFirst(); c != null;
+                    c = watchConns.pollFirst()) {
+                try { c.s.close(); } catch (Throwable ignore) {}
             }
             if (resvSock != null) {   // can't be set while !running — defensive
                 try { resvSock.close(); } catch (Throwable ignore) {}
@@ -1167,29 +1221,75 @@ public final class Agent {
         }
 
         /** ui_event push (§4.8 reserved, ch=1 type 0x0002): a one-shot
-         *  WATCH_HIT — written to the active stream reader, else the
-         *  pre-start pending conn (watch clients hold it while armed).
-         *  No media conn = event dropped; the action already ran. */
+         *  WATCH_HIT — written to the active stream reader, else to
+         *  EVERY held watch conn (watch clients hold them while armed).
+         *  No media conn = event dropped; the action already ran.
+         *
+         *  t4 ghost guard: a held conn whose write fails is a corpse
+         *  (dirty-killed host / backlog ghost) — dropped on the spot.
+         *  Broadcasting means a corpse ahead of the real reader can no
+         *  longer eat the hit, and a newly attached conn gets the event
+         *  even while an older corpse is still being reaped. `wrote`
+         *  distinguishes ghost-vs-reader in the log — the curWrote
+         *  equivalent; the behavioural heal is the broadcast itself. */
         static synchronized void uiEvent(Map<String, Object> p) {
-            DataOutputStream o = curOut != null ? curOut : pendOut;
-            LocalSocket s = curOut != null ? curSock : pendSock;
-            if (o == null) return;
-            try {
-                byte[] body = Msgpack.write(p);
-                o.write("PD01".getBytes("US-ASCII"));
-                o.writeByte(PROTO_VER);
-                o.writeByte(CH_MEDIA);
-                o.writeShort(T_WATCH_HIT);
-                o.writeShort(0);                 // flags: complete, no MORE
-                o.writeInt(0);                   // req_id unused for push
-                o.writeInt(body.length);
-                o.write(body);
-                o.flush();
-            } catch (Throwable t) {
-                try { if (s != null) s.close(); } catch (Throwable ignore) {}
-                if (s == curSock) mediaDead();
-                else { pendSock = null; pendOut = null; }
+            if (curOut != null) {
+                try {
+                    push(curOut, p);
+                } catch (Throwable t) {
+                    try { if (curSock != null) curSock.close(); }
+                    catch (Throwable ignore) {}
+                    mediaDead();
+                }
+                return;
             }
+            int delivered = 0;
+            for (java.util.Iterator<WatchConn> it =
+                    watchConns.iterator(); it.hasNext();) {
+                WatchConn c = it.next();
+                try {
+                    push(c.o, p);
+                    c.wrote = true;
+                    delivered++;
+                } catch (Throwable t) {
+                    try { c.s.close(); } catch (Throwable ignore) {}
+                    it.remove();
+                    System.out.println("uiEvent: watch-"
+                            + (c.wrote ? "reader" : "ghost") + " #"
+                            + System.identityHashCode(c.s)
+                            + " dropped (n=" + watchConns.size() + ")");
+                }
+            }
+            System.out.println("uiEvent: delivered=" + delivered
+                    + " live=" + watchConns.size());
+            if (delivered == 0) {
+                long now = System.currentTimeMillis();
+                if (now - lastHitDropTs > PENDING_HIT_TTL_MS) {
+                    pendingHits.clear();        // expire stale backlog
+                }
+                if (pendingHits.size() >= PENDING_HIT_CAP) {
+                    pendingHits.pollFirst();
+                }
+                pendingHits.addLast(p);
+                lastHitDropTs = now;
+                System.out.println("uiEvent: no live watch conn — hit "
+                        + "stashed (n=" + pendingHits.size() + ")");
+            }
+        }
+
+        /** ch=1 type 0x0002 push frame onto `o` (§4.8 ui_event wire). */
+        private static void push(DataOutputStream o, Map<String, Object> p)
+                throws Exception {
+            byte[] body = Msgpack.write(p);
+            o.write("PD01".getBytes("US-ASCII"));
+            o.writeByte(PROTO_VER);
+            o.writeByte(CH_MEDIA);
+            o.writeShort(T_WATCH_HIT);
+            o.writeShort(0);                 // flags: complete, no MORE
+            o.writeInt(0);                   // req_id unused for push
+            o.writeInt(body.length);
+            o.write(body);
+            o.flush();
         }
 
         /** ch=1 FRAME frame: flags STREAM_MORE, req_id = seq (§4.8). */

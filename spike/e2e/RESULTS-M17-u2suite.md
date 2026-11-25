@@ -766,3 +766,29 @@ CI+CodeQL 于 `b34e1a5`/`917e3e5`（lock 修复后）持续 success。
 - 有文本场景去重：ApiDemos 主列表 20 元素中仅 1 个 ocr_only（状态栏时钟 9:22，本就不在树内）——无重复污染。
 - 局限（诚实档）：psm11 对艺术字体误读（"Along a pats"）；状态栏/通知栏 OCR 噪声会进入列表；eng-only（无 chi_sim 语言包，中文界面 OCR 不适用）；单帧 ~1.5-2s（tesseract 本地 CPU），不适合高帧闭环但适合感知补全。
 - **判定 GO**：作为 `describe_screen ocr:true` 的 host 侧增强值得合入工具面——补全 canvas/image 文本盲区，几何融合成本极低。后续建议：`MIN_CONF` 阈值、chi_sim 语言包、与截图标注（screenshot_annotated）共用编号空间。
+
+## 附18 t4 —— watcher pendOut 同构 ghost 修复（2026-11-26，ba0d072d，agent 0.7.3）
+
+### A. 缺陷与修复
+
+- **缺陷**：`uiEvent` 对 media pend conn 是单槽 newest-wins——无 curWrote 判别、无 reserve。host 脏杀后遗留的 backlog 尸体 conn 一旦 attach 即顶掉活 reader 并关闭之；或 hit 写给尸体 conn 静默蒸发。另 adb forward 半死管道对单次写**假性成功**（adbd 缓冲吸收），单笔写不足判死。
+- **修复（Agent.java）**：watch 侧 media conn 改为**有界集合广播**——`watchConns` 容量 4、超容逐最旧（evict 记日志）；`uiEvent` 序列化一次帧后逐 conn 尝试写，写败即丢该 conn；零送达时 hit 入**暂存槽**（容量 8、TTL 30s），下一个 watch conn attach 时 flush 补发。stream 路径（curSock/resvSock/curWrote/gen）不动。
+- 附带发现（归因非本修复）：watcher poll 的 `catch(Throwable)→break` 静默死面仍存在（脏杀余波中 a11y 竞争可杀 watcher）——9/10 中 r5 的 phase-2 失手疑此，未证为产品缺陷。
+
+### B. 复现器与断言
+
+- `ghost_repro.py --watch`：RST 幽灵经 adb-forward 注入 media socket。phase1=live pend+stray ghosts 后 hit 仍达；phase2=脏杀→新 serve→armed watcher corpse-heal 命中仍到 push。**10 轮 9 通过**（r5 p2 失手，疑 watcher 静默死，见上）。
+- 复现器 client 修复（非产品）：`rpc()` 等待响应期间到达的 JSON-RPC notification 曾被丢弃——phase-2 hit 恰在 `app_start` rpc 窗口内到达被吞。改队列缓存后 phase-2 稳定。
+- stream 模式回归（未动代码路径）：**10/10**。早前 4/5 失败系与 watch 复现器并发共享 GHOST_PORT 的交叉污染，串行后全绿。
+- `verify-agent.sh` 新增 A8 断言：`watch_ghost_live`（活 pend+幽灵注入后 hit 到 push）、`watch_corpse_heal`（脏杀→恢复→armed hit 到 push）——**双 PASS**；`agent_ver` 期望值同步 0.7.3。
+
+### C. 验证链
+
+| 检查 | 结果 |
+|---|---|
+| verify-agent.sh ba0d072d | 41 pass / 1 fail→修复后唯一 fail（agent_ver 期望值）已消 |
+| ghost_repro --watch ×10 | 9/10（r5 phase-2，疑 watcher 静默死面，非 pendOut 路径） |
+| ghost_repro（stream）×10 | 10/10 无回归 |
+| agent.jar | Agent.java 重建部署，`pilotdroid-agent 0.7.3` 设备实证 |
+
+文档随行：docs/02-protocol.md §4.8 watch conn 语义（有界集合+零送达暂存）；CHANGELOG Unreleased。

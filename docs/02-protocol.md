@@ -158,7 +158,7 @@ Selector = { text?: string, id?: string, desc?: string, class?: string, scrollab
   （newest waiter wins，不抢活 reader 的位），幽灵写死时由
   `mediaDead` 提升自愈；`mediaDead` 带流代际号，旧流 writer 的迟到
   报告不作用新流。
-- **编码**：v0 仅 `format:"jpeg"`（E1 归因：编码∝像素，quality 只省字节）；`"h264"` 留位待 MediaCodec 管线（M5）。`ui_event`（ch=1 type 0x0002）于 M11 起用为 **WATCH_HIT 推送**（§4.9）——写往活跃流连接，否则写往 start 前的 pending conn（watch 客户端在 armed 期间持有它）；无 media conn 则事件丢弃（动作已在设备内执行完）。
+- **编码**：v0 仅 `format:"jpeg"`（E1 归因：编码∝像素，quality 只省字节）；`"h264"` 留位待 MediaCodec 管线（M5）。`ui_event`（ch=1 type 0x0002）于 M11 起用为 **WATCH_HIT 推送**（§4.9）——写往活跃流连接，否则写往 **watch conn 持有集合**（agent 0.7.3，t4 pendOut 同构 ghost 修复）：非流态下到达的 media conn 全部持有（≤4，最旧者出列），事件**广播**给每个持有 conn——单笔写进半死 forward 管道可被 adbd 吸收成「假成功」，单 conn 判别不可靠，广播让任一活 reader 都能收到；写失败的 conn 判尸体丢弃（ghost/reader 区分仅日志用）。全部不可达时 hit 暂存（≤8 条/15s TTL），下一 watch conn attach 时补发——覆盖 arm-attach 竞态（armed watcher 命中早于 conn 注册）与 host 脏杀后的 all-corpse 窗口；仍完全无 conn 则事件丢弃（动作已在设备内执行完）。
 
 ### 4.9 WATCH——设备端 selector→action 闭环（M10, CAP_WATCH=bit8）
 

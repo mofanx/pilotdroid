@@ -89,7 +89,7 @@ miss=[k for k in need if k not in p]
 print("OK "+json.dumps(p) if not miss else "MISS:"+",".join(miss))' > /tmp/hello.res 2>/dev/null \
   || echo "PARSE_FAIL $HELLO" > /tmp/hello.res
 grep -q "^OK" /tmp/hello.res && ok "hello_ack_fields" || bad "hello_ack_fields" "$(cat /tmp/hello.res)"
-echo "$HELLO" | grep -q '"ver": *"0\.7\.2"\|"ver":"0\.7\.2"' \
+echo "$HELLO" | grep -q '"ver": *"0\.7\.3"\|"ver":"0\.7\.3"' \
   && ok "agent_ver" || bad "agent_ver" "$(echo "$HELLO" | head -c 200)"
 
 echo "== A1b CAPS bitmap == INJECT=1 DUMP=2 SHOT=4 QUERY=8 BATCH=16 STREAM=32 TEXT=64 MPTR=128 WATCH=256 WATCH_ASYNC=512 APP_INFO=1024 =="
@@ -501,7 +501,7 @@ done <<< "$STREAM_OUT"
 
 echo "== M11 ASYNC WATCH + APP_INFO + pinch smoke (ch=1 media fwd tcp:17933 above) =="
 M11_OUT=$(python3 - "$HERE" "$PORT" 17933 "$DEV" <<'PYEOF' 2>&1
-import subprocess, sys, time, json
+import subprocess, sys, time, json, socket, struct
 sys.path.insert(0, sys.argv[1])
 import agent_client as ac
 PORT, MPORT, DEV = int(sys.argv[2]), int(sys.argv[3]), sys.argv[4]
@@ -607,6 +607,60 @@ try:
         f"10ping+query={par_ms:.0f}ms home_found={n_found} hit={hit2}")
 except Exception as e:
     rep("watch_parallel", False, e)
+
+# A8 watch-conn ghost guard (agent >=0.7.3, t4): stray/dead-backlog
+# media conns must not displace or starve a live watch conn — ui_event
+# pushes go to EVERY held watch conn and corpses drop on write-fail.
+# (a) two RST ghosts behind a live watch conn -> the hit still arrives;
+# (b) a fresh conn behind a corpse+ghosts -> broadcast reaches it.
+def rst_ghost():
+    g = socket.create_connection(("127.0.0.1", MPORT), timeout=3)
+    g.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER,
+                 struct.pack("ii", 1, 0))
+    g.close()
+
+try:
+    sh("input", "keyevent", "KEYCODE_HOME")
+    time.sleep(1.5)
+    wa = ac.media_connect(MPORT); wa.settimeout(10)
+    r = a.watch_arm({"pkg": "com.android.settings"}, "none",
+                    poll_ms=50)["payload"]
+    wid8 = r.get("watch_id")
+    assert wid8, r
+    for _ in range(2):
+        rst_ghost(); time.sleep(0.12)
+    sh("am", "start", "com.android.settings")
+    fr = ac.read_frame(wa)
+    hit8 = (fr is not None and fr[1] == 0x0002
+            and fr[4].get("watch_id") == wid8 and fr[4].get("matched"))
+    rep("watch_ghost_live", hit8,
+        f"live conn survived stray ghosts: frame={fr is not None}")
+    # (b) kill the live conn dirty (RST) -> corpse stays in the set;
+    # a fresh conn + more ghosts -> the next hit must reach the fresh
+    # conn (broadcast self-heal, no silent drop).
+    wa.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER,
+                  struct.pack("ii", 1, 0))
+    wa.close()
+    time.sleep(0.3)
+    sh("input", "keyevent", "KEYCODE_HOME")
+    time.sleep(1.0)
+    wb = ac.media_connect(MPORT); wb.settimeout(10)
+    for _ in range(2):
+        rst_ghost(); time.sleep(0.12)
+    r2 = a.watch_arm({"pkg": "com.android.settings"}, "none",
+                     poll_ms=50)["payload"]
+    wid9 = r2.get("watch_id")
+    assert wid9, r2
+    sh("am", "start", "com.android.settings")
+    fr2 = ac.read_frame(wb)
+    hit9 = (fr2 is not None and fr2[1] == 0x0002
+            and fr2[4].get("watch_id") == wid9 and fr2[4].get("matched"))
+    rep("watch_corpse_heal", hit9,
+        f"fresh conn behind corpse+ghosts got hit: frame={fr2 is not None}")
+    wb.close()
+except Exception as e:
+    rep("watch_ghost_live", False, e)
+    rep("watch_corpse_heal", False, e)
 
 if ms is not None:
     ms.close()

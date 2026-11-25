@@ -27,6 +27,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **stale `watch_disarm` 穿透**：陈旧/未登记的 watch_id 显式
   disarm 不再透传至 agent——id 空间碰撞下可能误杀恢复后重分配的
   活 watcher；未知 id 本地返回 `{disarmed:false}`。
+- **watcher pendOut ghost 判别**（agent 0.7.2→0.7.3）：media conn
+  的 watcher 持有路径（pend）由「单 conn 最新者胜」改为 ≤4 conn
+  持有集合——`uiEvent` 推送广播至每个持有 conn、写失败即判尸体
+  丢弃（curWrote 同构：区分 ghost/reader 记日志），stray/backlog
+  conn 不再挤掉活 watch reader；零送达时 hit 暂存（≤8/15s TTL），
+  下一个 watch conn attach 时补发——覆盖 arm-attach 竞态与
+  all-corpse 窗口，脏杀后 armed push watcher 命中不再静默丢。
+  附：`ghost_repro.py --watch` 复现器（live-pend 保活+corpse 自愈
+  两阶段）+ `verify-agent.sh` A8 双断言。诚实档：单笔写进半死
+  adb-forward 管道可被 adbd 吸收成「假成功」——广播设计正是为
+  消除对单笔写判死的依赖。
 
 ### Internal
 
