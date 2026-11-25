@@ -913,8 +913,9 @@ states 面落地后重跑 B4 场景（describe→tap→verify_after）：describ
 | agent 版本 | 预装 0.5.0→`agent install`+deploy 升 **0.7.4**（设备日志实证） |
 | describe | 22 元素（systemui 树） |
 | ApiDemos 安装 | **USER_RESTRICTED**——V816 未开「USB 安装」，pm install 同拒；无物理确认通道 |
-| `--portable` 核心子集 | **阻塞**——设备陷 MIUI AOD doze↔防误触页循环（proximity 读 covered 唤醒即弹 `ScreenOnProximitySensorGuide`，system_server 宿主窗不可强杀；`enable_screen_on_proximity_sensor=0` 后仍复发；远端手段已尽） |
+| `--portable` 核心子集 | **有意未跑**——该机经用户确认为**日常用机**（非测试机），eval 按指示只在 USB 测试机 ba0d072d 跑；诊断期曾陷 MIUI AOD doze↔防误触页循环（proximity covered 即弹 `ScreenOnProximitySensorGuide`，远端不可解） |
 | serial 切换 | `PILOTDROID_SERIAL` 环境变量即切换（Serve() 消费），双机各自 hello/tree 实证 |
+| 设置恢复 | 诊断期 `settings put system enable_screen_on_proximity_sensor 0`（试关防误触页，无效）——**待恢复为 1**；`/data/local/tmp` 可能有 ApiDemos apk 残留待清；agent.jar 0.5.0→0.7.4 为用户预装 pilotdroid 的原地升级（保留） |
 
 **serial 切换正确性注记**：harness 全程只用 `adb -s $SERIAL` + CLI `-s $SERIAL`，无隐式单设备假设；V816 为 net-adb（5555），forward 建链与 USB 设备同路径、各自 abstract socket 不串。
 
