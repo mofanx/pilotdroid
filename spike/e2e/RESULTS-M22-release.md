@@ -76,3 +76,24 @@
 滞留 0.6.2（裸跑测的是上一版）——根因是 runbook 无此步，
 本批同步在 PUBLISH.md 补 Required 条目 + VER→0.6.3 +
 CHANGELOG 加 `## [Unreleased]` 桩。
+
+## v0.6.4 发布链 ledger（2026-11-25，M27 预备件 → 实际执行）
+
+| 环节 | 证据 | 来源 |
+|---|---|---|
+| 版本 bump | `7439c3c`：pyproject/Cargo(+lock)/server.json×2/install-smoke VER→0.6.4；CHANGELOG Unreleased→`[0.6.4]`；notes `release-notes-v0.6.4.md` | git |
+| gate 顺手修复 | doc-drift `changelog-unreleased` 对 bump commit 误报（Unreleased 空但已 fold）→补「`[<pyver>]` 段存在即 covered」豁免 | doc-drift 双向实证 |
+| CI（bump） | run `45559675103` → success（4 jobs）；CodeQL success | gh run list |
+| tag | `v0.6.4` @ `7439c3c`（annotated，推 tag 触发 release.yml） | git |
+| release.yml | run `45559789857` → success | gh run watch |
+| release 状态 | published，assets 恰 7（agent.jar/whl/sdist/linux/macos-arm64/windows.exe/SHA256SUMS.txt），无重名 draft | `gh release view` |
+| notes 正文 | `docs/release-notes-v0.6.4.md`（M25–M27 真实内容，非 dependabot 单行） | `--notes-file` |
+| pypi.yml | run `45560155712` → success（OIDC） | gh run watch |
+| PyPI | `pilotdroid 0.6.4` — `info.version=0.6.4` 首 poll 即中 | `/pypi/pilotdroid/json` |
+| install-smoke | `install-smoke.sh ba0d072d` → **9 pass / 0 fail**（PyPI 轮询→venv pip install→import u2shim→xpath 符号断言→bootstrap download+sha256+exec 0.6.4→release 二进制对照→setup+MCP 握手） | 本机实跑 |
+| MCP registry | `io.github.mofanx/pilotdroid`：`0.6.4`→active+isLatest / `0.6.3`→active / `0.6.2`→active / `0.6.1.post1`→deprecated（JWT 过期用 `login github -token` 重登） | `/v0/servers/.../versions` 读回 |
+| Homebrew tap | `homebrew-pilotdroid` `0562439`：version+url×2+sha256×2=0.6.4；linux 二进制实际下载 sha256sum=`6a02f77a…` 与 SUMS/formula 三方一致，`--version`=0.6.4 | 本机实测+push 读回 |
+
+**结论**：v0.6.4 四面一致（GitHub Release/PyPI/Registry/tap），
+serial=None 真发件缺陷与 watcher re-arm/host-poll/click 修复、
+max_fires 参数、全部 doc-drift 闸随此版出清。
