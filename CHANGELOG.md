@@ -38,6 +38,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   两阶段）+ `verify-agent.sh` A8 双断言。诚实档：单笔写进半死
   adb-forward 管道可被 adbd 吸收成「假成功」——广播设计正是为
   消除对单笔写判死的依赖。
+- **watcher 静默死可观测化 + event replay 环**（agent 0.7.3→0.7.4）：
+  armed watcher 非正常终结（poll Throwable/会话终结强杀）临终推
+  `{type:"watch_dead",watch_id,error}` ui_event 并记日志——armed→dead
+  在两次 recovery epoch 之间不再静默（显式 `watch_disarm` 仍静默
+  正常）。`ui_event` 改为**全量入 ≤8 条/15s TTL replay 环**、新
+  attach 的 watch conn 补发未过期 backlog——修复 ghost 吸收写
+  假成功时「真 conn 迟到则 hit 永久丢」的残洞（`delivered>0` 非
+  活性证据的推论）。附：`ghost_repro.py --watch-dead` 复现器 3/3
+  + `verify-agent.sh` A9 双断言（`watch_dead_event`、
+  `watch_hit_stash_replay`）。
 
 ### Internal
 

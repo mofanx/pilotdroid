@@ -238,7 +238,87 @@ def run(client, mode, timeout=30):
     return out or ""
 
 
+DEAD_CLIENT = r'''
+# watch_dead (t1, agent >=0.7.4): protocol-level death-observability
+# reproducer — an armed watcher whose session dies (control-conn
+# replace or host dirty-kill) must emit {type:"watch_dead"} on ch=1,
+# and a conn attaching after the event replays it from the stash ring.
+import json, socket, struct, subprocess, sys, time
+sys.path.insert(0, "/home/yan/.openclaw/workspace-devin/pilotdroid"
+                    "/agent/scripts")
+import agent_client as ac
+
+port, mport = int(sys.argv[1]), int(sys.argv[2])
+a = ac.Agent(port).connect()
+ms = ac.media_connect(mport); ms.settimeout(10)
+time.sleep(0.4)
+r = a.watch_arm({"pkg": "com.android.settings"}, "none", poll_ms=50)
+wid = r["payload"].get("watch_id")
+print("ARMED", wid, flush=True)
+a2 = ac.Agent(port).connect()          # session replace -> abort
+got = None
+dl = time.time() + 10
+while time.time() < dl:
+    fr = ac.read_frame(ms)
+    if fr is None:
+        break
+    p = fr[4]
+    if p.get("type") == "watch_dead" and p.get("watch_id") == wid:
+        got = p
+        break
+print("WATCH_DEAD:%s" % bool(got),
+      json.dumps(got, ensure_ascii=False)[:150] if got else "", flush=True)
+# attach a fresh conn AFTER the event -> stash replay must re-deliver
+ms2 = ac.media_connect(mport); ms2.settimeout(6)
+rep = None
+dl = time.time() + 6
+while time.time() < dl:
+    fr = ac.read_frame(ms2)
+    if fr is None:
+        break
+    if fr[4].get("watch_id") == wid:
+        rep = fr[4]
+        break
+print("REPLAY:%s" % bool(rep),
+      json.dumps(rep, ensure_ascii=False)[:150] if rep else "", flush=True)
+ms.close(); ms2.close(); a2.close(); a.close()
+'''
+
+
+def dead_main(rounds):
+    """watch_dead channel (t1): per round — arm a watcher on raw
+    protocol, replace the control conn (session teardown -> abort),
+    assert {type:"watch_dead", watch_id, error} on the media conn, and
+    that a LATE-attaching conn replays it from the stash ring."""
+    subprocess.run(
+        ["adb", "-s", SERIAL, "forward", f"tcp:{GHOST_PORT}",
+         "localabstract:pilotdroid_agent_media"], capture_output=True)
+    subprocess.run(
+        ["adb", "-s", SERIAL, "forward", "tcp:17932",
+         "localabstract:pilotdroid_agent"], capture_output=True)
+    ok = 0
+    for i in range(rounds):
+        p = subprocess.Popen(
+            [sys.executable, "-u", "-c", DEAD_CLIENT, "17932",
+             str(GHOST_PORT)], stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL, text=True)
+        out = p.stdout.read()
+        p.wait(20)
+        wd = "WATCH_DEAD:True" in out
+        rp = "REPLAY:True" in out
+        good = wd and rp
+        ok += good
+        print(f"round {i}: {'PASS' if good else 'FAIL'}  "
+              f"watch_dead={wd} replay={rp} :: {out.strip()[:100]}")
+        time.sleep(0.4)
+    print(f"\nwatch-dead-repro: {ok}/{rounds} session-kills produced "
+          f"watch_dead + replay")
+    sys.exit(0 if ok == rounds else 1)
+
+
 def main():
+    if len(sys.argv) > 1 and sys.argv[1] == "--watch-dead":
+        dead_main(int(sys.argv[2]) if len(sys.argv) > 2 else 5)
     if len(sys.argv) > 1 and sys.argv[1] == "--watch":
         watch_main(int(sys.argv[2]) if len(sys.argv) > 2 else 10)
         return

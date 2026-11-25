@@ -155,6 +155,14 @@ benchmark/suite 跑旧 targetSdk app 前需先放行（openatx u2 官方
   `{generation,stale_watchers,rearmed,rearm_failed}`；陈旧/未知 id 的
   显式 `watch_disarm` 不透传至 agent（防 id 空间碰撞误杀新 watcher，
   返回 `{disarmed:false}`）。
+- **watcher 死讯（agent 0.7.4）**：armed watcher 非正常终结
+  （poll 内部故障/会话终结强杀）→ 设备端临终推
+  `{type:"watch_dead"}` ui_event（ch=1 同槽按 type 判别，宿主据此
+  可转 notification）——armed→dead 在两次 recovery epoch 之间
+  不再静默；显式 `watch_disarm` 属正常撤除不发事件。agent 侧
+  watch conn 集合 **cap=4**（最旧出列），ui_event 另进 ≤8 条/15s
+  TTL replay 环——迟到 attach 的 conn 可补收近期事件（重复交付
+  幂等）。
 - **超出 u2 面的 MCP 工具**（shim 不覆盖，记此防口径漂移）：
   `describe_screen`/`screenshot_annotated`（SoM-lite 感知，编号空间
   与 `compat/som.py` 一致）、`verify_after`（操作后 dump 断言闭环，

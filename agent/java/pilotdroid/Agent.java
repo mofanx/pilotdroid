@@ -42,7 +42,7 @@ import java.util.Set;
 public final class Agent {
     private static final String SOCKET_NAME = "pilotdroid_agent";
     private static final String MEDIA_SOCKET = "pilotdroid_agent_media";
-    private static final String AGENT_VER = "0.7.3";
+    private static final String AGENT_VER = "0.7.4";
     private static final int PROTO_VER = 0;
 
     // capability bitmap — normative spec is pilotdroid-proto `caps` (bit-for-bit)
@@ -277,7 +277,7 @@ public final class Agent {
             } finally {
                 // §4.8 session binding: control disconnect = implicit stop
                 Streamer.ctrlClosed(this);
-                for (Watcher w : watchers) w.disarm();
+                for (Watcher w : watchers) w.abort("session closed");
                 watchers.clear();
             }
         }
@@ -768,6 +768,8 @@ public final class Agent {
         private final String action;
         private final long pollMs, timeoutMs;
         private volatile boolean live = true;
+        private volatile boolean userDisarm;
+        private volatile String killReason;
         private Thread th;
 
         Watcher(int id, Session owner, Selector sel, String action,
@@ -783,12 +785,24 @@ public final class Agent {
         }
 
         synchronized void disarm() {
+            userDisarm = true;
+            live = false;
+            if (th != null) th.interrupt();
+        }
+
+        /** Session teardown kills the watcher — NOT a user disarm: the
+         *  death must surface as watch_dead so the host sees the armed
+         *  rule die precisely (not just via the recovery epoch bump). */
+        synchronized void abort(String reason) {
+            killReason = reason;
             live = false;
             if (th != null) th.interrupt();
         }
 
         public void run() {
             long t0 = SystemClock.uptimeMillis();
+            boolean reported = false;
+            String death = null;
             while (live) {
                 try {
                     AccessibilityNodeInfo hit = owner.dumper.find(sel);
@@ -812,6 +826,7 @@ public final class Agent {
                         ev.put("node", Dumper.nodeInfo(hit));
                         hit.recycle();
                         Streamer.uiEvent(ev);
+                        reported = true;
                         break;
                     }
                     if (timeoutMs > 0
@@ -821,14 +836,36 @@ public final class Agent {
                         ev.put("matched", false);
                         ev.put("waited_ms", SystemClock.uptimeMillis() - t0);
                         Streamer.uiEvent(ev);
+                        reported = true;
                         break;
                     }
                     Thread.sleep(pollMs);
                 } catch (InterruptedException e) {
                     break;
                 } catch (Throwable t) {
-                    break; // a dead uia/socket must not leak the thread
+                    death = String.valueOf(t);
+                    break;
                 }
+            }
+            if (!reported && !userDisarm) {
+                // Abnormal end — poll fault or session teardown. Silent
+                // death is the worst watcher outcome: the armed rule
+                // vanishes while the host still believes it armed
+                // (t4 r5-class flake). Log it and push a dying
+                // watch_dead ui_event so armed->dead is observable
+                // between recovery epochs.
+                String why = death != null ? death
+                        : (killReason != null ? killReason : "interrupted");
+                System.out.println("watcher #" + id + " died: " + why);
+                try {
+                    Map<String, Object> ev = new LinkedHashMap<>();
+                    ev.put("watch_id", id);
+                    ev.put("matched", false);
+                    ev.put("type", "watch_dead");
+                    ev.put("waited_ms", SystemClock.uptimeMillis() - t0);
+                    ev.put("error", why);
+                    Streamer.uiEvent(ev);
+                } catch (Throwable ignore) {}
             }
             owner.dropWatcher(this);
         }
@@ -938,18 +975,23 @@ public final class Agent {
         private static final java.util.ArrayDeque<WatchConn> watchConns =
                 new java.util.ArrayDeque<>();
         private static final int WATCH_CONN_CAP = 4;
-        /** Hits that found NO live watch conn — stashed and flushed to
-         *  the next attaching watch conn (t4): covers the arm-attach
-         *  race (armed watcher fires before the agent-side accept
-         *  registers the media conn) and the all-corpse window after a
-         *  dirty kill. Bounded + expires; a hit written to at least one
-         *  conn is considered delivered (a silently-absorbed write
-         *  into a half-dead forward can't be detected host-blind). */
-        private static final java.util.ArrayDeque<Map<String, Object>>
+        /** Recent ui_events kept as a replay ring — EVERY event is
+         *  stashed (not only on zero-delivery): a write into a
+         *  half-dead adb forward silently succeeds (t4 r5: ghost
+         *  absorbed the hit while the real conn was mid-attach), so
+         *  delivered>0 cannot prove a live reader got it. Each newly
+         *  attaching watch conn is replayed the unexpired backlog —
+         *  duplicates are benign (a fired watcher's id is already
+         *  consumed host-side). Bounded + expires. */
+        private static final class PendingHit {
+            final long ts = System.currentTimeMillis();
+            final Map<String, Object> ev;
+            PendingHit(Map<String, Object> ev) { this.ev = ev; }
+        }
+        private static final java.util.ArrayDeque<PendingHit>
                 pendingHits = new java.util.ArrayDeque<>();
         private static final int PENDING_HIT_CAP = 8;
         private static final long PENDING_HIT_TTL_MS = 15_000;
-        private static long lastHitDropTs;
         private static int sFps, sQuality;
         private static float sScale;
         private static boolean nullWarned;
@@ -1006,23 +1048,31 @@ public final class Agent {
             watchConns.addLast(new WatchConn(s, out));
             System.out.println("media attach #" + id + ": watch conn n="
                     + watchConns.size());
-            // flush hits stashed while no live conn existed (arm-attach
-            // race / all-corpse window) — the newest conn is the most
-            // likely real reader.
+            // replay the unexpired event backlog to the newly attached
+            // conn (arm-attach race / ghost-absorbed broadcast / all-
+            // corpse window). Entries stay until TTL — the flusher may
+            // itself be a ghost absorbing the write, so removal on
+            // flush would re-open the miss window.
             if (!pendingHits.isEmpty()) {
+                long now = System.currentTimeMillis();
+                for (java.util.Iterator<PendingHit> it =
+                        pendingHits.iterator(); it.hasNext();) {
+                    if (now - it.next().ts > PENDING_HIT_TTL_MS) {
+                        it.remove();
+                    }
+                }
                 int flushed = 0;
-                for (Map<String, Object> h : pendingHits) {
+                for (PendingHit h : pendingHits) {
                     try {
-                        push(out, h);
+                        push(out, h.ev);
                         flushed++;
                     } catch (Throwable ignore) {
                         break;      // dead conn — it drops on next push
                     }
                 }
-                pendingHits.clear();
                 if (flushed > 0) {
                     System.out.println("watch attach #" + id
-                            + ": flushed " + flushed + " stashed hit(s)");
+                            + ": replayed " + flushed + " stashed hit(s)");
                 }
             }
         }
@@ -1243,6 +1293,19 @@ public final class Agent {
                 }
                 return;
             }
+            // stash every event first — a write that only ghosts
+            // absorbed still counts as delivered, so zero-delivery is
+            // NOT a reliable stash trigger (t4 r5 residual).
+            long now = System.currentTimeMillis();
+            while (!pendingHits.isEmpty()
+                    && now - pendingHits.peekFirst().ts
+                            > PENDING_HIT_TTL_MS) {
+                pendingHits.pollFirst();
+            }
+            if (pendingHits.size() >= PENDING_HIT_CAP) {
+                pendingHits.pollFirst();
+            }
+            pendingHits.addLast(new PendingHit(p));
             int delivered = 0;
             for (java.util.Iterator<WatchConn> it =
                     watchConns.iterator(); it.hasNext();) {
@@ -1262,19 +1325,6 @@ public final class Agent {
             }
             System.out.println("uiEvent: delivered=" + delivered
                     + " live=" + watchConns.size());
-            if (delivered == 0) {
-                long now = System.currentTimeMillis();
-                if (now - lastHitDropTs > PENDING_HIT_TTL_MS) {
-                    pendingHits.clear();        // expire stale backlog
-                }
-                if (pendingHits.size() >= PENDING_HIT_CAP) {
-                    pendingHits.pollFirst();
-                }
-                pendingHits.addLast(p);
-                lastHitDropTs = now;
-                System.out.println("uiEvent: no live watch conn — hit "
-                        + "stashed (n=" + pendingHits.size() + ")");
-            }
         }
 
         /** ch=1 type 0x0002 push frame onto `o` (§4.8 ui_event wire). */

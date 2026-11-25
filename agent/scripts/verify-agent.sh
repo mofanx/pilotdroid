@@ -89,7 +89,7 @@ miss=[k for k in need if k not in p]
 print("OK "+json.dumps(p) if not miss else "MISS:"+",".join(miss))' > /tmp/hello.res 2>/dev/null \
   || echo "PARSE_FAIL $HELLO" > /tmp/hello.res
 grep -q "^OK" /tmp/hello.res && ok "hello_ack_fields" || bad "hello_ack_fields" "$(cat /tmp/hello.res)"
-echo "$HELLO" | grep -q '"ver": *"0\.7\.3"\|"ver":"0\.7\.3"' \
+echo "$HELLO" | grep -q '"ver": *"0\.7\.4"\|"ver":"0\.7\.4"' \
   && ok "agent_ver" || bad "agent_ver" "$(echo "$HELLO" | head -c 200)"
 
 echo "== A1b CAPS bitmap == INJECT=1 DUMP=2 SHOT=4 QUERY=8 BATCH=16 STREAM=32 TEXT=64 MPTR=128 WATCH=256 WATCH_ASYNC=512 APP_INFO=1024 =="
@@ -661,6 +661,67 @@ try:
 except Exception as e:
     rep("watch_ghost_live", False, e)
     rep("watch_corpse_heal", False, e)
+
+# A9 watch_dead + stash replay (agent >=0.7.4): an armed watcher that
+# dies abnormally — poll fault or session teardown — emits a dying
+# {type:"watch_dead"} ui_event instead of vanishing silently; and the
+# always-stash replay ring delivers an event to a conn that attaches
+# after the broadcast window (ghost-absorbed write = fake delivery).
+def read_until(msock, pred, tries=8):
+    for _ in range(tries):
+        fr = ac.read_frame(msock)
+        if fr is None:
+            return None
+        if fr[1] == 0x0002 and pred(fr[4]):
+            return fr[4]
+    return None
+
+try:
+    # (a) control-conn replace kills the session -> armed watcher aborts
+    # -> watch_dead reaches the still-attached media conn.
+    wd = ac.media_connect(MPORT); wd.settimeout(10)
+    time.sleep(0.3)
+    r = a.watch_arm({"pkg": "com.android.settings"}, "none",
+                    poll_ms=50)["payload"]
+    widD = r.get("watch_id")
+    assert widD, r
+    a2 = ac.Agent(PORT).connect()     # replaces a's session -> abort
+    dead = read_until(wd, lambda p: p.get("type") == "watch_dead"
+                      and p.get("watch_id") == widD)
+    rep("watch_dead_event", dead is not None,
+        f"dead={json.dumps(dead, ensure_ascii=False)[:160] if dead else 'no frame'}")
+    wd.close(); a2.close()
+except Exception as e:
+    rep("watch_dead_event", False, e)
+
+try:
+    # (b) ghosts absorb the hit broadcast; a conn attaching AFTER the
+    # push still gets the event via the stash replay ring (r5 fix).
+    a3 = ac.Agent(PORT).connect()
+    sh("input", "keyevent", "KEYCODE_HOME")
+    time.sleep(1.5)
+    for _ in range(3):
+        rst_ghost(); time.sleep(0.15)
+    r = a3.watch_arm({"pkg": "com.android.settings"}, "none",
+                     poll_ms=50)["payload"]
+    widR = r.get("watch_id")
+    assert widR, r
+    sh("am", "start", "com.android.settings")
+    fg = False
+    for _ in range(16):
+        if a3.query({"pkg": "com.android.settings"})["payload"].get("found"):
+            fg = True
+            break
+        time.sleep(0.5)
+    time.sleep(0.4)   # broadcast already absorbed by the ghost set
+    wr = ac.media_connect(MPORT); wr.settimeout(10)
+    hitR = read_until(wr, lambda p: p.get("watch_id") == widR
+                      and p.get("matched"))
+    rep("watch_hit_stash_replay", hitR is not None,
+        f"fg={fg} replay_hit={hitR is not None}")
+    wr.close(); a3.close()
+except Exception as e:
+    rep("watch_hit_stash_replay", False, e)
 
 if ms is not None:
     ms.close()
