@@ -14,7 +14,7 @@ uiautomator2 `Device` 公共 API 的逐条标注。约定：**drop-in 只承诺�
 | `index` `instance` | ✅ | M13 语义对齐 u2：**`index`** = 节点在父中的子位置（XML `index` attr，host post-filter 谓词）；**`instance`** = 第 N 个命中（0-based；wire `index` 字段语义即此，shim 映射 instance→wire index）。注意 M11-12 曾把两者混为 Nth-match——旧脚本的 `d(index=N)` 语义会变 |
 | `clickable` `checkable` `checked` `enabled` `focusable` `focused` `selected` `longClickable` | ✅ | M12 host post-filter attrs |
 | relative selector（`child`/`sibling`/`left`/`right`/`up`/`down`） | ✅ | M12 host post-filter：空间向=节点 bounds 完全落在锚点方向区；child/sibling 用 dump 树父子关系 |
-| `xpath` | ⚠️ **host-side 近似子集** | M23 xpath-lite：每次查询一次 `dump_hierarchy`+ElementTree（~50ms），**非 u2 插件管线**。覆盖：text 简写 / `%` SQL-LIKE 三态（`v%`=前缀、`%v`=后缀、`%v%`=contains，M24 由一律 contains 收紧为 u2 语义）/ `@resource-id` / 裸 `pkg:id/x` / `//*[@attr]` / `contains()` / `parent()` / `scroll_to` / `all()`/`get()`/`exists`/`wait()`/`click()`/`get_text()`/`info`/`swipe`。位置轴/`and-or` 谓词/ancestor 轴等高级面 → 显式 `NotImplementedError`。watcher `when()`：`//*[@text|@resource-id|@content-desc|@class|@package=...]` 1:1 翻为 wire 键；xpath-lite 可求值的复杂式（如 `contains()`）降级 **host-poll 规则**——每个 tick/loop pass 一次 dump 评估 `_XPathLite.exists`，命中即触发（M25）；超出子集者注册时即 NIE（fail-fast，不再等运行期） |
+| `xpath` | ⚠️ **host-side 近似子集** | M23 xpath-lite：每次查询一次 `dump_hierarchy`+ElementTree（~50ms），**非 u2 插件管线**。覆盖：text 简写 / `%` SQL-LIKE 三态（`v%`=前缀、`%v`=后缀、`%v%`=contains，M24 由一律 contains 收紧为 u2 语义）/ `@resource-id` / 裸 `pkg:id/x` / `//*[@attr]` / `contains()` / `parent()` / `scroll_to` / `all()`/`get()`/`exists`/`wait()`/`click()`/`get_text()`/`info`/`swipe`。位置轴/`and-or` 谓词/ancestor 轴等高级面 → 显式 `NotImplementedError`。watcher `when()`：`//*[@text|@resource-id|@content-desc|@class|@package=...]` 1:1 翻为 wire 键；xpath-lite 可求值的复杂式（如 `contains()`）降级 **host-poll 规则**——每个 tick/loop pass 一次 dump 评估 `_XPathLite.exists`，命中即触发（M25）；超出子集者注册时即 NIE（fail-fast，不再等运行期）。`when(xpath).click()` 作用于 xpath **首匹配**（doc order）——伴随 kw 仅作命中 guard 不影响点击目标（M26 注记） |
 
 > 解析路径注（M12）：全精确键走 wire QUERY（仅 active window）；含
 > contains/matches/attrs/relative 时整体切 dump+post-filter（全窗口树，
@@ -41,7 +41,7 @@ uiautomator2 `Device` 公共 API 的逐条标注。约定：**drop-in 只承诺�
 
 | u2 API | 状态 | 语义差 |
 |---|---|---|
-| `connect(addr)` | ✅ | 位置参数兼容两种口径：adb serial 字符串（u2 风格 `u2.connect('ba0d072d')`）或本地 TCP port（int/digit-str，pilotdroid 风格）；`serial=` kwarg 与无参 auto-detect（扫 `adb forward --list` 中 `localabstract:pilotdroid_agent`）不变（M13） |
+| `connect(addr)` | ✅ | 位置参数兼容两种口径：adb serial 字符串（u2 风格 `u2.connect('ba0d072d')`）或本地 TCP port（int/digit-str，pilotdroid 风格）；`serial=` kwarg 与无参 auto-detect（扫 `adb forward --list` 中 `localabstract:pilotdroid_agent`）不变（M13）。`serial=None` 时从命中的 forward 行 **backfill serial**（对齐 `u2.connect()` 无参选首台语义——其余 adb 路径多设备下需 `-s`，M26）；多台设备都有 forward → 指引性错误（传 `serial=` 或 `PILOTDROID_SERIAL`）；无 forward → `adb devices` 恰 1 台 adopt、>1 台同口径报错 |
 | `service("uiautomator")` | ✅ 映射 | u2 的设备端服务生命周期（`.running()/.stop()/.start()`）映射到 pilotdroid agent 进程——同角色不同实现；其他服务名报 ValueError（M13，Themis 全量脚本 teardown 依赖） |
 | `click(x,y)` `long_click(x,y,d)` `swipe` `press(key)` | ✅ | key 别名：home/back/recent(s)/power/volume_±/menu/search/enter/del |
 | `swipe_ext(dir,scale)` `double_click(x,y,d)` `drag(fx1,fy1,fx2,fy2,d)` | ✅ | M13 drop-in 补齐（Themis 实测用法驱动）：swipe_ext=居中定向扫屏；drag 坐标 ≤1 按屏幕比例，含 300ms 按住起点（M13） |
@@ -59,7 +59,7 @@ uiautomator2 `Device` 公共 API 的逐条标注。约定：**drop-in 只承诺�
 | `screen_on()` `unlock()` | ✅ | `dumpsys power` 判态 + power keyevent；unlock=wake+上滑 |
 | `screen_off()` | ⚠️ | **MIUI 口袋模式陷阱**：power keyevent 关屏若贴近距离传感器，MIUI 可进入 pocket-mode → 此后全部注入输入被吞、屏幕不可点亮，**仅 reboot 可解**。建议仅在屏幕可受控测试场景使用 |
 | `orientation` get/set | ✅ | `settings user_rotation`；set 冻结重力旋转（同 u2 语义） |
-| `watcher` | ✅ | `d.watcher.when(...).click()` + `.start()/.run()/.stop()/.reset()/.running`——M11 起 agent 0.7.0+（CAP_WATCH_ASYNC）走**设备端异步 watcher**（WATCH_ARM + media 通道 WATCH_HIT 推送，与 u2 server 线程语义对等且 armed 期间不阻塞 control）；旧 agent 回退阻塞 WATCH，再旧回退 host 轮询。规则命中按 `_pd_max_fires` 计数摘除——默认 1（u2 fire-once 语义不变）；超 1 时命中后留在规则表，设备端规则下一 pass 自动 re-arm（bounded re-arm，M25） |
+| `watcher` | ✅ | `d.watcher.when(...).click()` + `.start()/.run()/.stop()/.reset()/.running`——M11 起 agent 0.7.0+（CAP_WATCH_ASYNC）走**设备端异步 watcher**（WATCH_ARM + media 通道 WATCH_HIT 推送，与 u2 server 线程语义对等且 armed 期间不阻塞 control）；旧 agent 回退阻塞 WATCH，再旧回退 host 轮询。规则命中按 `max_fires` 计数摘除——`call(fn, max_fires=N)`/`click(max_fires=N)` 公开参数透传（M26；默认 1=u2 fire-once 语义不变）；超 1 时命中后留在规则表，设备端规则下一 pass 自动 re-arm（bounded re-arm，M25）。re-arm 摘除→重臂间隙 ~50-100ms 内快闪的同匹配事件可能漏（arm 模型固有，host-poll 规则无此窗） |
 | `watch_context(builtin)` | ✅ 近似 | ctx-mgr 语义同 u2；`builtin=True` 预挂 `_BUILTIN_DIALOGS`（非 u2 stock 规则复制，是本机实测击中的 ROM 弹窗集）：MIUI AdbInstallActivity「继续安装」、LBE 审查「确定」、展开 NotificationShade→`cmd statusbar collapse`。**点击类规则走 host-side inject 坐标点击**（device-arm 仅做观察）——agent 的 a11y ACTION_CLICK 会被 FLAG_SECURE 弹窗静默吞掉（M24 真机实证：规则命中但 10s 倒计时仍走完自动拒绝）；LBE 审查是**多页**确定流程（fixture-doctor 同因循环），规则 `max_fires=3` 命中后 re-arm 续点（M25，仍是有界上限防永久匹配规则死循环）；shade 规则经 resourceIdMatches→host-poll，ROM 无此 id 则规则静默休眠 |
 | `app_wait(pkg,timeout,front)` | ✅ | `pidof`+conn APP_INFO 判前台（M11） |
 | `session(pkg,attach)` | ✅ 近似 | 返回 Session 对象：`running()` 前台轮询、app 消亡后 ops 抛 `SessionBrokenError`、`with` 退出 force-stop（M21-G8）。**崩溃看护是 op 时惰性轮询，非 u2 server 常驻看护**——崩溃在下一次操作时暴露而非即时 |
@@ -133,3 +133,8 @@ benchmark/suite 跑旧 targetSdk app 前需先放行（openatx u2 官方
   `select_iter`/`count`/`watchers`）shim 已实现并有本地单测覆盖**
   （M21/M24/M25），skip 归因为上游标记而非 shim 缺口。
 - 其余 shim 层补齐进度随 0.6.3 changelog / ledger 更新。
+- **notify demux 裁决 defer（M26）**：serve 侧 watcher 命中经
+  `watch_events` 轮询拉取（pull 面 `watch_arm`/`watch_disarm`/
+  `watch_events` 齐备）；MCP push notification 未实现——跨会话
+  armed 生命周期管理（client 断开时 agent 侧规则朝死 socket 推
+  帧）与 stdio JSON-RPC 交错的成本不配收益，设计裁决非缺口。

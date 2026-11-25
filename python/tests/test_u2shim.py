@@ -676,5 +676,91 @@ class TestWatcherReArmAndXPathPoll(unittest.TestCase):
         self.assertEqual(taps, [])   # vanished node → no tap, no crash
 
 
+class TestDetectPortSerialBackfill(unittest.TestCase):
+    """M26 — `_detect_port` returns (serial, port): serial backfilled
+    from the matched forward line (u2 first-device semantics); multi-
+    device forward or >1 `adb devices` with no forward → guiding error."""
+
+    class _R:
+        def __init__(self, stdout=""):
+            self.stdout = stdout
+            self.returncode = 0
+
+    FWD = "ba0d072d tcp:17932 localabstract:pilotdroid_agent\n"
+
+    def _patch(self, fwd="", devs=""):
+        orig = u2shim.subprocess.run
+        devout = "List of devices attached\n" + devs
+
+        def fake(cmd, **kw):
+            if cmd[1:2] == ["forward"]:
+                return self._R(fwd)
+            if cmd[1:2] == ["devices"]:
+                return self._R(devout)
+            return self._R()
+        u2shim.subprocess.run = fake
+        self.addCleanup(lambda: setattr(u2shim.subprocess, "run", orig))
+
+    def test_backfill_serial_from_forward_line(self):
+        self._patch(fwd=self.FWD)
+        self.assertEqual(u2shim._detect_port(None),
+                         ("ba0d072d", 17932))
+
+    def test_multi_device_forward_failfast(self):
+        self._patch(fwd=self.FWD +
+                    "11.0.0.2:5555 tcp:27932 "
+                    "localabstract:pilotdroid_agent\n")
+        with self.assertRaises(RuntimeError) as e:
+            u2shim._detect_port(None)
+        self.assertIn("PILOTDROID_SERIAL", str(e.exception))
+
+    def test_explicit_serial_filters(self):
+        self._patch(fwd=self.FWD)
+        self.assertEqual(u2shim._detect_port("ba0d072d"),
+                         ("ba0d072d", 17932))
+
+    def test_no_forward_single_device_adopts(self):
+        # no forward line → `adb devices` exactly 1 → adopt serial;
+        # stub the 17932 probe dead → generic actionable error.
+        self._patch(devs="ba0d072d\tdevice\n")
+        orig = u2shim.Agent
+        u2shim.Agent = lambda port: (_ for _ in ()).throw(OSError())
+        self.addCleanup(lambda: setattr(u2shim, "Agent", orig))
+        with self.assertRaises(RuntimeError) as e:
+            u2shim._detect_port(None)
+        self.assertIn("pilotdroid-cli", str(e.exception))
+
+    def test_no_forward_multi_device_failfast(self):
+        self._patch(devs="ba0d072d\tdevice\n11.0.0.2:5555\tdevice\n")
+        with self.assertRaises(RuntimeError) as e:
+            u2shim._detect_port(None)
+        self.assertIn("PILOTDROID_SERIAL", str(e.exception))
+
+
+class TestMaxFiresParam(unittest.TestCase):
+    """M26 — `call(fn, max_fires=N)`/`click(max_fires=N)` public
+    passthrough of the re-arm budget (no private-attr hack)."""
+
+    def test_call_max_fires(self):
+        w = u2shim._Watcher(_bare_device())
+        fn = lambda: None
+        w.when(text="x").call(fn, max_fires=3)
+        self.assertEqual(fn._pd_max_fires, 3)
+
+    def test_click_max_fires_wireable(self):
+        w = u2shim._Watcher(_bare_device())
+        w.when(text="x").click(max_fires=2)
+        _kw, action = w._rules[0]
+        self.assertEqual(action._pd_max_fires, 2)
+        self.assertTrue(action._pd_click)  # device-arm flag intact
+
+    def test_click_max_fires_xpath(self):
+        w = u2shim._Watcher(_bare_device())
+        w.when("//*[contains(@text,'x')]").click(max_fires=4)
+        kw, action = w._rules[0]
+        self.assertIn("_xpath", kw)
+        self.assertEqual(action._pd_max_fires, 4)
+
+
 if __name__ == "__main__":
     unittest.main()

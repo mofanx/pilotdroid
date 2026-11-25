@@ -578,7 +578,7 @@ class _WhenCtx:
     def __init__(self, watcher, kw):
         self._w, self.kw = watcher, kw
 
-    def click(self):
+    def click(self, max_fires=None):
         if "_xpath" in self.kw:
             # host-poll rule: the `_xpath` sentinel is not a selector
             # key — passing it to _Selector raises ValueError inside
@@ -597,12 +597,17 @@ class _WhenCtx:
             def action():
                 _Selector(self._w.dev, **self.kw).click()
             action._pd_click = True  # armed device-side: don't re-click
+        if max_fires is not None:
+            action._pd_max_fires = max_fires
         self._w._rules.append((self.kw, action))
         return self._w
 
-    def call(self, func):
+    def call(self, func, max_fires=None):
         """u2 `watcher.when(sel).call(fn)` — run arbitrary callback on
-        match (test_xpath::test_watcher uses this)."""
+        match (test_xpath::test_watcher uses this). `max_fires=N` makes
+        the rule re-arm up to N hits (default fire-once)."""
+        if max_fires is not None:
+            func._pd_max_fires = max_fires
         self._w._rules.append((self.kw, func))
         return self._w
 
@@ -886,8 +891,7 @@ class _WatchContext:
                 else:
                     cmd = act[1]
                     fn = lambda c=cmd: self.dev.shell(c)
-                fn._pd_max_fires = max_fires  # bounded re-arm budget
-                self._w.when(**kw).call(fn)
+                self._w.when(**kw).call(fn, max_fires=max_fires)
         self._w.start()
         return self
 
@@ -919,7 +923,8 @@ _ORIENTATION_SET = {"natural": 0, "n": 0, "left": 1, "l": 1, "90": 1,
 class Device:
     def __init__(self, port=None, serial=None, agent=None):
         serial = serial or os.environ.get("PILOTDROID_SERIAL") or None
-        port = port or _detect_port(serial)
+        if port is None:
+            serial, port = _detect_port(serial)  # backfills serial
         self.a = agent or Agent(port).connect()
         self._port = port
         self.serial = serial
@@ -1679,31 +1684,65 @@ class _XPathLite:
         return None
 
 
+def _adb_devices():
+    """`adb devices` serial list (attached state only); [] on adb errors."""
+    try:
+        out = subprocess.run(["adb", "devices"], capture_output=True,
+                             text=True, timeout=10).stdout
+    except Exception:
+        return []
+    return [ln.split()[0] for ln in out.splitlines()[1:]
+            if ln.split()[-1:] == ["device"]]
+
+
 def _detect_port(serial=None):
-    """Auto-detect the local TCP port forwarding to pilotdroid_agent.
+    """Auto-detect (serial, port) of the TCP forward to pilotdroid_agent.
 
     Parses `adb forward --list` for a `localabstract:pilotdroid_agent` rule;
-    when `serial` is given the rule must belong to that device. Falls back to
-    the conventional 17932 with an actionable error if nothing is listening.
+    when `serial` is given the rule must belong to that device. With
+    `serial=None` the matched line's serial is BACKFILLED (u2.connect()
+    first-device semantics — every other adb call needs `-s` under
+    multi-device); several devices forwarding → guiding error. No forward
+    rule at all → `adb devices` disambiguates: exactly one attached →
+    adopt it; more than one → guiding error. Falls back to the
+    conventional 17932 probe with an actionable error if nothing listens.
     """
     try:
         out = subprocess.run(["adb", "forward", "--list"],
                              capture_output=True, text=True, timeout=10).stdout
     except Exception:
         out = ""
-    cands = []
+    cands = []  # (serial, port)
     for line in out.splitlines():
         parts = line.split()
         if len(parts) == 3 and parts[2] == "localabstract:pilotdroid_agent":
             if serial is None or parts[0] == serial:
                 if parts[1].startswith("tcp:"):
-                    cands.append(int(parts[1][4:]))
+                    cands.append((parts[0], int(parts[1][4:])))
     if cands:
-        return cands[0]
+        if serial is None:
+            serials = {s for s, _ in cands}
+            if len(serials) > 1:
+                raise RuntimeError(
+                    f"u2shim: {len(serials)} devices forward to "
+                    f"pilotdroid_agent ({', '.join(sorted(serials))}) — "
+                    "pass serial= or set PILOTDROID_SERIAL")
+            serial = cands[0][0]
+        return serial, cands[0][1]
+    if serial is None:
+        devs = _adb_devices()
+        if len(devs) > 1:
+            raise RuntimeError(
+                f"u2shim: no pilotdroid_agent forward found and "
+                f"{len(devs)} devices attached ({', '.join(devs)}) — "
+                "pass serial= or set PILOTDROID_SERIAL, then run "
+                "`pilotdroid-cli -s <serial> setup`")
+        if devs:
+            serial = devs[0]
     for port in (17932,):
         try:
             Agent(port).connect().close()
-            return port
+            return serial, port
         except Exception:
             pass
     raise RuntimeError(
