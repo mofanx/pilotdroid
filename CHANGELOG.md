@@ -6,6 +6,33 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- **SoM 感知 MCP 工具面**（Track A·M29，`crates/pilotdroid-cli` 新
+  `som.rs`——编号空间与 `compat/som.py` 逐字一致）：`describe_screen`
+  返回 `{elements, text}`（id↔center↔label/rid/class/C）；
+  `screenshot_annotated` 返回叠同编号框的 JPEG（image crate 纯 Rust
+  解码/绘制/编码，agent.jar 零改动；退化/倒置 bounds 归一化+零面积
+  跳过，与 Python 侧同策略）。真机 ba0d072d 实测：30 工具列表、
+  annotated 276KB JPEG 出图。
+
+- **watch push demux**（MCP notification 帧通道——推翻 M26 defer，
+  合同授权）：`watch_arm {push:true}` 命中即发
+  `notifications/pilotdroid/watch_hit`（serve 单写者循环，notification
+  与 response 帧结构性无交错；非 push 命中缓冲降级 `watch_events`
+  可拉，PENDING_CAP=64 防膨胀；stream 激活期间 demux 暂停——帧与
+  命中共享 ch=1，命中由 agent 侧暂存待拉）；client stdin EOF/写失败
+  → 自动 disarm 全部 armed 规则（agent 侧 conn close 亦有 reap，
+  双保险）。真机实测：armed watch_id=9 命中 notification 到达；
+  EOF 后 watch_disarm 复验 `disarmed:false` 无残留。
+
+- **`verify_after` 闭环验证工具**（u2 无此能力——超越点）：
+  `{action:{tool,args}, settle_ms, expect}`——跑一个 op→settle→
+  新 dump 断言 `exists`/`absent`/`text`/`layout_changed`，返回
+  `{action, checks, pass}`；action 白名单限副作用/读 op（禁
+  batch/verify 递归与 stream/watch 生命周期）。真机实测
+  `press HOME → layout_changed:true → pass`。
+
 ### Fixed
 
 - **SoM annotated 倒置/退化 bounds 崩溃修复**（M28 复核实锤）：

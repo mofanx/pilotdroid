@@ -133,8 +133,13 @@ benchmark/suite 跑旧 targetSdk app 前需先放行（openatx u2 官方
   `select_iter`/`count`/`watchers`）shim 已实现并有本地单测覆盖**
   （M21/M24/M25），skip 归因为上游标记而非 shim 缺口。
 - 其余 shim 层补齐进度随 0.6.3 changelog / ledger 更新。
-- **notify demux 裁决 defer（M26）**：serve 侧 watcher 命中经
-  `watch_events` 轮询拉取（pull 面 `watch_arm`/`watch_disarm`/
-  `watch_events` 齐备）；MCP push notification 未实现——跨会话
-  armed 生命周期管理（client 断开时 agent 侧规则朝死 socket 推
-  帧）与 stdio JSON-RPC 交错的成本不配收益，设计裁决非缺口。
+- **notify demux 已落地（M29，推翻 M26 defer）**：`watch_arm {push:true}`
+  命中即发 `notifications/pilotdroid/watch_hit` MCP notification；
+  非 push 命中缓冲降级 `watch_events` 可拉；client 断开自动 disarm
+  全部 armed 规则（agent conn close 亦 reap，双保险）；stream 激活期
+  demux 暂停（帧/命中共享 ch=1）。pull 面
+  `watch_arm`/`watch_disarm`/`watch_events` 保持齐备。
+- **超出 u2 面的 MCP 工具**（shim 不覆盖，记此防口径漂移）：
+  `describe_screen`/`screenshot_annotated`（SoM-lite 感知，编号空间
+  与 `compat/som.py` 一致）、`verify_after`（操作后 dump 断言闭环，
+  u2 无此能力）、`watch_arm{push}`（上条）。

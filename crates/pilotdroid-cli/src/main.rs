@@ -1,6 +1,7 @@
 mod agent;
 mod serve;
 mod setup;
+mod som;
 
 #[cfg(test)]
 mod agent_smoke;
@@ -333,7 +334,10 @@ fn main() -> Result<()> {
             // Session on demand: initialize tries once (for agentVer),
             // first tools/call retries. A fresh AdbClient per attempt —
             // a failed connect must not consume the transport.
-            serve::run(stdin.lock(), &mut stdout, move || {
+            // `BufReader::new(stdin)` (not stdin.lock) — the serve loop
+            // spawns a reader thread for timed wakeups while push-armed
+            // watchers exist; StdinLock borrows and isn't 'static.
+            serve::run(std::io::BufReader::new(stdin), &mut stdout, move || {
                 let adb = AdbClient::at(adb_port)
                     .context("connecting to adb server (is `adb` running?)")?;
                 pilotdroid_agent::Device::with_transport(adb, serial.clone())

@@ -12,14 +12,52 @@
 //! stdout carries ONLY JSON-RPC responses — every banner/diagnostic
 //! goes to stderr (agent callers parse stdout byte-for-byte).
 
+use std::collections::{HashMap, VecDeque};
 use std::io::Write;
 use std::path::PathBuf;
+use std::sync::mpsc;
+use std::time::Duration;
 
 use anyhow::{Context, Result};
 use pilotdroid_adb::AdbTransport;
 use pilotdroid_agent::{MediaEvent, ScrollDir, Session};
 use pilotdroid_proto::payload::*;
 use serde_json::{json, Map, Value};
+
+use crate::som;
+
+/// Media-poll cadence while push-armed watchers exist (serve stays
+/// single-writer: the demux happens between requests on the loop
+/// thread, so notification frames can never tear a response frame).
+const PUSH_POLL_MS: u64 = 150;
+/// Events consumed by the push demux but not deliverable (non-push
+/// watcher hit, frame, or a failed notification write) stay pullable
+/// through `watch_events` — the documented degrade path.
+const PENDING_CAP: usize = 64;
+
+/// Ops allowed inside `verify_after.action` — side-effect or read ops
+/// only; no batch/verify recursion, no stream/watch lifecycle tools
+/// (their acks don't map onto the action result envelope).
+const VERIFY_OPS: &[&str] = &[
+    "tap",
+    "long_click",
+    "swipe",
+    "press",
+    "set_text",
+    "scroll",
+    "pinch_in",
+    "pinch_out",
+    "app_start",
+    "app_stop",
+    "exists",
+    "query",
+    "wait_for",
+    "dump",
+    "list_elements",
+    "tap_index",
+    "set_text_index",
+    "screenshot",
+];
 
 /// MCP protocol revisions we implement, oldest → newest. Negotiation
 /// is a whitelist: an offered version we don't implement gets our
@@ -43,7 +81,7 @@ fn negotiate_version(offered: Option<&str>) -> &'static str {
 /// `serverInfo.agentVer` (null when the device is unreachable — the
 /// handshake stays device-free); the first `tools/call` (re)connects
 /// on demand.
-pub fn run<T: AdbTransport, R: std::io::BufRead, W: Write>(
+pub fn run<T: AdbTransport, R: std::io::BufRead + Send + 'static, W: Write>(
     inp: R,
     out: &mut W,
     mut connect: impl FnMut() -> Result<Session<T>>,
@@ -53,8 +91,85 @@ pub fn run<T: AdbTransport, R: std::io::BufRead, W: Write>(
     // every list_elements call; indexes are meaningless across snapshots.
     // (elements, layout signature, focused pkg at snapshot time).
     let mut snapshot: Option<(Vec<pilotdroid_agent::ElemInfo>, u64, Option<String>)> = None;
-    for line in inp.lines() {
-        let line = line?;
+    // Armed async watchers: watch_id → push flag. `push=true` (watch_arm
+    // arg) routes a hit to an MCP notification instead of only the
+    // watch_events pull — Track A demux, overriding the M26 defer.
+    let mut armed: HashMap<u32, bool> = HashMap::new();
+    // Media events consumed by the demux that weren't pushed — pullable
+    // via watch_events (degrade path). Bounded: a client that never
+    // pulls shouldn't grow memory forever.
+    let mut pending: VecDeque<MediaEvent> = VecDeque::new();
+
+    // stdin → channel: lines() blocks forever otherwise, and the demux
+    // needs timed wakeups while push-armed watchers exist. The reader
+    // thread only reads; stdout stays single-writer on this thread.
+    let (tx, rx) = mpsc::channel::<std::io::Result<String>>();
+    std::thread::spawn(move || {
+        for line in inp.lines() {
+            let done = line.is_err();
+            if tx.send(line).is_err() || done {
+                break;
+            }
+        }
+    });
+
+    let result = loop {
+        // Push demux (Track A): while any watcher is armed with
+        // push=true, poll the media channel between requests. Gated on
+        // !streaming — frames and hits share ch=1, and consuming frames
+        // here would starve stream_read; hits buffer agent-side until
+        // the stream stops or watch_events pulls (documented degrade).
+        let push_active = armed.values().any(|&p| p);
+        if push_active {
+            if let Some(s) = session.as_mut() {
+                if !s.is_streaming() {
+                    match s.watch_recv(Some(PUSH_POLL_MS)) {
+                        Ok(MediaEvent::WatchHit(h)) => {
+                            // Fired = removed agent-side (one-shot).
+                            let want_push = armed.remove(&h.watch_id).unwrap_or(false);
+                            if want_push {
+                                let note = json!({
+                                    "jsonrpc": "2.0",
+                                    "method": "notifications/pilotdroid/watch_hit",
+                                    "params": h,
+                                });
+                                if let Err(e) = write_resp(out, &note) {
+                                    // stdout dead — buffer then bail
+                                    // (client is gone anyway, but the
+                                    // event stays consistent).
+                                    push_pending(&mut pending, MediaEvent::WatchHit(h));
+                                    break Err(e);
+                                }
+                            } else {
+                                push_pending(&mut pending, MediaEvent::WatchHit(h));
+                            }
+                        }
+                        Ok(ev) => push_pending(&mut pending, ev),
+                        Err(pilotdroid_agent::AgentError::Timeout) => {}
+                        Err(e) => {
+                            // Media socket broken — hits can no longer be
+                            // demuxed; stop polling (pull path surfaces
+                            // its own error on next watch_events).
+                            eprintln!("pilotdroid-serve: watch push demux stopped: {e}");
+                            armed.retain(|_, p| !*p);
+                        }
+                    }
+                }
+            }
+        }
+        let line = if push_active {
+            match rx.recv_timeout(Duration::from_millis(PUSH_POLL_MS)) {
+                Ok(l) => l?,
+                Err(mpsc::RecvTimeoutError::Timeout) => continue,
+                // Client stdin EOF → disconnect: disarm below, exit clean.
+                Err(mpsc::RecvTimeoutError::Disconnected) => break Ok(()),
+            }
+        } else {
+            match rx.recv() {
+                Ok(l) => l?,
+                Err(mpsc::RecvError) => break Ok(()),
+            }
+        };
         if line.trim().is_empty() {
             continue;
         }
@@ -132,7 +247,8 @@ pub fn run<T: AdbTransport, R: std::io::BufRead, W: Write>(
                         }
                     },
                 };
-                let (v, dead) = call_tool(s, id, &name, args, &mut snapshot);
+                let (v, dead) =
+                    call_tool(s, id, &name, args, &mut snapshot, &mut armed, &mut pending);
                 // Dead control conn (e.g. replaced by a newer conn —
                 // ADR-007 last-connector-wins): drop it so the NEXT
                 // tools/call lazily reconnects and re-claims the agent,
@@ -152,9 +268,20 @@ pub fn run<T: AdbTransport, R: std::io::BufRead, W: Write>(
             }
             _ => err(id, -32601, &format!("method not found: {method}")),
         };
-        write_resp(out, &resp)?;
+        if let Err(e) = write_resp(out, &resp) {
+            break Err(e);
+        }
+    };
+    // Client disconnect or write failure: disarm anything still armed —
+    // the contract is armed rules must not outlive the MCP session that
+    // created them (agent also reaps on conn close; explicit is belt&
+    // braces for watchers armed on a shared/stale conn).
+    if let Some(s) = session.as_mut() {
+        for wid in armed.keys() {
+            let _ = s.watch_disarm(*wid);
+        }
     }
-    Ok(())
+    result
 }
 
 fn ok(id: Value, result: Value) -> Value {
@@ -199,6 +326,15 @@ fn tool_ok(id: Value, result: Value) -> Value {
 fn write_resp<W: Write>(out: &mut W, v: &Value) -> Result<()> {
     writeln!(out, "{v}")?;
     out.flush().context("stdout write")
+}
+
+/// Buffer a demuxed-but-unpushed media event for the watch_events pull
+/// path; oldest evicted past PENDING_CAP.
+fn push_pending(pending: &mut VecDeque<MediaEvent>, ev: MediaEvent) {
+    if pending.len() >= PENDING_CAP {
+        pending.pop_front();
+    }
+    pending.push_back(ev);
 }
 
 // ---- tool dispatch ----------------------------------------------------------
@@ -255,6 +391,8 @@ fn call_tool<T: AdbTransport>(
     name: &str,
     args: Value,
     snap: &mut Option<(Vec<pilotdroid_agent::ElemInfo>, u64, Option<String>)>,
+    armed: &mut HashMap<u32, bool>,
+    pending: &mut VecDeque<MediaEvent>,
 ) -> (Value, bool) {
     let r: std::result::Result<Value, anyhow::Error> =
         (|| -> std::result::Result<Value, anyhow::Error> {
@@ -471,32 +609,148 @@ fn call_tool<T: AdbTransport>(
                     // a hit fired before the first watch_events call is
                     // silently dropped (§4.8/§4.9).
                     s.watch_attach()?;
+                    let push = args.get("push").and_then(Value::as_bool).unwrap_or(false);
                     let ack = s.watch_arm(
                         sel,
                         &str_arg(&args, "action").unwrap_or_else(|| "click".into()),
                         num_arg(&args, "timeout_ms").map(|v| v as u64),
                     )?;
+                    armed.insert(ack.watch_id, push);
                     Ok(json!(ack))
                 }
                 "watch_disarm" => {
                     let id =
                         num_arg(&args, "watch_id").context("watch_disarm needs watch_id")? as u32;
+                    armed.remove(&id);
                     Ok(json!({"disarmed": s.watch_disarm(id)?}))
                 }
-                "watch_events" => match s
-                    .watch_recv(num_arg(&args, "timeout_ms").map(|v| (v as u64).max(500)))
-                {
-                    Ok(MediaEvent::WatchHit(h)) => Ok(json!({"type": "watch_hit", "hit": h})),
-                    Ok(MediaEvent::Frame(f)) => Ok(json!({
-                        "type": "frame", "w": f.w, "h": f.h,
-                        "dropped": f.dropped,
-                    })),
-                    // No event yet is data, not failure — report it in the
-                    // union so an armed-but-quiet watcher doesn't surface
-                    // isError to the MCP client (real errors still do).
-                    Err(pilotdroid_agent::AgentError::Timeout) => Ok(json!({"type": "timeout"})),
-                    Err(e) => Err(e.into()),
-                },
+                "watch_events" => {
+                    // Demux leftovers first (non-push hits, frames,
+                    // failed-push events) — pull is the degrade path.
+                    if let Some(ev) = pending.pop_front() {
+                        match ev {
+                            MediaEvent::WatchHit(h) => {
+                                armed.remove(&h.watch_id);
+                                Ok(json!({"type": "watch_hit", "hit": h}))
+                            }
+                            MediaEvent::Frame(f) => Ok(json!({
+                                "type": "frame", "w": f.w, "h": f.h,
+                                "dropped": f.dropped,
+                            })),
+                        }
+                    } else {
+                        match s
+                            .watch_recv(num_arg(&args, "timeout_ms").map(|v| (v as u64).max(500)))
+                        {
+                            Ok(MediaEvent::WatchHit(h)) => {
+                                armed.remove(&h.watch_id);
+                                Ok(json!({"type": "watch_hit", "hit": h}))
+                            }
+                            Ok(MediaEvent::Frame(f)) => Ok(json!({
+                                "type": "frame", "w": f.w, "h": f.h,
+                                "dropped": f.dropped,
+                            })),
+                            // No event yet is data, not failure — report it in the
+                            // union so an armed-but-quiet watcher doesn't surface
+                            // isError to the MCP client (real errors still do).
+                            Err(pilotdroid_agent::AgentError::Timeout) => {
+                                Ok(json!({"type": "timeout"}))
+                            }
+                            Err(e) => Err(e.into()),
+                        }
+                    }
+                }
+                "describe_screen" => {
+                    let xml = s.dump()?;
+                    Ok(som::describe(
+                        &xml,
+                        num_arg(&args, "max_label").map(|v| v as usize),
+                    ))
+                }
+                "screenshot_annotated" => {
+                    let quality = num_arg(&args, "quality").unwrap_or(80.0) as u8;
+                    let path = str_arg(&args, "path").map(PathBuf::from);
+                    let xml = s.dump()?;
+                    // scale fixed at 1.0 — bounds are display px (same
+                    // contract as compat/som.py).
+                    let (_fmt, jpeg) = s.screenshot(None, quality, Some(1.0))?;
+                    let data = som::annotate(&jpeg, &xml, quality)?;
+                    if let Some(p) = &path {
+                        std::fs::write(p, &data)
+                            .with_context(|| format!("write {}", p.display()))?;
+                    }
+                    Ok(json!({
+                        "format": "jpeg", "bytes": data.len(), "path": path,
+                        "b64": path.is_none().then(|| b64(&data)),
+                    }))
+                }
+                "verify_after" => {
+                    // Post-action closed-loop check (no u2 equivalent):
+                    // run one op → settle → assert on a fresh dump.
+                    let action = args.get("action").context("verify_after needs action")?;
+                    let tool = action
+                        .get("tool")
+                        .and_then(Value::as_str)
+                        .context("action.tool required")?;
+                    anyhow::ensure!(
+                        VERIFY_OPS.contains(&tool),
+                        "verify_after action must be a side-effect op, got '{tool}'"
+                    );
+                    let aargs = action.get("args").cloned().unwrap_or_else(|| json!({}));
+                    let settle = num_arg(&args, "settle_ms").unwrap_or(500.0) as u64;
+                    let before_sig = s.layout_signature().ok();
+                    let (v2, dead2) = call_tool(s, Value::Null, tool, aargs, snap, armed, pending);
+                    if dead2 {
+                        return Err(pilotdroid_agent::AgentError::Io(std::io::Error::new(
+                            std::io::ErrorKind::BrokenPipe,
+                            "verify_after action lost the control conn",
+                        ))
+                        .into());
+                    }
+                    let a_ok = !v2
+                        .pointer("/result/isError")
+                        .and_then(Value::as_bool)
+                        .unwrap_or(true);
+                    let a_detail = v2
+                        .pointer("/result/content/0/text")
+                        .and_then(Value::as_str)
+                        .unwrap_or("")
+                        .to_string();
+                    std::thread::sleep(Duration::from_millis(settle));
+                    let expect = args.get("expect").context("verify_after needs expect")?;
+                    let mut checks = Vec::new();
+                    if let Some(sel_v) = expect.get("exists") {
+                        let found = s.exists(selector_of(sel_v))?;
+                        checks.push(json!({"kind":"exists","pass":found,"found":found}));
+                    }
+                    if let Some(sel_v) = expect.get("absent") {
+                        let found = s.exists(selector_of(sel_v))?;
+                        checks.push(json!({"kind":"absent","pass":!found,"found":found}));
+                    }
+                    if let Some(t) = expect.get("text").and_then(Value::as_str) {
+                        let sel = Selector {
+                            text: Some(t.to_string()),
+                            ..Default::default()
+                        };
+                        let found = s.exists(sel)?;
+                        checks.push(json!({"kind":"text","pass":found,"found":found}));
+                    }
+                    if let Some(want) = expect.get("layout_changed").and_then(Value::as_bool) {
+                        let pass = match (before_sig, s.layout_signature().ok()) {
+                            (Some(a), Some(b)) => (a != b) == want,
+                            _ => false,
+                        };
+                        checks.push(json!({"kind":"layout_changed","pass":pass,"want":want}));
+                    }
+                    anyhow::ensure!(!checks.is_empty(), "expect had no recognized check");
+                    let pass = a_ok && checks.iter().all(|c| c["pass"] == true);
+                    Ok(json!({
+                        "action": {"tool": tool, "ok": a_ok, "detail": a_detail},
+                        "settle_ms": settle,
+                        "checks": checks,
+                        "pass": pass,
+                    }))
+                }
                 "batch" => {
                     let ops: Vec<BatchOp> = serde_json::from_value(
                         args.get("ops").cloned().unwrap_or_else(|| json!([])),
@@ -562,8 +816,8 @@ fn tools() -> Value {
         {"name":"query","description":"selector → {found,node{text,id,desc,bounds,class,...}}","inputSchema":sel.clone()},
         {"name":"watch","description":"device-side selector→action watch loop (CAP_WATCH, docs/02 §4.9) — blocks this session until the selector is matched+acted or timeout_ms","inputSchema":json!({
             "type":"object","allOf":[sel.clone()],"properties":{"action":prop("string","default click"),"timeout_ms":prop("integer","default 5000")}})},
-        {"name":"watch_arm","description":"async watcher (CAP_WATCH_ASYNC, §4.9): returns {armed,watch_id} immediately; hits arrive on the media channel — read via watch_events. Control ops stay unblocked while armed","inputSchema":json!({
-            "type":"object","allOf":[sel.clone()],"properties":{"action":prop("string","default click"),"timeout_ms":prop("integer","auto-disarm deadline, optional")}})},
+        {"name":"watch_arm","description":"async watcher (CAP_WATCH_ASYNC, §4.9): returns {armed,watch_id} immediately; hits arrive on the media channel — read via watch_events, or push=true to get a notifications/pilotdroid/watch_hit notification between responses (paused while a frame stream is active; client disconnect auto-disarms). Control ops stay unblocked while armed","inputSchema":json!({
+            "type":"object","allOf":[sel.clone()],"properties":{"action":prop("string","default click"),"timeout_ms":prop("integer","auto-disarm deadline, optional"),"push":prop("boolean","emit MCP notification on hit instead of pull-only, default false")}})},
         {"name":"watch_disarm","description":"cancel an armed watcher by watch_id → {disarmed}; a fired (one-shot) watcher is already removed, so disarming it returns {disarmed:false} — not an error","inputSchema":schema(
             &[("watch_id",prop("integer","from watch_arm"))],&["watch_id"])},
         {"name":"watch_events","description":"read next media-channel event → {type:'watch_hit',hit:{watch_id,matched,waited_ms,action_ok,node}} or {type:'frame',...} when a stream is also active; no event within the deadline → {type:'timeout'} (normal result, not an error)","inputSchema":schema(&[("timeout_ms",prop("integer","default 5000, min 500"))],&[])},
@@ -590,6 +844,13 @@ fn tools() -> Value {
         {"name":"stream_read","description":"read n frames (default 1); to_dir = file bypass","inputSchema":schema(
             &[("n",prop("integer","default 1")),("to_dir",prop("string","write frame_{seq}.jpg here"))],&[])},
         {"name":"stream_stop","description":"stop stream; returns {frames_sent,dropped}","inputSchema":schema(&[],&[])},
+        {"name":"describe_screen","description":"SoM-lite perception: a11y tree → token-budget map — dense element ids (document order) ↔ bounds center ↔ label/rid/class/C flag. Same numbering space as screenshot_annotated and compat/som.py","inputSchema":schema(
+            &[("max_label",prop("integer","label char cap, default 28"))],&[])},
+        {"name":"screenshot_annotated","description":"SoM-lite perception: screenshot JPEG with the describe_screen element ids drawn as numbered boxes at their bounds (scale fixed 1.0; path = file bypass preferred, else base64)","inputSchema":schema(
+            &[("path",prop("string","output file")),("quality",prop("integer","1-100, default 80"))],&[])},
+        {"name":"verify_after","description":"closed-loop verify (no u2 equivalent): run one action op → settle_ms → assert on fresh dump. action={tool,args} (side-effect/read ops only); expect={exists:<sel>} and/or {absent:<sel>} and/or {text:<s>} and/or {layout_changed:<bool>}; returns {action,checks,pass}","inputSchema":schema(
+            &[("action",prop("object","{tool,args} — e.g. {tool:'tap',args:{x,y}}")),("settle_ms",prop("integer","default 500")),("expect",prop("object","{exists|absent|text|layout_changed}"))],
+            &["action","expect"])},
         {"name":"batch","description":"BATCH op array — {ops:[{inject|wait_until|query|dump|screenshot|text}]}","inputSchema":schema(
             &[("ops",prop("array","ordered ops"))],&["ops"])},
     ])
@@ -668,10 +929,15 @@ mod tests {
         }
     }
 
-    /// Minimal control-socket fake: HELLO + INJECT + QUERY.
+    /// Minimal control-socket fake: HELLO + INJECT + QUERY + DUMP +
+    /// SCREENSHOT (tiny grey JPEG — enough for the som annotate path).
     fn spawn_fake() -> SocketAddr {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap();
+        let mut jpeg = Vec::new();
+        image::codecs::jpeg::JpegEncoder::new_with_quality(&mut jpeg, 80)
+            .encode_image(&image::RgbImage::from_pixel(360, 200, image::Rgb([180; 3])))
+            .unwrap();
         thread::spawn(move || {
             while let Ok((mut sock, _)) = listener.accept() {
                 while let Ok(req) = Frame::read_from(&mut sock) {
@@ -734,6 +1000,19 @@ mod tests {
                                     enabled: true,
                                     scrollable: None,
                                 }),
+                            })
+                            .unwrap(),
+                        ),
+                        Ok(OpCode::Screenshot) => (
+                            OpCode::Screenshot as u16,
+                            encode(&ShotAck {
+                                format: "jpeg".into(),
+                                data: serde_bytes::ByteBuf::from(jpeg.clone()),
+                                w: Some(360),
+                                h: Some(200),
+                                scale: Some(1.0),
+                                take_ns: None,
+                                enc_ns: None,
                             })
                             .unwrap(),
                         ),
@@ -940,17 +1219,298 @@ mod tests {
     fn serve_once_at(lines: &str, addr: SocketAddr) -> Vec<Value> {
         let mut adb = Some(TestAdb::default());
         let mut out = Vec::new();
-        run(BufReader::new(lines.as_bytes()), &mut out, move || {
-            Device::with_transport(adb.take().unwrap(), "fake0")
-                .session_opts(Some(addr.port()), "pilotdroid_agent")
-                .map_err(Into::into)
-        })
+        run(
+            std::io::Cursor::new(lines.as_bytes().to_vec()),
+            &mut out,
+            move || {
+                Device::with_transport(adb.take().unwrap(), "fake0")
+                    .session_opts(Some(addr.port()), "pilotdroid_agent")
+                    .map_err(Into::into)
+            },
+        )
         .unwrap();
         String::from_utf8(out)
             .unwrap()
             .lines()
             .map(|l| serde_json::from_str(l).unwrap())
             .collect()
+    }
+
+    /// Watch-capable fake: WatchArm → {armed, watch_id:seq},
+    /// WatchDisarm counted; a media listener at addr+1 pushes the given
+    /// WATCH_HIT frames at the given delays, then stays open.
+    fn spawn_fake_watch(
+        hits: Vec<(u64, u32)>,
+    ) -> (SocketAddr, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
+        use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
+        // The media socket must sit at control_port+1 (attach_media's
+        // preferred port). Probe for a free adjacent pair — parallel
+        // tests racing bind(:0) made the naive addr+1 bind flaky.
+        let (listener, media, addr) = (|| {
+            for _ in 0..60 {
+                let probe = TcpListener::bind("127.0.0.1:0").unwrap();
+                let p = probe.local_addr().unwrap().port();
+                drop(probe);
+                let Ok(ctrl) = TcpListener::bind(("127.0.0.1", p - 1)) else {
+                    continue;
+                };
+                let Ok(media) = TcpListener::bind(("127.0.0.1", p)) else {
+                    continue;
+                };
+                let addr = ctrl.local_addr().unwrap();
+                return (ctrl, media, addr);
+            }
+            panic!("no free adjacent port pair for watch fake");
+        })();
+        let disarms = std::sync::Arc::new(AtomicUsize::new(0));
+        let arm_seq = std::sync::Arc::new(AtomicU32::new(0));
+        {
+            let disarms = disarms.clone();
+            let arm_seq = arm_seq.clone();
+            thread::spawn(move || {
+                while let Ok((mut sock, _)) = listener.accept() {
+                    let disarms = disarms.clone();
+                    let arm_seq = arm_seq.clone();
+                    thread::spawn(move || {
+                        while let Ok(req) = Frame::read_from(&mut sock) {
+                            let (ty, payload) = match OpCode::try_from(req.header.msg_type) {
+                                Ok(OpCode::Hello) => (
+                                    OpCode::HelloAck as u16,
+                                    encode(&HelloAck {
+                                        agent: "fake/0".into(),
+                                        caps: caps::INJECT | caps::QUERY,
+                                        ver: Some("9.9.9-fake".into()),
+                                        proto: None,
+                                        sdk: None,
+                                        abi: None,
+                                        display: None,
+                                        inject: None,
+                                    })
+                                    .unwrap(),
+                                ),
+                                Ok(OpCode::WatchArm) => (
+                                    OpCode::WatchArm as u16,
+                                    encode(&WatchArmAck {
+                                        armed: true,
+                                        watch_id: arm_seq.fetch_add(1, Ordering::SeqCst) + 1,
+                                    })
+                                    .unwrap(),
+                                ),
+                                Ok(OpCode::WatchDisarm) => {
+                                    disarms.fetch_add(1, Ordering::SeqCst);
+                                    (
+                                        OpCode::WatchDisarm as u16,
+                                        encode(&WatchDisarmAck { disarmed: true }).unwrap(),
+                                    )
+                                }
+                                _ => {
+                                    let p = encode(&ErrorAck {
+                                        code: "UNSUPPORTED".into(),
+                                        message: "fake".into(),
+                                    })
+                                    .unwrap();
+                                    let resp = Frame::new(
+                                        req.header.channel,
+                                        req.header.msg_type,
+                                        flags::RESPONSE | flags::ERROR,
+                                        req.header.req_id,
+                                        p,
+                                    );
+                                    if resp.write_to(&mut sock).is_err() {
+                                        break;
+                                    }
+                                    continue;
+                                }
+                            };
+                            let resp = Frame::new(
+                                req.header.channel,
+                                ty,
+                                flags::RESPONSE,
+                                req.header.req_id,
+                                payload,
+                            );
+                            if resp.write_to(&mut sock).is_err() {
+                                break;
+                            }
+                        }
+                    });
+                }
+            });
+        }
+        thread::spawn(move || {
+            if let Ok((mut msock, _)) = media.accept() {
+                for (delay, wid) in hits {
+                    thread::sleep(Duration::from_millis(delay));
+                    let h = WatchHit {
+                        watch_id: wid,
+                        matched: true,
+                        waited_ms: delay,
+                        action_ok: Some(true),
+                        node: None,
+                    };
+                    let f = Frame::new(
+                        Channel::Media,
+                        pilotdroid_proto::payload::MSG_WATCH_HIT,
+                        flags::STREAM_MORE,
+                        wid,
+                        encode(&h).unwrap(),
+                    );
+                    if f.write_to(&mut msock).is_err() {
+                        break;
+                    }
+                }
+                thread::sleep(Duration::from_secs(5));
+            }
+        });
+        (addr, disarms)
+    }
+
+    #[test]
+    fn watch_push_hit_arrives_as_notification() {
+        // arm(push:true) → hit pushed as a JSON-RPC notification between
+        // responses (demux); every stdout line stays a complete frame —
+        // single-writer loop means no interleave tearing by construction.
+        let (addr, _disarms) = spawn_fake_watch(vec![(80, 1)]);
+        let resps = serve_once_at(
+            &json!({"jsonrpc":"2.0","id":1,"method":"tools/call",
+                    "params":{"name":"watch_arm","arguments":{"text":"OK","push":true}}})
+            .to_string(),
+            addr,
+        );
+        assert_eq!(resps[0]["result"]["isError"], false);
+        let body: Value =
+            serde_json::from_str(resps[0]["result"]["content"][0]["text"].as_str().unwrap())
+                .unwrap();
+        assert_eq!(body["armed"], true);
+        let notes: Vec<&Value> = resps
+            .iter()
+            .filter(|v| v["method"].as_str() == Some("notifications/pilotdroid/watch_hit"))
+            .collect();
+        assert_eq!(
+            notes.len(),
+            1,
+            "expected one watch_hit notification: {resps:?}"
+        );
+        assert_eq!(notes[0]["params"]["watch_id"], 1);
+        assert_eq!(notes[0]["params"]["matched"], true);
+    }
+
+    #[test]
+    fn watch_push_eof_disarms_armed() {
+        // Client stdin EOF while a push watcher is armed → serve
+        // auto-disarms it before exit (armed rules must not outlive the
+        // MCP session — Track A demux contract).
+        let (addr, disarms) = spawn_fake_watch(vec![]);
+        let _ = serve_once_at(
+            &json!({"jsonrpc":"2.0","id":1,"method":"tools/call",
+                    "params":{"name":"watch_arm","arguments":{"text":"OK","push":true}}})
+            .to_string(),
+            addr,
+        );
+        // The EOF-disarm may still be in flight right at return — wait.
+        for _ in 0..40 {
+            if disarms.load(std::sync::atomic::Ordering::SeqCst) >= 1 {
+                return;
+            }
+            thread::sleep(Duration::from_millis(25));
+        }
+        panic!("no disarm issued on client EOF");
+    }
+
+    #[test]
+    fn watch_push_mixed_hit_buffers_to_watch_events() {
+        // push watcher + pull watcher armed together: the non-push hit
+        // consumed by the demux buffers for watch_events (degrade path);
+        // the push hit surfaces as a notification.
+        let (addr, _disarms) = spawn_fake_watch(vec![(60, 2), (120, 1)]);
+        let resps = serve_once_at(
+            &[
+                json!({"jsonrpc":"2.0","id":1,"method":"tools/call",
+                       "params":{"name":"watch_arm","arguments":{"text":"OK","push":true}}})
+                .to_string(),
+                json!({"jsonrpc":"2.0","id":2,"method":"tools/call",
+                       "params":{"name":"watch_arm","arguments":{"text":"NO","push":false}}})
+                .to_string(),
+                json!({"jsonrpc":"2.0","id":3,"method":"tools/call",
+                       "params":{"name":"watch_events","arguments":{}}})
+                .to_string(),
+            ]
+            .join("\n"),
+            addr,
+        );
+        let notes: Vec<&Value> = resps
+            .iter()
+            .filter(|v| v["method"].as_str() == Some("notifications/pilotdroid/watch_hit"))
+            .collect();
+        assert_eq!(notes.len(), 1, "only the push hit notifies: {resps:?}");
+        assert_eq!(notes[0]["params"]["watch_id"], 1);
+        let ev: Value =
+            serde_json::from_str(resps[3]["result"]["content"][0]["text"].as_str().unwrap())
+                .unwrap();
+        assert_eq!(ev["type"], "watch_hit");
+        assert_eq!(ev["hit"]["watch_id"], 2, "non-push hit must be pullable");
+    }
+
+    #[test]
+    fn verify_after_runs_action_then_asserts() {
+        // tap + exists(text) → pass; absent(...) → not found → also pass.
+        let resps = serve_once(
+            &[
+                json!({"jsonrpc":"2.0","id":1,"method":"tools/call",
+                       "params":{"name":"verify_after","arguments":{
+                           "action":{"tool":"tap","args":{"x":1,"y":2}},
+                           "settle_ms":10,
+                           "expect":{"exists":{"text":"OK"}}}}})
+                .to_string(),
+                json!({"jsonrpc":"2.0","id":2,"method":"tools/call",
+                       "params":{"name":"verify_after","arguments":{
+                           "action":{"tool":"tap","args":{"x":1,"y":2}},
+                           "settle_ms":10,
+                           "expect":{"absent":{"text":"NEVER_THERE"}}}}})
+                .to_string(),
+            ]
+            .join("\n"),
+        );
+        // Fake Query always found=true → exists passes, absent fails.
+        for (i, want_pass) in [(0usize, true), (1usize, false)] {
+            let body: Value =
+                serde_json::from_str(resps[i]["result"]["content"][0]["text"].as_str().unwrap())
+                    .unwrap();
+            assert_eq!(body["pass"], want_pass, "case {i}: {body}");
+            assert_eq!(body["action"]["ok"], true);
+        }
+        let body: Value =
+            serde_json::from_str(resps[0]["result"]["content"][0]["text"].as_str().unwrap())
+                .unwrap();
+        assert_eq!(body["checks"][0]["kind"], "exists");
+    }
+
+    #[test]
+    fn describe_screen_and_annotated_shot() {
+        // SoM tools over the fake dump: 3 useful nodes (the fake's
+        // non-clickable node carries text → still useful per the filter).
+        let resps = serve_once(
+            &[
+                json!({"jsonrpc":"2.0","id":1,"method":"tools/call",
+                       "params":{"name":"describe_screen","arguments":{}}})
+                .to_string(),
+                json!({"jsonrpc":"2.0","id":2,"method":"tools/call",
+                       "params":{"name":"screenshot_annotated","arguments":{}}})
+                .to_string(),
+            ]
+            .join("\n"),
+        );
+        let body: Value =
+            serde_json::from_str(resps[0]["result"]["content"][0]["text"].as_str().unwrap())
+                .unwrap();
+        assert_eq!(body["elements"].as_array().unwrap().len(), 3);
+        assert!(body["text"].as_str().unwrap().contains("#1 [60,40]"));
+        let ann: Value =
+            serde_json::from_str(resps[1]["result"]["content"][0]["text"].as_str().unwrap())
+                .unwrap();
+        assert_eq!(ann["format"], "jpeg");
+        assert!(ann["bytes"].as_u64().unwrap() > 100);
+        assert!(ann["b64"].as_str().unwrap().len() > 100);
     }
 
     #[test]
@@ -1133,13 +1693,13 @@ mod tests {
         let addr = spawn_fake_kill_first();
         let mut out = Vec::new();
         run(
-            BufReader::new(
+            std::io::Cursor::new(
                 [
                     r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"tap","arguments":{"x":1,"y":2}}}"#,
                     r#"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"tap","arguments":{"x":3,"y":4}}}"#,
                 ]
                 .join("\n")
-                .as_bytes(),
+                .into_bytes(),
             ),
             &mut out,
             // fresh transport per connect — exercises the reconnect path

@@ -6,7 +6,7 @@
 > **English**: a device-side Android automation stack — persistent binary
 > protocol + on-device batch execution, built to break uiautomator2's
 > per-call HTTP/JSON-RPC round-trip ceiling. Three surfaces over one device
-> backend: `pilotdroid-cli` (one-shot ops + stdio MCP server, 27 tools),
+> backend: `pilotdroid-cli` (one-shot ops + stdio MCP server, 30 tools),
 > a Rust facade (`pilotdroid-agent`), and a uiautomator2 drop-in Python shim
 > (`from pilotdroid import u2shim`; xpath = host-side approximation
 > subset, not the u2 plugin pipeline).
@@ -76,7 +76,7 @@ exposed to MCP clients via `stream_read`.
 | 形态 | 适合 | 开销 | 入口 |
 |---|---|---|---|
 | `pilotdroid-cli agent <op>` | 人工/脚本单发 | ~85ms/call（含 fwd+connect+HELLO） | 子进程每次拉起 |
-| `pilotdroid-cli serve`（stdio MCP） | **AI agent 一行接入** | 持久会话摊销 ~0 | `pilotdroid-cli serve` + JSON-RPC 27 工具 |
+| `pilotdroid-cli serve`（stdio MCP） | **AI agent 一行接入** | 持久会话摊销 ~0 | `pilotdroid-cli serve` + JSON-RPC 30 工具 |
 | Rust `pilotdroid-agent` facade | Rust 库内嵌 | 持久 Session | `Device::with_transport(..).session()` |
 
 另有 **u2 兼容 shim**（`compat/u2shim.py`，host 侧翻译层，`pip install ./python`
