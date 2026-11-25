@@ -9,7 +9,7 @@
 # 用法: spike/e2e/install-smoke.sh [serial]   每步打印 PASS/FAIL，末尾汇总。
 set -u
 # 被测发布版本；下个 milestone 只需改这一处（或 env 覆盖）。
-VER="${PILOTDROID_SMOKE_VER:-0.7.1}"
+VER="${PILOTDROID_SMOKE_VER:-0.8.0}"
 SERIAL="${1:-}"
 ADB=(adb); [ -n "$SERIAL" ] && ADB+=( -s "$SERIAL" )
 V="$(mktemp -d)"; trap 'rm -rf "$V"' EXIT

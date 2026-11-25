@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.8.0] — 2026-11-27
+
 ### Added
 
 - **元素状态面**：`list_elements`/`describe_screen`/`compat/som.py`
@@ -46,9 +48,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   session stash 的 watch_hit/toast 由 serve 每迭代排干并补发为
   `notifications/pilotdroid/*`——「push 暂停」档消除（真机实证：
   流中 `Add` hit 以完整 node payload 到达 notification）。
-
-### Fixed
-
 - **stale `watch_disarm` 穿透**：陈旧/未登记的 watch_id 显式
   disarm 不再透传至 agent——id 空间碰撞下可能误杀恢复后重分配的
   活 watcher；未知 id 本地返回 `{disarmed:false}`。
