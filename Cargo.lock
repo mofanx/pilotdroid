@@ -708,7 +708,7 @@ dependencies = [
 
 [[package]]
 name = "pem-rfc7468"
-version = "0.7.0"
+version = "0.7.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "88b39c9bfcfc231068454382784bb460aae594343fb030d46e9f50a645418412"
 dependencies = [
@@ -717,7 +717,7 @@ dependencies = [
 
 [[package]]
 name = "pilotdroid-adb"
-version = "0.7.0"
+version = "0.7.1"
 dependencies = [
  "adb_client",
  "thiserror",
@@ -725,7 +725,7 @@ dependencies = [
 
 [[package]]
 name = "pilotdroid-agent"
-version = "0.7.0"
+version = "0.7.1"
 dependencies = [
  "pilotdroid-adb",
  "pilotdroid-proto",
@@ -737,7 +737,7 @@ dependencies = [
 
 [[package]]
 name = "pilotdroid-cli"
-version = "0.7.0"
+version = "0.7.1"
 dependencies = [
  "anyhow",
  "clap",
@@ -752,7 +752,7 @@ dependencies = [
 
 [[package]]
 name = "pilotdroid-proto"
-version = "0.7.0"
+version = "0.7.1"
 dependencies = [
  "rmp-serde",
  "rmpv",

@@ -147,6 +147,17 @@ Selector = { text?: string, id?: string, desc?: string, class?: string, scrollab
 - **背压**：写阻塞超过一个帧间隔 → 丢帧不阻塞，`dropped++`；media 积压绝不影响 control 通道。
 - **stop 清理**：`stop` / control 连接断开 / media 客户端断开 → 停采集循环、join 线程、关闭该流连接（socket 继续监听）；无残留线程。
 - **会话绑定**：流绑定发起它的 control 会话；control 断开即隐式 stop（防孤儿流）。
+- **conn 生命周期判别（agent 0.7.2，t4 幽灵竞态修复）**：media socket 的
+  accept 队列可能滞留**幽灵 conn**——host 脏杀遗留的 backlog conn 会
+  在 `start()` 之后才被 accept，不能无判别 promote（真 reader 随后被
+  busy-reject → 首读 EOF）。判别准则：**单向通道上"成功写过 ≥1 次"是
+  唯一可靠的活性证据**——`LocalSocket` read-timeout 探测已实证不可靠
+  （合法 reader 帧间静默会被误判为死 conn）。实现：conn 死前从未写过
+  = backlog ghost → 丢弃回 waiting 态；写过后死 = 真 reader 丢失 →
+  halt（本条上文 stop 语义）。运行期第二 conn 进 reserve 槽排队
+  （newest waiter wins，不抢活 reader 的位），幽灵写死时由
+  `mediaDead` 提升自愈；`mediaDead` 带流代际号，旧流 writer 的迟到
+  报告不作用新流。
 - **编码**：v0 仅 `format:"jpeg"`（E1 归因：编码∝像素，quality 只省字节）；`"h264"` 留位待 MediaCodec 管线（M5）。`ui_event`（ch=1 type 0x0002）于 M11 起用为 **WATCH_HIT 推送**（§4.9）——写往活跃流连接，否则写往 start 前的 pending conn（watch 客户端在 armed 期间持有它）；无 media conn 则事件丢弃（动作已在设备内执行完）。
 
 ### 4.9 WATCH——设备端 selector→action 闭环（M10, CAP_WATCH=bit8）

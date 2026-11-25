@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.7.1] — 2026-11-25
+
 ### Added
 
 - **Toast MCP push notification**：agent ≥0.7.1 a11y listener 推送的

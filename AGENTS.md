@@ -19,3 +19,10 @@
   `agent_ver` assert (HELLO.ver must match AGENT_VER in Agent.java).
 - `agent/data/verify-*.json` are regenerated on every verify run — ignored;
   don't commit them.
+- Fake-adb relay fidelity (facade tests): when you extend the
+  `AdbTransport` stub's `forward` relay, propagate half-close like real
+  adb — after each `io::copy` ends, `shutdown(Both)` the *other*
+  direction's stream. A dropped conn whose fd is still held by a
+  `try_clone` shows the client a half-open socket (read timeout) instead
+  of FIN — that race produced the `dead_agent_recovery_exhausted`
+  Timeout-vs-Io CI flake (fixed db62975).
