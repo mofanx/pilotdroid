@@ -6,6 +6,37 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **`watcher.when("//xpath").click()` 静默失效**（M26，v0.6.3
+  已发件缺陷）：`_xpath` 哨兵键被传入 `_Selector` → `ValueError`
+  被 watcher 循环吞掉 → 点击永不执行且规则被摘除。现 xpath
+  规则在命中时 eval xpath、点击首个匹配节点中心；match 与
+  action 之间节点消失（弹窗已关）为静默 no-op 不杀规则。
+
+### Added
+
+- **watcher bounded re-arm**（M25）：规则默认仍为 fire-once，
+  但 action 可挂 `_pd_max_fires` 预算多次命中再摘除——
+  `_BUILTIN_DIALOGS` 转三元组，LBE 多页审查规则预算 3
+  （fixture-doctor `page<8` 循环同一实测依据）。
+- **`when("//xpath")` host-poll 规则**（M25）：非 wireable
+  但 xpath-lite 可求值的 xpath 从 NIE 降级为 `_xpath` 哨兵
+  规则——每 tick 一次 dump 由 `_XPathLite.exists` 判定；
+  连 lite 子集都拒绝的表达式仍 fail-fast NIE。
+
+### Changed
+
+- **skip 宣称升级**（M25）：SUPPORTED.md gap 段从"8 skip 全
+  上游标记"精确为"上游 skip 的 4 面（implicitly_wait/枚举/
+  count/watchers）shim 已实现并有单测覆盖"。
+
+### Docs
+
+- `install-smoke.sh` 默认 `VER`→0.6.3；`docs/PUBLISH.md`
+  checklist 新增 Required「smoke VER bump」步；
+  `RESULTS-M22-release.md` 补 v0.6.3 发布链 ledger。
+
 ## [0.6.3] — 2026-11-25
 
 ### Added

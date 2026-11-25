@@ -579,9 +579,24 @@ class _WhenCtx:
         self._w, self.kw = watcher, kw
 
     def click(self):
-        def action():
-            _Selector(self._w.dev, **self.kw).click()
-        action._pd_click = True  # armed device-side: don't re-click
+        if "_xpath" in self.kw:
+            # host-poll rule: the `_xpath` sentinel is not a selector
+            # key — passing it to _Selector raises ValueError inside
+            # the watcher loop (swallowed → rule silently dead,
+            # click never ran — shipped-hole fix M26). Eval the xpath
+            # at fire time and tap the first match's center; an empty
+            # re-eval (dialog dismissed mid-tick) is a silent no-op so
+            # a transient miss can't kill the rule.
+            xp, dev = self.kw["_xpath"], self._w.dev
+
+            def action():
+                els = _XPathLite(dev, xp).all()
+                if els:
+                    els[0].click()
+        else:
+            def action():
+                _Selector(self._w.dev, **self.kw).click()
+            action._pd_click = True  # armed device-side: don't re-click
         self._w._rules.append((self.kw, action))
         return self._w
 

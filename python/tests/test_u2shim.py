@@ -643,6 +643,38 @@ class TestWatcherReArmAndXPathPoll(unittest.TestCase):
         self.assertEqual(len(arms), 2)  # hit → re-arm → hit → removed
         self.assertEqual(w._rules, [])
 
+    def test_when_xpath_click_taps_matched_node(self):
+        # M26 shipped-hole: when("//..").click() passed the `_xpath`
+        # sentinel into _Selector → ValueError swallowed by the
+        # watcher loop → click never ran, rule silently removed.
+        # Now the action evals the xpath and taps its center.
+        xml = ('<hierarchy><node text="Dlg" '
+               'bounds="[100,200][300,400]"/></hierarchy>')
+        d = self._dev(xml)
+        taps = []
+        d.click = lambda x, y: taps.append((x, y)) or True
+        w = u2shim._Watcher(d)
+        w.when("//*[contains(@text,'Dlg')]").click()
+        self.assertTrue(w._tick())  # host-poll hit → action → remove
+        self.assertEqual(taps, [(200, 300)])  # center of [100,200][300,400]
+
+    def test_when_xpath_click_empty_reeval_noop(self):
+        # Dialog dismissed between match and action → empty re-eval
+        # must be a silent no-op (no exception reaching the watcher
+        # loop that would wrongly kill a still-useful rule).
+        dumps = iter([
+            '<hierarchy><node text="Dlg" bounds="[0,0][9,9]"/></hierarchy>',
+            '<hierarchy><node text="gone"/></hierarchy>',
+        ])
+        d = self._dev(None)
+        d.dump_hierarchy = lambda: next(dumps)
+        taps = []
+        d.click = lambda x, y: taps.append((x, y)) or True
+        w = u2shim._Watcher(d)
+        w.when("//*[contains(@text,'Dlg')]").click()
+        self.assertTrue(w._tick())   # match fired, action no-op'd
+        self.assertEqual(taps, [])   # vanished node → no tap, no crash
+
 
 if __name__ == "__main__":
     unittest.main()
