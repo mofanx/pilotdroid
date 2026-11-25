@@ -31,9 +31,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **`spike/e2e/u2suite/fixture-doctor.sh`**：fixture 一键恢复——
   `pm path` 幂等检测 → ApiDemos 缓存下载/push → `adb install
   --bypass-low-target-sdk-block` 期间 agent a11y 自动点
-  AdbInstallActivity「继续安装」→ `monkey` 首启自动点 LBE
-  审查「确定」（单页 fire-once）。conftest guard 报错消息
-  指向该脚本。
+  AdbInstallActivity「继续安装」→ `monkey` 首启循环点 LBE
+  审查「确定」（ReviewPermissions 为多页流程，循环直至
+  LBE 退前台，上限 8 页）。conftest guard 报错消息指向
+  该脚本。
 
 ### Changed
 
