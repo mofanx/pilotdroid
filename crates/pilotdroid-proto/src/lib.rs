@@ -610,6 +610,20 @@ pub mod payload {
     /// ch=1 msg_type for the `WATCH_HIT` ui_event (docs/02 §4.8 reserved).
     pub const MSG_WATCH_HIT: u16 = 0x0002;
 
+    /// Toast `ui_event` payload — pushed on the same ch=1 slot
+    /// (msg_type 0x0002) as `WATCH_HIT` by the agent ≥0.7.1 a11y
+    /// listener; discriminated by `type == "toast"` since it carries
+    /// no `watch_id`.
+    #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+    pub struct ToastEvent {
+        #[serde(default)]
+        pub r#type: String,
+        pub pkg: String,
+        pub has_parcel: bool,
+        #[serde(default)]
+        pub text: Vec<String>,
+    }
+
     /// `APP_INFO` (CAP_APP_INFO): foreground-app lookup inside UiAutomation
     /// — focused window's root pkg (~ms), no host `dumpsys` spawn.
     #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

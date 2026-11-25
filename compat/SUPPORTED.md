@@ -67,7 +67,7 @@ uiautomator2 `Device` 公共 API 的逐条标注。约定：**drop-in 只承诺�
 | `open_notification()` `open_quick_settings()` | ✅ | `cmd statusbar expand-*`（M11） |
 | `freeze_rotation(bool)` | ✅ 近似 | `settings accelerometer_rotation` 开关（M11） |
 | `clipboard` | ❌ ROM/架构级不可达（t15 实证） | agent 走 `UiAutomationConnection` 无 app `Context`（`ActivityThread.systemMain()` 会自杀，ADR-008）；宿主侧三路实证全死：①`service call clipboard 1/2` 返回未公开 parcel（负状态码）②`cmd clipboard` 无该子命令实现 ③`dumpsys clipboard` 静默。复现：`adb shell service call clipboard 1` |
-| `toast` `.get_message(timeout,default)` `.last` `.reset` | ✅ 实现（agent ≥0.7.1） | u2 同机制：a11y `TYPE_NOTIFICATION_STATE_CHANGED` 事件推 media ch，`has_parcel` 区分真 toast（无 parcel）与通知；与运行中 watcher 互斥（media 单连接）。真机实证：ApiDemos `PopupMenu1` 菜单点击 → `Clicked popup menu item Add` |
+| `toast` `.get_message(timeout,default)` `.last` `.reset` | ✅ 实现（agent ≥0.7.1） | u2 同机制：a11y `TYPE_NOTIFICATION_STATE_CHANGED` 事件推 media ch，`has_parcel` 区分真 toast（无 parcel）与通知；与运行中 watcher 互斥（media 单连接）。真机实证：ApiDemos `PopupMenu1` 菜单点击 → `Clicked popup menu item Add`。MCP serve 下 toast 事件亦推送 `notifications/pilotdroid/toast`（push-armed watcher 保活 demux 期间），`watch_events` pull 返回 `{"type":"toast"}` |
 | `screenrecord(output,time_limit)` ctx-mgr | ⚠️ API 在，输出 ROM 节流 | `/system/bin/screenrecord` 存在且 SIGINT/pull 链路通，但 MIUI API34 编码器 ~1-3 帧/4s（`screenrecord --verbose` 自报 `recorded 3 frames in 4 seconds`）→ 产出近静态 mp4，非可用录屏。与 ADR-008 流式墙同根因（虚拟显示源受限）。复现：`adb shell screenrecord --verbose --time-limit 4 /sdcard/x.mp4` |
 | `current_ime()` `set_ime(id)` `ime_list()` | ✅ | `settings get secure default_input_method` + `ime set/list -s`；真机 round-trip 切回验证（ba0d072d） |
 
@@ -142,6 +142,11 @@ benchmark/suite 跑旧 targetSdk app 前需先放行（openatx u2 官方
   全部 armed 规则（agent conn close 亦 reap，双保险）；stream 激活期
   demux 暂停（帧/命中共享 ch=1）。pull 面
   `watch_arm`/`watch_disarm`/`watch_events` 保持齐备。
+  同槽位的 toast ui_event 经 demux 推
+  `notifications/pilotdroid/toast`（上表 toast 行）。
+  session 恢复后 `armed` 随 epoch 变更清空——agent 重启重分配
+  watch_id，陈旧 id 不再误指新 watcher（需 re-arm，崩溃即丢的
+  语义同 session 看护条）。
 - **超出 u2 面的 MCP 工具**（shim 不覆盖，记此防口径漂移）：
   `describe_screen`/`screenshot_annotated`（SoM-lite 感知，编号空间
   与 `compat/som.py` 一致）、`verify_after`（操作后 dump 断言闭环，

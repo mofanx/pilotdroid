@@ -44,6 +44,10 @@ pub struct MediaClient {
 pub enum MediaEvent {
     Frame(MediaFrame),
     WatchHit(pilotdroid_proto::payload::WatchHit),
+    /// Toast pushed by the agent ≥0.7.1 a11y listener — shares the
+    /// ui_event slot (msg_type 0x0002) with `WATCH_HIT`, told apart
+    /// by `type == "toast"`.
+    Toast(pilotdroid_proto::payload::ToastEvent),
 }
 
 impl MediaClient {
@@ -144,9 +148,25 @@ impl MediaClient {
                 Ok(MediaEvent::Frame(f))
             }
             t if t == pilotdroid_proto::payload::MSG_WATCH_HIT => {
-                let h: pilotdroid_proto::payload::WatchHit =
-                    pilotdroid_proto::payload::decode(&frame.payload)?;
-                Ok(MediaEvent::WatchHit(h))
+                // ui_event multiplex: WATCH_HIT carries `watch_id`;
+                // toast events carry `type:"toast"` instead. Probe the
+                // map before committing — decoding a toast payload as
+                // WatchHit fails on the missing watch_id field.
+                #[derive(serde::Deserialize)]
+                struct Probe {
+                    #[serde(default)]
+                    r#type: Option<String>,
+                }
+                let p: Probe = pilotdroid_proto::payload::decode(&frame.payload)?;
+                if p.r#type.as_deref() == Some("toast") {
+                    Ok(MediaEvent::Toast(pilotdroid_proto::payload::decode(
+                        &frame.payload,
+                    )?))
+                } else {
+                    Ok(MediaEvent::WatchHit(pilotdroid_proto::payload::decode(
+                        &frame.payload,
+                    )?))
+                }
             }
             other => Err(AgentError::UnexpectedResponse {
                 expected: "FRAME or WATCH_HIT on media channel",

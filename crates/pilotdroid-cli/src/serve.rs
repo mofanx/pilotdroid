@@ -95,6 +95,12 @@ pub fn run<T: AdbTransport, R: std::io::BufRead + Send + 'static, W: Write>(
     // arg) routes a hit to an MCP notification instead of only the
     // watch_events pull — Track A demux, overriding the M26 defer.
     let mut armed: HashMap<u32, bool> = HashMap::new();
+    // Recovery epoch observed from Session::generation() — the t14
+    // watchdog reconnects transparently, but a restarted agent
+    // re-allocates watch ids from scratch: ids in `armed` from an
+    // earlier epoch are dead and may collide with fresh watchers, so
+    // they (and stale buffered hits) are dropped on an epoch change.
+    let mut epoch: u64 = 0;
     // Media events consumed by the demux that weren't pushed — pullable
     // via watch_events (degrade path). Bounded: a client that never
     // pulls shouldn't grow memory forever.
@@ -114,6 +120,21 @@ pub fn run<T: AdbTransport, R: std::io::BufRead + Send + 'static, W: Write>(
     });
 
     let result = loop {
+        // Epoch check first: a control op during the previous iteration
+        // may have healed a dead agent — its ids are all stale now.
+        if let Some(s) = session.as_ref() {
+            if s.generation() != epoch {
+                epoch = s.generation();
+                if !armed.is_empty() {
+                    eprintln!(
+                        "pilotdroid-serve: agent recovered — {} stale armed watcher(s) dropped",
+                        armed.len()
+                    );
+                }
+                armed.clear();
+                pending.retain(|e| !matches!(e, MediaEvent::WatchHit(_)));
+            }
+        }
         // Push demux (Track A): while any watcher is armed with
         // push=true, poll the media channel between requests. Gated on
         // !streaming — frames and hits share ch=1, and consuming frames
@@ -142,6 +163,21 @@ pub fn run<T: AdbTransport, R: std::io::BufRead + Send + 'static, W: Write>(
                                 }
                             } else {
                                 push_pending(&mut pending, MediaEvent::WatchHit(h));
+                            }
+                        }
+                        Ok(MediaEvent::Toast(t)) => {
+                            // Ambient agent event (≥0.7.1 a11y listener)
+                            // — not watcher-bound: always notify, with
+                            // the pending buffer as the write-dead
+                            // degrade path.
+                            let note = json!({
+                                "jsonrpc": "2.0",
+                                "method": "notifications/pilotdroid/toast",
+                                "params": t,
+                            });
+                            if let Err(e) = write_resp(out, &note) {
+                                push_pending(&mut pending, MediaEvent::Toast(t));
+                                break Err(e);
                             }
                         }
                         Ok(ev) => push_pending(&mut pending, ev),
@@ -637,6 +673,7 @@ fn call_tool<T: AdbTransport>(
                                 "type": "frame", "w": f.w, "h": f.h,
                                 "dropped": f.dropped,
                             })),
+                            MediaEvent::Toast(t) => Ok(json!({"type": "toast", "toast": t})),
                         }
                     } else {
                         match s
@@ -650,6 +687,7 @@ fn call_tool<T: AdbTransport>(
                                 "type": "frame", "w": f.w, "h": f.h,
                                 "dropped": f.dropped,
                             })),
+                            Ok(MediaEvent::Toast(t)) => Ok(json!({"type": "toast", "toast": t})),
                             // No event yet is data, not failure — report it in the
                             // union so an armed-but-quiet watcher doesn't surface
                             // isError to the MCP client (real errors still do).
@@ -889,6 +927,7 @@ mod tests {
     use std::net::{SocketAddr, TcpListener};
     use std::path::Path;
     use std::rc::Rc;
+    use std::sync::Mutex;
     use std::thread;
     use std::time::Duration;
 
@@ -1236,42 +1275,201 @@ mod tests {
             .collect()
     }
 
+    /// Bind an adjacent (control, control+1) port pair — the media
+    /// socket must sit at control_port+1 for attach_media's heuristic.
+    /// Probing avoids :0 races between parallel tests.
+    fn watch_pair() -> (TcpListener, TcpListener, SocketAddr) {
+        for _ in 0..60 {
+            let probe = TcpListener::bind("127.0.0.1:0").unwrap();
+            let p = probe.local_addr().unwrap().port();
+            drop(probe);
+            let Ok(ctrl) = TcpListener::bind(("127.0.0.1", p - 1)) else {
+                continue;
+            };
+            let Ok(media) = TcpListener::bind(("127.0.0.1", p)) else {
+                continue;
+            };
+            let addr = ctrl.local_addr().unwrap();
+            return (ctrl, media, addr);
+        }
+        panic!("no free adjacent port pair for watch fake");
+    }
+
+    /// Media socket: push each (delay_ms, req_id, payload) as a ch=1
+    /// msg_type 0x0002 ui_event, then hold the conn open.
+    fn spawn_media(l: TcpListener, frames: Vec<(u64, u32, Vec<u8>)>) {
+        thread::spawn(move || {
+            if let Ok((mut msock, _)) = l.accept() {
+                for (delay, rid, payload) in frames {
+                    thread::sleep(Duration::from_millis(delay));
+                    let f = Frame::new(
+                        Channel::Media,
+                        pilotdroid_proto::payload::MSG_WATCH_HIT,
+                        flags::STREAM_MORE,
+                        rid,
+                        payload,
+                    );
+                    if f.write_to(&mut msock).is_err() {
+                        break;
+                    }
+                }
+                thread::sleep(Duration::from_secs(5));
+            }
+        });
+    }
+
+    /// Control side shared by watch fakes: WatchArm → {armed,
+    /// watch_id:seq}, WatchDisarm counted.
+    fn watch_ctrl(listener: TcpListener, disarms: std::sync::Arc<std::sync::atomic::AtomicUsize>) {
+        use std::sync::atomic::{AtomicU32, Ordering};
+        let arm_seq = std::sync::Arc::new(AtomicU32::new(0));
+        thread::spawn(move || {
+            while let Ok((mut sock, _)) = listener.accept() {
+                let disarms = disarms.clone();
+                let arm_seq = arm_seq.clone();
+                thread::spawn(move || {
+                    while let Ok(req) = Frame::read_from(&mut sock) {
+                        let (ty, payload) = match OpCode::try_from(req.header.msg_type) {
+                            Ok(OpCode::Hello) => (
+                                OpCode::HelloAck as u16,
+                                encode(&HelloAck {
+                                    agent: "fake/0".into(),
+                                    caps: caps::INJECT | caps::QUERY,
+                                    ver: Some("9.9.9-fake".into()),
+                                    proto: None,
+                                    sdk: None,
+                                    abi: None,
+                                    display: None,
+                                    inject: None,
+                                })
+                                .unwrap(),
+                            ),
+                            Ok(OpCode::WatchArm) => (
+                                OpCode::WatchArm as u16,
+                                encode(&WatchArmAck {
+                                    armed: true,
+                                    watch_id: arm_seq.fetch_add(1, Ordering::SeqCst) + 1,
+                                })
+                                .unwrap(),
+                            ),
+                            Ok(OpCode::WatchDisarm) => {
+                                disarms.fetch_add(1, Ordering::SeqCst);
+                                (
+                                    OpCode::WatchDisarm as u16,
+                                    encode(&WatchDisarmAck { disarmed: true }).unwrap(),
+                                )
+                            }
+                            _ => {
+                                let p = encode(&ErrorAck {
+                                    code: "UNSUPPORTED".into(),
+                                    message: "fake".into(),
+                                })
+                                .unwrap();
+                                let resp = Frame::new(
+                                    req.header.channel,
+                                    req.header.msg_type,
+                                    flags::RESPONSE | flags::ERROR,
+                                    req.header.req_id,
+                                    p,
+                                );
+                                if resp.write_to(&mut sock).is_err() {
+                                    break;
+                                }
+                                continue;
+                            }
+                        };
+                        let resp = Frame::new(
+                            req.header.channel,
+                            ty,
+                            flags::RESPONSE,
+                            req.header.req_id,
+                            payload,
+                        );
+                        if resp.write_to(&mut sock).is_err() {
+                            break;
+                        }
+                    }
+                });
+            }
+        });
+    }
+
     /// Watch-capable fake: WatchArm → {armed, watch_id:seq},
     /// WatchDisarm counted; a media listener at addr+1 pushes the given
     /// WATCH_HIT frames at the given delays, then stays open.
     fn spawn_fake_watch(
         hits: Vec<(u64, u32)>,
     ) -> (SocketAddr, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
+        let (ctrl, media, addr) = watch_pair();
+        let disarms = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        watch_ctrl(ctrl, disarms.clone());
+        let frames = hits
+            .into_iter()
+            .map(|(delay, wid)| {
+                (
+                    delay,
+                    wid,
+                    encode(&WatchHit {
+                        watch_id: wid,
+                        matched: true,
+                        waited_ms: delay,
+                        action_ok: Some(true),
+                        node: None,
+                    })
+                    .unwrap(),
+                )
+            })
+            .collect();
+        spawn_media(media, frames);
+        (addr, disarms)
+    }
+
+    /// Watch fake whose media channel pushes a toast ui_event (agent
+    /// ≥0.7.1 a11y listener) instead of a WATCH_HIT — same ch=1
+    /// msg_type 0x0002 slot, discriminated by `type:"toast"`.
+    fn spawn_fake_toast() -> SocketAddr {
+        let (ctrl, media, addr) = watch_pair();
+        let disarms = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        watch_ctrl(ctrl, disarms);
+        spawn_media(
+            media,
+            vec![(
+                80,
+                0,
+                encode(&pilotdroid_proto::payload::ToastEvent {
+                    r#type: "toast".into(),
+                    pkg: "com.x".into(),
+                    has_parcel: false,
+                    text: vec!["hi toast".into()],
+                })
+                .unwrap(),
+            )],
+        );
+        addr
+    }
+
+    /// Revivable fake: conn 1 serves `kill_after` non-HELLO requests
+    /// then dies (agent crash); later conns serve normally. Watch ids
+    /// restart at 1 per conn (a restarted agent re-allocates) and
+    /// WatchDisarm calls are counted per conn — the test asserts the
+    /// post-recovery conn only sees disarms for its own watchers.
+    /// Returns (control addr, per-conn disarm counts).
+    fn spawn_fake_revive(kill_after: usize) -> (SocketAddr, std::sync::Arc<Mutex<Vec<usize>>>) {
         use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
-        // The media socket must sit at control_port+1 (attach_media's
-        // preferred port). Probe for a free adjacent pair — parallel
-        // tests racing bind(:0) made the naive addr+1 bind flaky.
-        let (listener, media, addr) = (|| {
-            for _ in 0..60 {
-                let probe = TcpListener::bind("127.0.0.1:0").unwrap();
-                let p = probe.local_addr().unwrap().port();
-                drop(probe);
-                let Ok(ctrl) = TcpListener::bind(("127.0.0.1", p - 1)) else {
-                    continue;
-                };
-                let Ok(media) = TcpListener::bind(("127.0.0.1", p)) else {
-                    continue;
-                };
-                let addr = ctrl.local_addr().unwrap();
-                return (ctrl, media, addr);
-            }
-            panic!("no free adjacent port pair for watch fake");
-        })();
-        let disarms = std::sync::Arc::new(AtomicUsize::new(0));
-        let arm_seq = std::sync::Arc::new(AtomicU32::new(0));
+        let (ctrl, media, addr) = watch_pair();
+        let disarms: std::sync::Arc<Mutex<Vec<usize>>> =
+            std::sync::Arc::new(Mutex::new(Vec::new()));
+        let conn_seq = std::sync::Arc::new(AtomicUsize::new(0));
         {
             let disarms = disarms.clone();
-            let arm_seq = arm_seq.clone();
             thread::spawn(move || {
-                while let Ok((mut sock, _)) = listener.accept() {
+                while let Ok((mut sock, _)) = ctrl.accept() {
+                    let idx = conn_seq.fetch_add(1, Ordering::SeqCst);
+                    disarms.lock().unwrap().push(0);
                     let disarms = disarms.clone();
-                    let arm_seq = arm_seq.clone();
                     thread::spawn(move || {
+                        let arm_seq = AtomicU32::new(0);
+                        let mut served = 0usize;
                         while let Ok(req) = Frame::read_from(&mut sock) {
                             let (ty, payload) = match OpCode::try_from(req.header.msg_type) {
                                 Ok(OpCode::Hello) => (
@@ -1297,30 +1495,20 @@ mod tests {
                                     .unwrap(),
                                 ),
                                 Ok(OpCode::WatchDisarm) => {
-                                    disarms.fetch_add(1, Ordering::SeqCst);
+                                    disarms.lock().unwrap()[idx] += 1;
                                     (
                                         OpCode::WatchDisarm as u16,
                                         encode(&WatchDisarmAck { disarmed: true }).unwrap(),
                                     )
                                 }
-                                _ => {
-                                    let p = encode(&ErrorAck {
-                                        code: "UNSUPPORTED".into(),
-                                        message: "fake".into(),
+                                Ok(OpCode::Dump) => (
+                                    OpCode::Dump as u16,
+                                    encode(&DumpAck {
+                                        xml: "<hierarchy/>".into(),
                                     })
-                                    .unwrap();
-                                    let resp = Frame::new(
-                                        req.header.channel,
-                                        req.header.msg_type,
-                                        flags::RESPONSE | flags::ERROR,
-                                        req.header.req_id,
-                                        p,
-                                    );
-                                    if resp.write_to(&mut sock).is_err() {
-                                        break;
-                                    }
-                                    continue;
-                                }
+                                    .unwrap(),
+                                ),
+                                _ => continue,
                             };
                             let resp = Frame::new(
                                 req.header.channel,
@@ -1332,34 +1520,27 @@ mod tests {
                             if resp.write_to(&mut sock).is_err() {
                                 break;
                             }
+                            if ty != OpCode::HelloAck as u16 {
+                                served += 1;
+                                if idx == 0 && served >= kill_after {
+                                    // Agent "crashes": conn dies mid-
+                                    // session — next client op sees EOF.
+                                    let _ = sock.shutdown(std::net::Shutdown::Both);
+                                    break;
+                                }
+                            }
                         }
                     });
                 }
             });
         }
+        // Media conn: accept and hold each conn (watch_attach needs
+        // it; a dropped conn reads as EOF and stops the demux early).
+        // No events are pushed for this test.
         thread::spawn(move || {
-            if let Ok((mut msock, _)) = media.accept() {
-                for (delay, wid) in hits {
-                    thread::sleep(Duration::from_millis(delay));
-                    let h = WatchHit {
-                        watch_id: wid,
-                        matched: true,
-                        waited_ms: delay,
-                        action_ok: Some(true),
-                        node: None,
-                    };
-                    let f = Frame::new(
-                        Channel::Media,
-                        pilotdroid_proto::payload::MSG_WATCH_HIT,
-                        flags::STREAM_MORE,
-                        wid,
-                        encode(&h).unwrap(),
-                    );
-                    if f.write_to(&mut msock).is_err() {
-                        break;
-                    }
-                }
-                thread::sleep(Duration::from_secs(5));
+            let mut held = Vec::new();
+            while let Ok((s, _)) = media.accept() {
+                held.push(s);
             }
         });
         (addr, disarms)
@@ -1777,5 +1958,74 @@ mod tests {
         assert_eq!(b64(b"foo"), "Zm9v");
         assert_eq!(b64(b"fooba"), "Zm9vYmE=");
         assert_eq!(b64(b"foobar"), "Zm9vYmFy");
+    }
+
+    #[test]
+    fn toast_event_arrives_as_notification() {
+        // Agent ≥0.7.1 pushes {type:"toast"} on the same ui_event slot
+        // as WATCH_HIT; while a push watcher keeps the demux polling,
+        // it must surface as notifications/pilotdroid/toast (not fail
+        // the WatchHit decode that made the demux stop on t15's media).
+        let addr = spawn_fake_toast();
+        let resps = serve_once_at(
+            &json!({"jsonrpc":"2.0","id":1,"method":"tools/call",
+                    "params":{"name":"watch_arm","arguments":{"text":"OK","push":true}}})
+            .to_string(),
+            addr,
+        );
+        assert_eq!(resps[0]["result"]["isError"], false);
+        let notes: Vec<&Value> = resps
+            .iter()
+            .filter(|v| v["method"].as_str() == Some("notifications/pilotdroid/toast"))
+            .collect();
+        assert_eq!(notes.len(), 1, "expected toast notification: {resps:?}");
+        assert_eq!(notes[0]["params"]["type"], "toast");
+        assert_eq!(notes[0]["params"]["pkg"], "com.x");
+        assert_eq!(notes[0]["params"]["text"][0], "hi toast");
+    }
+
+    #[test]
+    fn stale_armed_ids_dropped_on_recovery_epoch() {
+        // Watch ids are agent-allocated and restart at 1 after a crash:
+        // armed={1,2} pre-crash, recovery, arm again → the fresh agent
+        // returns id 1 for ITS first watcher. If the stale map were
+        // kept, EOF cleanup would send disarm(1)+disarm(2) — killing a
+        // live watcher (1) plus a nonexistent one (2). The epoch check
+        // drops stale ids → conn2 sees exactly one disarm.
+        let (addr, disarms) = spawn_fake_revive(2);
+        let arm = |id: u64| {
+            json!({"jsonrpc":"2.0","id":id,"method":"tools/call",
+                   "params":{"name":"watch_arm","arguments":{"text":"OK","push":true}}})
+            .to_string()
+        };
+        let resps = serve_once_at(
+            &[
+                arm(1),
+                arm(2),
+                // conn dies here; the dump triggers transparent recovery
+                r#"{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"dump","arguments":{}}}"#
+                    .to_string(),
+                arm(4),
+            ]
+            .join("\n"),
+            addr,
+        );
+        assert_eq!(resps[0]["result"]["isError"], false);
+        assert_eq!(resps[1]["result"]["isError"], false);
+        // Post-recovery dump must succeed transparently.
+        assert_eq!(
+            resps[2]["result"]["isError"], false,
+            "dump after recovery: {resps:?}"
+        );
+        assert_eq!(resps[3]["result"]["isError"], false);
+        let counts = disarms.lock().unwrap();
+        assert!(
+            counts.len() >= 2,
+            "recovery should have opened a second conn: {counts:?}"
+        );
+        assert_eq!(
+            counts[1], 1,
+            "stale armed ids must not reach the recovered agent: {counts:?}"
+        );
     }
 }

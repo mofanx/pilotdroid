@@ -6,6 +6,29 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- **Toast MCP push notification**：agent ≥0.7.1 a11y listener 推送的
+  `{type:"toast"}` ui_event（与 `WATCH_HIT` 共用 ch=1 msg_type
+  0x0002 槽位，按 `type` 字段判别）经 serve push demux 分发为
+  `notifications/pilotdroid/toast` MCP notification；非 push 路径
+  降级为 `watch_events` pull 返回 `{"type":"toast",...}`。真机
+  实证：ApiDemos `PopupMenu1` → `Clicked popup menu item Add`
+  通知到达 stdout。
+
+### Fixed
+
+- **session 恢复后 watch_id 碰撞窗**：`Session::generation()`
+  epoch 计数——agent 重启后 watch_id 从头重分配，serve `armed`
+  map 里的陈旧 id 会误指新 agent 的同号 watcher（disarm 错杀）；
+  epoch 变更即清 `armed` 并丢弃缓冲的过期 `WATCH_HIT`。单测钉
+  「恢复→stale disarm 不达新 agent」+真机 pkill 恢复实证。
+- **session-watchdog 测试 flaky 硬化**：`dead_port()`（bind 即放）
+  释放的端口可被恢复阶梯的 `free_port()` 复用为 relay 端口——
+  relay 上游拨号拨回自身成自连死循环（CI 曾见首红 rerun 绿）；
+  改常驻 accept-close `corpse_port()`；并行测试抢端口时 relay
+  `bind` 遇 AddrInUse 由 panic 改为返回 Err 让阶梯换端口重试。
+
 ## [0.7.0] — 2026-11-25
 
 ### Added

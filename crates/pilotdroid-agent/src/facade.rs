@@ -58,6 +58,7 @@ impl<T: AdbTransport> Device<T> {
             media: None,
             media_port: None,
             media_port_hint: None,
+            generation: 0,
             media_socket: None,
             streaming: false,
         })
@@ -96,6 +97,12 @@ pub struct Session<T: AdbTransport> {
     /// Socket name from the start ack (attach must wait for start, §4.8).
     media_socket: Option<String>,
     streaming: bool,
+    /// Recovery epoch — bumped every time `recover()` reconnects.
+    /// Agent-allocated ids (watch_id) and session-bound state are only
+    /// valid within one epoch: a restarted agent re-allocates ids from
+    /// scratch, so hosts must treat ids from earlier epochs as dead
+    /// (a stale id may collide with a new live watcher).
+    generation: u64,
     /// HELLO_ACK retained so callers can expose agent build/caps.
     hello: pilotdroid_proto::payload::HelloAck,
 }
@@ -109,6 +116,14 @@ impl<T: AdbTransport> Session<T> {
     /// Capability bitmap from HELLO.
     pub fn caps(&self) -> u32 {
         self.hello.caps
+    }
+
+    /// Recovery epoch: `0` on the initial session, incremented on every
+    /// transparent `recover()`. Callers tracking agent-allocated ids
+    /// (watch ids, armed watcher flags) must discard them when the
+    /// epoch changes — the fresh agent never heard of them.
+    pub fn generation(&self) -> u64 {
+        self.generation
     }
 
     /// Run a control-channel op, transparently recovering a dead agent
@@ -159,6 +174,7 @@ impl<T: AdbTransport> Session<T> {
         self.client = client;
         self.port = port;
         self.hello = hello;
+        self.generation += 1;
         Ok(())
     }
 
@@ -861,7 +877,7 @@ fn parse_bounds(s: &str) -> Option<[i32; 4]> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use pilotdroid_adb::{DeviceInfo, Result as AdbResult, ShellOutput};
+    use pilotdroid_adb::{AdbError, DeviceInfo, Result as AdbResult, ShellOutput};
     use pilotdroid_proto::payload::encode;
     use pilotdroid_proto::{Channel, Frame, OpCode};
     use std::collections::HashMap;
@@ -919,8 +935,11 @@ mod tests {
                 return Ok(());
             }
             // Bind synchronously — the dial right after `forward` must
-            // not race the relay listener.
-            let l = TcpListener::bind(("127.0.0.1", port)).unwrap();
+            // not race the relay listener. A parallel test may steal
+            // the port between free_port() and bind — surface an error
+            // so the connect ladder retries a different port instead
+            // of panicking the test.
+            let l = TcpListener::bind(("127.0.0.1", port)).map_err(AdbError::Io)?;
             l.set_nonblocking(true).unwrap();
             let alive = Arc::new(AtomicBool::new(true));
             self.listeners.insert(port, alive.clone());
@@ -1013,13 +1032,20 @@ mod tests {
         (port, conns)
     }
 
-    /// A port guaranteed to refuse connections (bound then dropped).
-    fn dead_port() -> u16 {
-        TcpListener::bind("127.0.0.1:0")
-            .unwrap()
-            .local_addr()
-            .unwrap()
-            .port()
+    /// A port that stays dead but RESERVED: the listener stays bound
+    /// (a freed :0 port can be re-handled to the recovery relay by
+    /// `free_port()` — CI flake — and a dial would then connect to the
+    /// relay itself) and every accepted conn is closed instantly, so
+    /// dials succeed then hit immediate EOF like a dead localabstract.
+    fn corpse_port() -> u16 {
+        let l = TcpListener::bind("127.0.0.1:0").unwrap();
+        let p = l.local_addr().unwrap().port();
+        thread::spawn(move || {
+            while let Ok((s, _)) = l.accept() {
+                drop(s);
+            }
+        });
+        p
     }
 
     /// Crash the fake agent: accepted conns die (client sees EOF/reset)
@@ -1029,7 +1055,7 @@ mod tests {
         for c in conns.lock().unwrap().drain(..) {
             let _ = c.shutdown(std::net::Shutdown::Both);
         }
-        active.store(dead_port(), Ordering::SeqCst);
+        active.store(corpse_port(), Ordering::SeqCst);
     }
 
     #[allow(clippy::type_complexity)]
@@ -1144,7 +1170,7 @@ mod tests {
             }
         });
         let active = Arc::new(AtomicU16::new(hung));
-        let (adb_t, shells, _r) = adb(active, Some(dead_port()));
+        let (adb_t, shells, _r) = adb(active, Some(corpse_port()));
         let mut s = Device::with_transport(adb_t, "fake")
             .session_opts(None, "pilotdroid_agent")
             .unwrap();
