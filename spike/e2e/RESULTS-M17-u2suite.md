@@ -509,3 +509,18 @@ NIE）」。`_XPathStub` 已删除；`hasattr` 探测语义由方法存在性
   注释已明示「No media conn = event dropped」；serve 侧
   watch_attach 先于 arm 已把窗口压到极小，shim watcher 全历史
   未踩到，如实注记不改。
+
+## §附9 t16 复核——session 看护（t14, 01bbee2）独立判定
+
+复核者逐条 diff `95a8e39..01bbee2` + 真机独立复现 + 三件套/verify 重跑。
+
+| 复核项 | 判定 | 证据 |
+|---|---|---|
+| ① liveness 判定时机 | **pass** | `with_client` 仅在 op 抛 dead-transport 时才跑恢复——反应式非每 op 探活，零额外成本；`is_dead_transport` 恰含 `Io`(读 EOF/reset)+`Protocol(Io)`(写失败)，`Timeout` 正确排除（挂起/死亡不可判定，盲重放=双执行）。 |
+| ② 重启序列 | **pass** | `recover()` 序：teardown_media（丢媒体 conn+除媒体 forward）→除陈旧控制 forward→`connect_recover` 阶梯（hello→restart→hello→remote-jar 检查→reflash→hello），`Recover{stage}` 具名错。先拆媒体再重连防陈旧 conn 误用；`streaming`/`media_port` 状态正确复位。 |
+| ③ 重放安全边界 | **pass** | 单次重放无循环（重放再死则错误透出）；双执行窗口（conn 断前请求可能已下发）在代码 doc+SUPPORTED+CHANGELOG 三处一致明示。 |
+| ④ watcher/stream 丢失策略一致性 | **pass** | `watch_recv` 死媒体→先 `recover()` 治愈控制通道再原样抛错（调用方 re-arm）；watch_id 重分配/陈旧撞新 id 注记代码与 SUPPORTED 一致；`serve.rs` dead_conn 测试已更新到新契约（首 op 透明成功非报错）。 |
+| ⑤ 真机独立复现 | **pass** | `serve` 持久 session：`pkill -f pilotdroid.Agent`（pid 28742→28779）→下一 `describe_screen` **1269ms 透明成功**，稳态 50ms——与自报 1.11s/0.02s 同量级。 |
+| ⑥ 三件套+verify | **pass** | fmt/clippy(-D warnings)/`cargo test --workspace` **91/0**（facade 5 含 3 恢复用例、lib 19、cli 25 含更新后 dead_conn）；`verify-agent.sh ba0d072d` **37/0**。 |
+
+**附注（非阻塞硬化项）**：facade 恢复单测在 CI 首跑曾 flaky（`expected Recover, got Timeout`，rerun 即绿）——relay-fake 绑真实 localhost 端口+CI 慢机时序敏感，建议后续把 connect 超时放宽或打 `#[ignore]`-class 标记，非本次阻塞项。
