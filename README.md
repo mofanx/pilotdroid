@@ -89,6 +89,11 @@ M6 真实脚本对拍：**23/24 op 通过**（`spike/e2e/m6-compat.json`）；�
 一次 dump+ElementTree，覆盖 text/@id/%模糊%/contains()/parent()/scroll_to，
 高级轴显式 NIE；非 u2 插件管线，非 drop-in 承诺）。
 
+定位：适合把存量 u2 脚本/测试迁到 pilotdroid 后端换取延迟收益——与上游
+`mobile_tests/` verbatim 对拍 **22 pass / 0 fail / 8 skip**（零售真机实测；
+8 skip 全为上游自带标记，其中 implicitly_wait/枚举/count/watcher 4 面已实现
+并有单测+真机 parity 覆盖）。全部偏差与边界逐条如实登记 `compat/SUPPORTED.md`。
+
 MCP client 挂接（mcpServers 片段，二进制名 `pilotdroid-cli`，cargo install 后在 PATH）：
 
 ```json

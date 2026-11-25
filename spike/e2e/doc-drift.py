@@ -67,6 +67,19 @@ if lite:
 else:
     rep("pyreadme-xpath", True, "SUPPORTED has no approximation row; skipped")
 
+# 4. install-smoke VER pin must equal the packaged version — a lagging
+# default silently smoke-tests the PREVIOUS release (v0.6.2 stayed the
+# default after 0.6.3 shipped; M25 added the PUBLISH step, this gate
+# turns the human step into a CI check).
+smoke = open(os.path.join(ROOT, "spike/e2e/install-smoke.sh")).read()
+pyver = re.search(r'^version\s*=\s*"([^"]+)"',
+                  open(os.path.join(ROOT, "python/pyproject.toml")).read(),
+                  re.M)
+sver = re.search(r'VER="\$\{PILOTDROID_SMOKE_VER:-([^}]+)\}"', smoke)
+rep("smoke-ver", bool(pyver and sver and sver.group(1) == pyver.group(1)),
+    f"install-smoke VER={sver.group(1) if sver else 'NONE'} vs "
+    f"pyproject={pyver.group(1) if pyver else 'NONE'}")
+
 print(f"{'PASS' if not fails else 'FAIL'}: {len(fails)} check(s) failed" +
       (f" {fails}" if fails else ""))
 sys.exit(1 if fails else 0)
