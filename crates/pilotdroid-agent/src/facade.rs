@@ -61,6 +61,7 @@ impl<T: AdbTransport> Device<T> {
             generation: 0,
             media_socket: None,
             streaming: false,
+            stashed_events: std::collections::VecDeque::new(),
         })
     }
 }
@@ -105,6 +106,11 @@ pub struct Session<T: AdbTransport> {
     generation: u64,
     /// HELLO_ACK retained so callers can expose agent build/caps.
     hello: pilotdroid_proto::payload::HelloAck,
+    /// Non-frame media events (watch_hit/toast ui_events) demuxed out
+    /// of an active frame stream by `stream_read` — drained by
+    /// `watch_recv` so hits during streaming stay pullable after stop
+    /// instead of dying with the shared ch=1 conn.
+    stashed_events: std::collections::VecDeque<MediaEvent>,
 }
 
 impl<T: AdbTransport> Session<T> {
@@ -332,6 +338,9 @@ impl<T: AdbTransport> Session<T> {
     /// armed watcher's result. Blocks up to `timeout_ms` (default: the
     /// media read timeout set at connect).
     pub fn watch_recv(&mut self, timeout_ms: Option<u64>) -> Result<MediaEvent> {
+        if let Some(ev) = self.stashed_events.pop_front() {
+            return Ok(ev);
+        }
         self.attach_media()?;
         let m = self.media.as_mut().unwrap();
         if let Some(ms) = timeout_ms {
@@ -579,12 +588,19 @@ impl<T: AdbTransport> Session<T> {
     /// attach: §4.8 order is start-ack → media connect, and the agent
     /// drops pre-start pending conns, so attach must be lazy
     /// (`stream_read` performs it).
+    ///
+    /// An already-attached media conn (e.g. an armed push watcher's)
+    /// is a pre-start pending conn from the agent's view — it is killed
+    /// on start, so drop the stale handle here; watch hits buffer
+    /// agent-side and stay pullable via watch_events post-stop (the
+    /// documented demux-pause degrade).
     pub fn stream_start(
         &mut self,
         fps: Option<u8>,
         scale: Option<f32>,
         quality: Option<u8>,
     ) -> Result<StreamStartAck> {
+        self.teardown_media();
         let ack = self.with_client(|c| {
             c.stream_start(StreamCtrlReq {
                 op: StreamOp::Start,
@@ -614,20 +630,27 @@ impl<T: AdbTransport> Session<T> {
         if let Some(dir) = to_dir {
             std::fs::create_dir_all(dir).map_err(AgentError::Io)?;
         }
-        let media = self.media.as_mut().unwrap();
         let mut out = Vec::new();
-        for _ in 0..n {
-            match media.recv() {
-                Ok(f) => {
+        while out.len() < n as usize {
+            // Demux on the shared ch=1 conn: a watch_hit/toast ui_event
+            // can land between stream frames — `media.recv()` would
+            // error UnexpectedResponse on it. recv_event sorts them;
+            // non-frame events are stashed so watch_events can pull
+            // them after the stream stops (documented degrade).
+            match self.media.as_mut().unwrap().recv_event() {
+                Ok(MediaEvent::Frame(f)) => {
                     if let Some(dir) = to_dir {
-                        let seq = media.last_seq().unwrap_or(0);
+                        let seq = self.media.as_mut().unwrap().last_seq().unwrap_or(0);
                         std::fs::write(dir.join(format!("frame_{seq:05}.jpg")), &f.data)
                             .map_err(AgentError::Io)?;
                     }
                     out.push(f);
-                    if media.is_ended() {
+                    if self.media.as_mut().unwrap().is_ended() {
                         break;
                     }
+                }
+                Ok(ev @ (MediaEvent::WatchHit(_) | MediaEvent::Toast(_))) => {
+                    self.stashed_events.push_back(ev);
                 }
                 // Socket close or a stall ends the read — return what we
                 // got; empty+closed surfaces the error to the caller.
@@ -644,8 +667,25 @@ impl<T: AdbTransport> Session<T> {
     }
 
     /// STREAM_CTRL stop + media teardown. Safe to call when not streaming.
+    ///
+    /// Drains the conn before close: watch_hit/toast ui_events
+    /// interleaved with stream frames that no `stream_read` reached
+    /// would die with the socket — stash them so `watch_events` can
+    /// still pull them after stop.
     pub fn stream_stop(&mut self) -> Result<StreamStopAck> {
         let ack = self.with_client(|c| c.stream_stop());
+        if let Some(m) = self.media.as_mut() {
+            let _ = m.set_read_timeout(Duration::from_millis(150));
+            loop {
+                match m.recv_event() {
+                    Ok(ev @ (MediaEvent::WatchHit(_) | MediaEvent::Toast(_))) => {
+                        self.stashed_events.push_back(ev);
+                    }
+                    Ok(MediaEvent::Frame(_)) => continue,
+                    Err(_) => break,
+                }
+            }
+        }
         self.teardown_media();
         self.streaming = false;
         ack
@@ -879,7 +919,7 @@ mod tests {
     use super::*;
     use pilotdroid_adb::{AdbError, DeviceInfo, Result as AdbResult, ShellOutput};
     use pilotdroid_proto::payload::encode;
-    use pilotdroid_proto::{Channel, Frame, OpCode};
+    use pilotdroid_proto::{flags, Channel, Frame, MediaType, OpCode};
     use std::collections::HashMap;
     use std::net::{TcpListener, TcpStream};
     use std::sync::atomic::{AtomicBool, AtomicU16, Ordering};
@@ -1184,5 +1224,166 @@ mod tests {
                 .any(|c| c.contains("app_process")),
             "timeout must not trigger restart"
         );
+    }
+
+    /// Media-frame payload for the demux test without pulling in
+    /// serde_bytes: `Vec<u8>` encodes as a msgpack array, which
+    /// `ByteBuf` deserializes fine.
+    #[derive(serde::Serialize)]
+    struct TestMediaFrame {
+        format: &'static str,
+        w: u32,
+        h: u32,
+        ts_ns: u64,
+        dropped: u64,
+        data: Vec<u8>,
+    }
+
+    /// Fake agent for stream demux: conn #1 answers HELLO + STREAM_CTRL;
+    /// each later conn (media) is fed the pre-canned interleave
+    /// [Frame][WatchHit][Frame][Toast][Frame] then held open.
+    fn spawn_stream_fake() -> u16 {
+        let l = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = l.local_addr().unwrap().port();
+        thread::spawn(move || {
+            let mut n = 0u32;
+            while let Ok((mut s, _)) = l.accept() {
+                s.set_nodelay(true).ok();
+                n += 1;
+                if n > 1 {
+                    thread::spawn(move || {
+                        let mut w = s;
+                        let frame = |seq: u32| {
+                            Frame::new(
+                                Channel::Media,
+                                MediaType::Frame as u16,
+                                flags::STREAM_MORE,
+                                seq,
+                                encode(&TestMediaFrame {
+                                    format: "jpeg",
+                                    w: 2,
+                                    h: 2,
+                                    ts_ns: seq as u64,
+                                    dropped: 0,
+                                    data: vec![seq as u8],
+                                })
+                                .unwrap(),
+                            )
+                        };
+                        let ui = |p: Vec<u8>| Frame::new(Channel::Media, MSG_WATCH_HIT, 0, 0, p);
+                        let hit = ui(encode(&WatchHit {
+                            watch_id: 7,
+                            matched: true,
+                            waited_ms: 5,
+                            action_ok: Some(true),
+                            node: None,
+                        })
+                        .unwrap());
+                        let toast = ui(encode(&ToastEvent {
+                            r#type: "toast".into(),
+                            pkg: "fake".into(),
+                            has_parcel: false,
+                            text: vec!["hi".into()],
+                        })
+                        .unwrap());
+                        let _ = frame(1).write_to(&mut w);
+                        let _ = hit.write_to(&mut w);
+                        let _ = frame(2).write_to(&mut w);
+                        let _ = toast.write_to(&mut w);
+                        let _ = frame(3).write_to(&mut w);
+                        loop {
+                            thread::sleep(Duration::from_secs(60));
+                        }
+                    });
+                    continue;
+                }
+                thread::spawn(move || {
+                    while let Ok(req) = Frame::read_from(&mut s) {
+                        let (ty, payload) = match OpCode::try_from(req.header.msg_type) {
+                            Ok(OpCode::Hello) => (
+                                OpCode::HelloAck as u16,
+                                encode(&HelloAck {
+                                    agent: "fake".into(),
+                                    caps: 0,
+                                    ver: Some("0.0.0".into()),
+                                    proto: None,
+                                    sdk: None,
+                                    abi: None,
+                                    display: None,
+                                    inject: None,
+                                })
+                                .unwrap(),
+                            ),
+                            Ok(OpCode::StreamCtrl) => {
+                                let r: StreamCtrlReq = decode(&req.payload).unwrap();
+                                let p = match r.op {
+                                    StreamOp::Start => encode(&StreamStartAck {
+                                        ok: true,
+                                        socket: "pilotdroid_media".into(),
+                                        effective_fps_hint: None,
+                                    })
+                                    .unwrap(),
+                                    StreamOp::Stop => encode(&StreamStopAck {
+                                        ok: true,
+                                        frames_sent: 3,
+                                        dropped: 0,
+                                    })
+                                    .unwrap(),
+                                };
+                                (OpCode::StreamCtrl as u16, p)
+                            }
+                            _ => continue,
+                        };
+                        if Frame::new(
+                            Channel::Control,
+                            ty,
+                            req.header.flags & 0x8000,
+                            req.header.req_id,
+                            payload,
+                        )
+                        .write_to(&mut s)
+                        .is_err()
+                        {
+                            break;
+                        }
+                    }
+                });
+            }
+        });
+        port
+    }
+
+    #[test]
+    fn stream_demux_stashes_watch_hit_and_toast() {
+        // On the shared ch=1 conn a watch_hit/toast ui_event can land
+        // between stream frames — `media.recv()` used to fail the whole
+        // read with UnexpectedResponse and the events died with the
+        // conn at teardown. recv_event demuxes them into the stash and
+        // watch_recv drains it (documented demux-pause degrade).
+        let port = spawn_stream_fake();
+        let active = Arc::new(AtomicU16::new(port));
+        let (adb_t, _s, _r) = adb(active, None);
+        let mut s = Device::with_transport(adb_t, "fake")
+            .session_opts(None, "pilotdroid_agent")
+            .unwrap();
+
+        s.stream_start(None, None, None).unwrap();
+        let frames = s.stream_read(2, None).unwrap();
+        assert_eq!(frames.len(), 2);
+        // The interleaved hit was stashed mid-read — pullable while the
+        // stream is still running.
+        assert!(matches!(
+            s.watch_recv(Some(500)).unwrap(),
+            MediaEvent::WatchHit(_)
+        ));
+        let frames = s.stream_read(1, None).unwrap();
+        assert_eq!(frames.len(), 1);
+        s.stream_stop().unwrap();
+        // Toast stashed by the second read survives teardown.
+        assert!(matches!(
+            s.watch_recv(Some(500)).unwrap(),
+            MediaEvent::Toast(_)
+        ));
+        assert!(!s.streaming);
     }
 }

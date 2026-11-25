@@ -547,3 +547,39 @@ NIE）」。`_XPathStub` 已删除；`hasattr` 探测语义由方法存在性
   用例（pytest 92/92）。
 - **已知阻塞注记**：CI 首跑 facade `dead_agent_recovery_exhausted`
   flaky 二度现身（rerun 绿）——硬化件归微批，ledger 附9 已注。
+
+## §附11 t3 M31 eval harness v1 ledger（ba0d072d, MIUI/API34）
+
+**`spike/e2e/agent-loop/loop.py` 全量 10/10 PASS**（2026-11-25，调试
+构建 `pilotdroid-cli serve` stdio）：
+
+| 任务 | 结果 | 耗时 | 覆盖 |
+|---|---|---|---|
+| nav_views | PASS | 2.6s | describe→verify_after(tap)→exists |
+| nav_controls_light | PASS | 5.6s | 三级导航+verify_after |
+| checkbox_toggle | PASS | 5.7s | dump `checked` attr |
+| radio_select | PASS | 5.8s | dump `checked` attr |
+| set_text_probe | PASS | 6.2s | EditText→verify_after(text) |
+| popup_toast_media | PASS | 4.5s | media conn 先 attach→toast ui_event |
+| alert_dialog | PASS | 5.9s | 弹窗出现/取消消失（contains 匹配） |
+| spinner_pick | PASS | 7.1s | spinner 展开→选项点击 |
+| press_back_nav | PASS | 6.7s | 两次 KEYCODE_BACK（本 ROM 首按被吞） |
+| stream_watch_coexist | PASS | 11.8s | demux 暂停实测定论 |
+
+**stream+watch 并存实测结论**（注释级约束→文档化定论）：
+armed watcher 占用的 media conn 被 `stream_start` 正确废弃
+（agent §4.8 杀 pre-start pending——`stream_start` 先 teardown，
+否则读陈旧句柄 io error，本轮实修）；流中 hit/toast 与帧交错到达，
+`recv_event` 分拣入 session stash，`watch_events` **流中与停流后
+均可拉出**（conn 序：hit 先于其动作产生的 toast）；push
+notification 流中暂停、停流后恢复。facade 单测
+`stream_demux_stashes_watch_hit_and_toast` + SUPPORTED demux 段
+已按此口径定稿。
+
+- **inspector 等效物**：`spike/e2e/agent-loop/inspector.py`——
+  `describe_screen` 编号表（与 `screenshot_annotated` 同一 SoM
+  编号空间）→ `--tap N` 中心点点击 → `verify_after` 断言；真机
+  `--tap 6 --expect-text "Add"` 实证 popup 展开+检查通过。
+- **环境敏感注记**：ApiDemos 活动名/菜单文本按本机实测校准；
+  `press_back` 需两连按（首按被 Light activity 吞）——已写进
+  任务注释，非 shim 缺陷。

@@ -18,6 +18,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **stream 期间 watch_hit/toast ui_event 丢失**：帧流与 ui_event
+  共享 ch=1 conn——`stream_read` 的 `media.recv()` 只认 FRAME，命中
+  事件要么触发 `UnexpectedResponse` 断流、要么随 conn teardown 静
+  默丢失；armed push watcher 先占 media conn 时 `stream_start` 又
+  复用 agent 已在启动时杀掉的陈旧句柄。修复：`stream_start` 先
+  `teardown_media`；`stream_read`/`stream_stop` 改走 `recv_event`
+  分拣，非帧事件入 session stash，`watch_recv` 先排 stash——hit
+  流中与停流后均可经 `watch_events` 拉出（eval
+  `stream_watch_coexist` 真机实证）。facade 单测
+  `stream_demux_stashes_watch_hit_and_toast` 钉交错解码语义。
 - **session 恢复后 watch_id 碰撞窗**：`Session::generation()`
   epoch 计数——agent 重启后 watch_id 从头重分配，serve `armed`
   map 里的陈旧 id 会误指新 agent 的同号 watcher（disarm 错杀）；

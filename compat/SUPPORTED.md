@@ -140,7 +140,11 @@ benchmark/suite 跑旧 targetSdk app 前需先放行（openatx u2 官方
   命中即发 `notifications/pilotdroid/watch_hit` MCP notification；
   非 push 命中缓冲降级 `watch_events` 可拉；client 断开自动 disarm
   全部 armed 规则（agent conn close 亦 reap，双保险）；stream 激活期
-  demux 暂停（帧/命中共享 ch=1）。pull 面
+  demux 暂停（帧/命中共享 ch=1）——**实测定论（M31 eval
+  `stream_watch_coexist`，ba0d072d）**：流中 hit/toast 与帧交错在
+  同一 conn 到达，host 侧 `recv_event` 分拣入 session stash，
+  `watch_events` 流中与停流后均可拉出（hit 先于其动作产生的
+  toast），push notification 停流后恢复。pull 面
   `watch_arm`/`watch_disarm`/`watch_events` 保持齐备。
   同槽位的 toast ui_event 经 demux 推
   `notifications/pilotdroid/toast`（上表 toast 行）。

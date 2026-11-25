@@ -111,6 +111,25 @@ warn（M12 起；stdout 仍只有 JSON-RPC，不污染协议流）。**两个 se
 经官方 python `mcp` SDK 与 Devin CLI 实测握手通过（`spike/e2e/mcp_client_check.py`
 + `agent_e2e_transcript.txt`）；initialize 应答同时透出 `agentVer`（设备 jar 版本）。
 
+### AI agent loop 模板（M31）
+
+weditor/u2inspector 在 AI 时代的等效物不是 GUI 查看器，而是一段可跑的
+**观察→选元→操作→验证** 闭环。`spike/e2e/agent-loop/` 提供两个样板：
+
+- `inspector.py` —— 最小闭环：`describe_screen` 打印 dense 编号元素表
+  （与 `screenshot_annotated` 叠框同一编号空间，模型视觉与动作面可直接
+  对齐），`--tap N` 按编号点击中心点，`verify_after` 判定后置条件。
+- `loop.py` —— eval harness v1：10 个确定性 ApiDemos 任务（导航/开关/
+  单选/复选/文本输入/弹窗/toast/返回/stream+watch 并存）跑同一
+  policy loop，输出逐题 PASS/FAIL+耗时与总成功率。真机 ba0d072d
+  （MIUI/API34）基线 **10/10**（`spike/e2e/RESULTS-M17-u2suite.md` §附11）。
+
+```bash
+python3 spike/e2e/agent-loop/inspector.py            # 列元素
+python3 spike/e2e/agent-loop/inspector.py --tap 6 --expect-text "Add"
+PILOTDROID_SERIAL=<serial> python3 spike/e2e/agent-loop/loop.py
+```
+
 ## 实测数据（真机，同口径）
 
 | 口径 | pilotdroid | uiautomator2 | 来源 |
