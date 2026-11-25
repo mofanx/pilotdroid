@@ -36,16 +36,20 @@ echo "=== 2. import u2shim ==="
   && ok "import pilotdroid.u2shim" || bad "import pilotdroid.u2shim"
 
 echo "=== 2b. shim 符号面（xpath-lite 打包回归防）==="
-# wheel 长描述承诺 xpath 近似子集——防 Device.xpath 方法或 _xp_eval
-# 在打包过程中丢失（M23 xpath-lite 是 asset 内容）。eval 用罐头
-# XML，不依赖设备。
-"$V/venv/bin/python" - <<'PY' && ok "Device.xpath + _xp_eval present" || bad "shim xpath-lite symbols missing"
+# xpath-lite 首现于 post-0.6.2 的 M23 批次（≥0.6.3 的 wheel 才含
+# Device.xpath/_xp_eval）——对 ≤0.6.2 已发布版本无条件断言会误红。
+# 版本门槛化：VER≥0.6.3 断言存在性（拦打包回归），否则 SKIP。
+if [ "$(printf '0.6.3\n%s\n' "$VER" | sort -V | head -1)" = "0.6.3" ]; then
+  "$V/venv/bin/python" - <<'PY' && ok "Device.xpath + _xp_eval present" || bad "shim xpath-lite symbols missing"
 import xml.etree.ElementTree as ET
 from pilotdroid import u2shim
 assert callable(getattr(u2shim.Device, "xpath", None)), "Device.xpath missing"
 root = ET.fromstring('<hierarchy><node text="OK" bounds="[0,0][1,1]"/></hierarchy>')
 assert u2shim._xp_eval(root, "OK"), "_xp_eval shorthand miss"
 PY
+else
+  echo "SKIP: Device.xpath check gated on VER>=0.6.3 (VER=$VER lacks xpath-lite)"
+fi
 
 echo "=== 3. pip-only 用户的错误提示可行动（应指到 pilotdroid-cli 而非 pilotdroid setup）==="
 "$V/venv/bin/python" - <<'PY' && ok "connect error message actionable" || bad "connect error message still dead-ends"

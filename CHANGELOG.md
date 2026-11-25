@@ -26,13 +26,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `__len__`/`__iter__`/`__getitem__`（skip 掩蔽面补齐）。
 - **`watch_context(builtin=True)` MIUI dialog recipes**（M24）：
   u2 通用规则外加 MIUI 规则集（`AdbInstallActivity`「继续安装」
-  10s 倒计时竞速 / LBE ReviewPermissions 多页「确定」/
-  NotificationShade 收起）。
+  10s 倒计时竞速 / LBE ReviewPermissions 单页 fire-once
+  「确定」/ NotificationShade 收起）。
 - **`spike/e2e/u2suite/fixture-doctor.sh`**：fixture 一键恢复——
   `pm path` 幂等检测 → ApiDemos 缓存下载/push → `adb install
   --bypass-low-target-sdk-block` 期间 agent a11y 自动点
-  AdbInstallActivity「继续安装」→ `monkey` 首启自动点多页 LBE
-  审查「确定」。conftest guard 报错消息指向该脚本。
+  AdbInstallActivity「继续安装」→ `monkey` 首启自动点 LBE
+  审查「确定」（单页 fire-once）。conftest guard 报错消息
+  指向该脚本。
 
 ### Changed
 
