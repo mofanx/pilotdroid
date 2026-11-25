@@ -102,8 +102,15 @@ else:
     n_new = len([l for l in log_r.stdout.splitlines() if l.strip()])
     sec = changelog.split("## [Unreleased]", 1)[1].split("\n## ", 1)[0]
     n_bullets = len(re.findall(r"^\s*[-*] ", sec, re.M))
-    rep("changelog-unreleased", n_new == 0 or n_bullets >= 1,
-        f"{n_new} commit(s) since {tag}; Unreleased bullets={n_bullets}")
+    # Release-window exemption: once Unreleased is folded into
+    # `## [<current pyproject version>]` the coverage moved with it —
+    # the tag just doesn't exist yet (v0.6.4 bump commit hit FAIL here).
+    folded = bool(pyver and re.search(
+        rf"^## \[{re.escape(pyver.group(1))}\]", changelog, re.M))
+    rep("changelog-unreleased",
+        n_new == 0 or n_bullets >= 1 or folded,
+        f"{n_new} commit(s) since {tag}; Unreleased bullets={n_bullets}"
+        + ("; folded into current version" if folded else ""))
 
 print(f"{'PASS' if not fails else 'FAIL'}: {len(fails)} check(s) failed" +
       (f" {fails}" if fails else ""))
