@@ -693,3 +693,19 @@ ghost-conn 修复条目（doc-drift 第 5 闸会随 commit 检查）；`resvWrot
 
 验证环境：设备 ba0d072d，agent 0.7.2（t6 部署态），CLI=~/.cargo-target
 构建（内嵌同版 jar）。复核期间产生的孤儿 adb forward 已清账。
+
+## 附15 t8 收口——t6 提交入库（cc24acb + db62975）
+
+- `cc24acb` fix(agent)：t6 全量入库——Agent.java 0.7.2（reserve 槽/gen
+  守卫/curWrote 判别/accept 线程永生/writeLoop 去 return）+ agent.jar
+  + verify A6/A7 断言 + ghost_repro.py + CHANGELOG Unreleased Fixed 条目
+  + 本 ledger §附13。`resvWrote` 占位变量按 t7 nit 清理（resv conn 从未
+  写过，提升后 curWrote=false 语义等价）。
+- `db62975` test(facade)：fake adb relay 半关闭传播根治
+  `dead_agent_recovery_exhausted` CI flaky——上游死后客户端读超时与
+  FIN 竞态（Timeout vs Io），copy 结束显式 `shutdown(Both)` 对齐真实
+  adbd；本地单点 6/6 + 整包 3 轮无复现。**随件性质**：属本批 CI 观察
+  责任范围内的修复（t8④），非越权新任务。
+- 入库后验证：doc-drift **6/6 PASS**（changelog 第 5 闸含新条目）；
+  ghost_repro 复跑 8/8；CI `45607557629` + CodeQL `45607557417`
+  **双 success**。
