@@ -296,3 +296,29 @@ NIE）」。`_XPathStub` 已删除；`hasattr` 探测语义由方法存在性
   v0.6.2 SHA256SUMS.txt 一致（gh api 读回）；README 版本钉
   摘除、PUBLISH.md tap-bump 升格 Required、suite README 补
   AdbInstallActivity 10s 机制——四处均在库。
+
+### 附3：M24 收口复核（t3 复核轮，commit 23e903f + 9b22379）
+
+- 独立全量复跑 **22 passed / 0 failed / 8 skipped（46.78s）**——
+  `%` 语义收紧后 8 条 xpath 用例（含 test_xpath_query 的模糊
+  匹配断言）仍全过，零回归。
+- `%` LIKE 三态实现复核：`v%`→startswith / `%v`→endswith /
+  `%v%`→contains，`_xp_eval` 与 `_xp_match` 同构。边界：
+  裸 `%`/`%%`→v 空串→短路 `[]`/`False`（退化查询安全拒绝，
+  u2 会全匹配——可辩护偏差）；内嵌 `%`（如 `%a%b`）按字面
+  处理非多段通配——与 u2 简写 strip 语义一致，均已注记。
+- `implicitly_wait` 双态：`timeout is None`→返回
+  settings['wait_timeout']，`0` 落 setter 分支（falsy≠None
+  边界正确）；getter/setter 双侧有测。
+- 枚举面：`__len__`→count、`__iter__`→info dicts（u2 迭代
+  产对象——docstring 明示偏差）、`__getitem__`→instance
+  kwarg+非 int TypeError+越界 info None。
+- builtin recipes：三规则 package+text AND 防误命中；Shade
+  走 resourceIdMatches+shell collapse 非点击；`_mk_builtin_click`
+  用 host inject 非 device-armed ACTION_CLICK（FLAG_SECURE 吞
+  点击真缺陷已修复注记）+4×0.7s settle/retry 兜滑入动画；
+  armed 表 WATCH_HIT 摘除+finally watch_disarm 防泄漏；
+  `__exit__` stop 不吞异常。实装者真机实证：sctrl.apk 弹窗
+  自动点「继续安装」→Success；shade 展开→0.4s collapse。
+- 测试有效性：49/49（+6 钉 LIKE 三态/双态/枚举/getitem/
+  builtin 注册含 builtin=False 对照）。
