@@ -298,6 +298,26 @@ class TestXPathLite(unittest.TestCase):
         self.assertEqual(len(u2shim._xp_eval(root, "Accessibilit%")), 1)
         self.assertEqual(len(u2shim._xp_eval(root, "%cessib%")), 1)
 
+    def test_shorthand_like_three_states(self):
+        # u2 SQL-LIKE: v%=prefix, %v=suffix, %v%=contains — NOT a
+        # blanket-contains collapse (was the M24 drift fix).
+        root = ET.fromstring(
+            '<hierarchy><node text="App"/><node text="Apple"/>'
+            '<node text="Pineapple"/></hierarchy>')
+        self.assertEqual(len(u2shim._xp_eval(root, "App%")), 2)
+        self.assertEqual(len(u2shim._xp_eval(root, "%pple")), 2)
+        self.assertEqual(len(u2shim._xp_eval(root, "%pp%")), 3)
+        self.assertEqual(len(u2shim._xp_eval(root, "%App")), 1)
+        self.assertEqual(len(u2shim._xp_eval(root, "%")), 0)
+
+    def test_xp_match_like_states(self):
+        el = ET.fromstring('<node text="Pineapple"/>')
+        self.assertTrue(u2shim._xp_match(el, "%apple"))
+        self.assertTrue(u2shim._xp_match(el, "Pine%"))
+        self.assertTrue(u2shim._xp_match(el, "%eappl%"))
+        self.assertFalse(u2shim._xp_match(el, "%pine"))
+        self.assertFalse(u2shim._xp_match(el, "apple%"))
+
     def test_shorthand_at_id_and_bare_rid(self):
         root = ET.fromstring(self._XML)
         self.assertEqual(len(u2shim._xp_eval(root, "@android:id/list")), 1)
@@ -390,6 +410,81 @@ class TestXPathLite(unittest.TestCase):
                          "io.test:id/field")
         with self.assertRaises(NotImplementedError):
             w.when("//*[contains(@text,'x')]")
+
+
+class TestImplicitlyWaitDual(unittest.TestCase):
+    """d.implicitly_wait() — no arg reads, with arg sets (M24)."""
+
+    def test_getter_setter(self):
+        d = _bare_device()
+        cur = d.implicitly_wait()
+        self.assertEqual(cur, d.settings["wait_timeout"])
+        d.implicitly_wait(7.5)
+        self.assertEqual(d.implicitly_wait(), 7.5)
+        self.assertEqual(d.wait_timeout, 7.5)
+
+
+class TestSelectorIteration(unittest.TestCase):
+    """`len(d(sel))` / `for el in d(sel)` / `d(sel)[i]` — dump+post-
+    filter enumeration (u2 select_iter surface)."""
+
+    _XML = ('<hierarchy>'
+            '<node text="Row" bounds="[0,0][100,50]" index="0"/>'
+            '<node text="Row" bounds="[0,50][100,100]" index="1"/>'
+            '<node text="Other" bounds="[0,100][100,150]" index="2"/>'
+            '</hierarchy>')
+
+    def _d(self):
+        d = _bare_device()
+        d.dump_hierarchy = lambda: self._XML
+        return d
+
+    def test_len_and_iter(self):
+        d = self._d()
+        sel = d(textContains="Ro")
+        self.assertEqual(len(sel), 2)
+        self.assertEqual([n["text"] for n in sel], ["Row", "Row"])
+
+    def test_getitem_nth(self):
+        d = self._d()
+        # textContains stays on the dump+post-filter path — no agent
+        rows = d(textContains="Row")
+        second = rows[1]
+        self.assertIsInstance(second, u2shim._Selector)
+        self.assertEqual(second.kw["instance"], 1)
+        self.assertEqual(second.info["bounds"],
+                         [0, 50, 100, 100])
+        self.assertIsNone(rows[5].info)
+        with self.assertRaises(TypeError):
+            rows["x"]
+
+
+class TestBuiltinDialogs(unittest.TestCase):
+    """watch_context(builtin=True) — _BUILTIN_DIALOGS pre-armed before
+    the watcher starts (no thread in the test)."""
+
+    def test_rules_registered(self):
+        d = _bare_device()
+        w = u2shim._Watcher(d)
+        w.start = lambda: None
+        w.stop = lambda: None
+        d._watcher = w
+        with d.watch_context(builtin=True):
+            kws = [r[0] for r in w._rules]
+            self.assertIn({"packageName": "com.miui.securitycenter",
+                           "text": "继续安装"}, kws)
+            self.assertIn({"packageName": "com.lbe.security.miui",
+                           "text": "确定"}, kws)
+            self.assertTrue(
+                any("resourceIdMatches" in k for k in kws))
+        # builtin=False: nothing pre-armed
+        d2 = _bare_device()
+        w2 = u2shim._Watcher(d2)
+        w2.start = lambda: None
+        w2.stop = lambda: None
+        d2._watcher = w2
+        with d2.watch_context(builtin=False):
+            self.assertEqual(w2._rules, [])
 
 
 if __name__ == "__main__":

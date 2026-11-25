@@ -308,6 +308,22 @@ class _Selector:
         """u2 `d(...).count` — real match count (dump+post-filter)."""
         return len(self._nodes())
 
+    def __len__(self):
+        return self.count
+
+    def __iter__(self):
+        """u2 `for el in d(...)` — iterate match info dicts (one dump)."""
+        return iter(self._nodes())
+
+    def __getitem__(self, idx):
+        """u2 `d(...)[i]` — nth match (0-based) as a new Selector."""
+        if not isinstance(idx, int):
+            raise TypeError(idx)
+        kw = dict(self.kw)
+        kw["instance"] = idx
+        return _Selector(self.dev, _base=self._base, _rel=self._rel,
+                         **kw)
+
     @property
     def info(self):
         return self._node()
@@ -741,14 +757,72 @@ class _Watcher:
         return bool(self._th and self._th.is_alive())
 
 
+# `watch_context(builtin=True)` stock-dialog parity — ROM-specific
+# rules the M22/M23 fixture forensics actually hit (u2's own builtin
+# set is AOSP-dialog shaped; ours cover the MIUI dialogs that broke
+# real-device runs). Selectors AND-match package + label so a stray
+# "确定" elsewhere can't fire.
+_BUILTIN_DIALOGS = (
+    # MIUI AdbInstallActivity — "正在通过USB安装此应用" auto-denies
+    # after a 10s countdown if nobody taps 继续安装 (RESULTS-M17 §附).
+    ({"packageName": "com.miui.securitycenter",
+      "text": "继续安装"}, "click"),
+    # MIUI LBE first-run permission review — one-shot 确定 ack; left
+    # alone it steals foreground from every app_start.
+    ({"packageName": "com.lbe.security.miui",
+      "text": "确定"}, "click"),
+    # Expanded NotificationShade masking the a11y tree (M22 two-layer
+    # env failure) — collapse, don't click. resourceIdMatches covers
+    # stock/MIUI expanded-shade ids; ids a ROM doesn't use simply keep
+    # the rule dormant.
+    ({"resourceIdMatches":
+      r"com\.android\.systemui:id/(notification_panel|"
+      r"expanded_status_bar|quick_settings.*|notification_container.*)"},
+     ("shell", "cmd statusbar collapse")),
+)
+
+
+def _mk_builtin_click(dev, kw):
+    """Host-side inject click for a builtin dialog rule. NOT the
+    device-armed a11y ACTION_CLICK path — that is ignored by
+    FLAG_SECURE dialogs (proved on MIUI AdbInstallActivity: WATCH_HIT
+    consumed the rule, the 10s countdown still ran to auto-deny).
+    Also settle+retry: WATCH_HIT can arrive mid slide-in animation
+    where a single early tap lands before the window accepts input."""
+    sel = _Selector(dev, **kw)
+
+    def _act():  # `_` prefix: not a public method per doc-drift scan
+        for _ in range(4):
+            time.sleep(0.7)
+            try:
+                if not sel.exists:
+                    return
+                sel.click(timeout=0)
+            except Exception:
+                return
+    return _act
+
+
 class _WatchContext:
-    """Backs `Device.watch_context` — thin ctx-manager over _Watcher."""
+    """Backs `Device.watch_context` — thin ctx-manager over _Watcher.
+    builtin=True pre-registers _BUILTIN_DIALOGS before user rules —
+    u2 builtin parity in spirit (stock-dialog auto-dismiss), with a
+    ruleset shaped by what this ROM actually throws."""
 
     def __init__(self, dev, builtin):
         self.dev, self.builtin = dev, builtin
 
     def __enter__(self):
         self._w = self.dev.watcher
+        if self.builtin:
+            for kw, act in _BUILTIN_DIALOGS:
+                if act == "click":
+                    self._w.when(**kw).call(
+                        _mk_builtin_click(self.dev, kw))
+                else:
+                    cmd = act[1]
+                    self._w.when(**kw).call(
+                        lambda c=cmd: self.dev.shell(c))
         self._w.start()
         return self
 
@@ -1130,8 +1204,11 @@ class Device:
         settings['wait_timeout'])."""
         return self.settings["wait_timeout"]
 
-    def implicitly_wait(self, timeout):
-        """u2 `d.implicitly_wait(t)` — set settings['wait_timeout']."""
+    def implicitly_wait(self, timeout=None):
+        """u2 `d.implicitly_wait()` — no arg returns the current
+        settings['wait_timeout']; with arg sets it."""
+        if timeout is None:
+            return self.settings["wait_timeout"]
         self.settings["wait_timeout"] = timeout
 
     def _op_delay(self, method, phase):
@@ -1219,8 +1296,9 @@ class Device:
     def watch_context(self, builtin=False):
         """u2 `d.watch_context(builtin)` — context manager over
         `d.watcher`: `.when(sel).click()` registers rules; __exit__
-        stops the watcher. u2's `builtin` stock-dialog rules are not
-        reproduced (accepted, ignored — ROM dialogs differ anyway)."""
+        stops the watcher. builtin=True pre-arms the _BUILTIN_DIALOGS
+        ruleset (MIUI install-confirm / LBE review / expanded shade —
+        approximating u2's stock-dialog builtins, not a copy)."""
         return _WatchContext(self, builtin)
 
     def close(self):
@@ -1334,8 +1412,18 @@ def _xp_eval(root, x):
     pkg:id/name; `//` ElementPath subset + contains(). Anything the
     subset can't express raises NotImplementedError."""
     if x.startswith("%") or x.endswith("%"):
+        # u2 SQL-LIKE: %v%=contains, %v=endswith, v%=startswith
         v = x.strip("%")
-        return [e for e in root.iter() if v in (e.get("text") or "")]
+        if not v:
+            return []
+        pre, post = x.startswith("%"), x.endswith("%")
+        if pre and post:
+            ok = lambda t: v in t
+        elif pre:
+            ok = lambda t: t.endswith(v)
+        else:
+            ok = lambda t: t.startswith(v)
+        return [e for e in root.iter() if ok(e.get("text") or "")]
     if x.startswith("@"):
         x = f".//*[@resource-id='{x[1:]}']"
     elif x.startswith("//"):
@@ -1359,7 +1447,14 @@ def _xp_match(el, x):
     """Predicate form of the shorthand — is `el` an `x` node? (used by
     parent() ancestor matching)."""
     if x.startswith("%") or x.endswith("%"):
-        return x.strip("%") in (el.get("text") or "")
+        # u2 SQL-LIKE (same three states as _xp_eval)
+        v = x.strip("%")
+        if not v:
+            return False
+        t = el.get("text") or ""
+        if x.startswith("%") and x.endswith("%"):
+            return v in t
+        return t.endswith(v) if x.startswith("%") else t.startswith(v)
     if x.startswith("@"):
         return el.get("resource-id") == x[1:]
     if _XP_RID.match(x):
