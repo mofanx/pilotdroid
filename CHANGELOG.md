@@ -28,6 +28,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   disarm 不再透传至 agent——id 空间碰撞下可能误杀恢复后重分配的
   活 watcher；未知 id 本地返回 `{disarmed:false}`。
 
+### Internal
+
+- **eval v2 难度爬升**（`spike/e2e/agent-loop/loop_v2.py`）：7 个
+  高难任务（跨 app Settings 往返、`list_elements`→`tap_index`
+  真消费 SoM 编号、故意 stale snapshot 被拒+重验证、界外滚动
+  寻元素、双 toast 时序、每轮 SIGKILL 故障注入+重流、后台
+  resume）× N≥5 轮输出成功率+p50/p95——真机 35/35，全部任务
+  p95−p50≤1.6s（ledger §附17）。
+- **真模型盲驾 round**（`blind.py`）：仅 describe/tap/verify_after
+  三工具 5 任务 4/5——失败归因：SoM 无 checked/selected 状态面
+  （checkbox 类闭环不可证）+真实零售机前台抢占；并记录 tap ok
+  ≠效果回执、describe/list 类名口径差两项 nit。
+- **OCR host-spike GO**（`ocr_spike.py`）：screenshot→本地
+  tesseract→行块与树几何融合→`ocr_only` 可编号元素——canvas
+  文本场景（ApiDemos TextAlign）8 树节点外产出 13 个 OCR 元素，
+  文本场景零重复污染（ledger §附17）。
+
 ## [0.7.1] — 2026-11-25
 
 ### Added

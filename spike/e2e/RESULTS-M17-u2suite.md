@@ -728,3 +728,41 @@ read-timeout 探针证伪记；`AGENTS.md` 新增 fake relay 半关闭保真度
 注记（db62975 flake 根治的教训外化）。
 
 CI+CodeQL 于 `b34e1a5`/`917e3e5`（lock 修复后）持续 success。
+
+## 附17 t3 —— eval v2 难度爬升 + 真模型盲驾 + OCR host-spike（2026-11-26，ba0d072d）
+
+### A. eval v2 任务集（`spike/e2e/agent-loop/loop_v2.py`，7 任务×5 轮）
+
+| task | pass | p50s | p95s | mean | 覆盖点 |
+|---|---|---|---|---|---|
+| cross_app_settings | 5/5 | 6.2 | 6.2 | 6.2 | ApiDemos→HOME→MIUI Settings→滚动寻「更多设置」→返回 |
+| som_index_tap | 5/5 | 2.9 | 3.0 | 2.9 | list_elements→tap_index 真消费 SoM 编号 |
+| stale_snapshot_reverify | 5/5* | 4.5 | 4.6 | 4.5 | 导航后旧 snapshot 被 check_snapshot 拒→重新 list 恢复 |
+| scroll_find | 5/5 | 2.9 | 3.3 | 3.0 | 界外元素 bounded scroll 寻「Preference」 |
+| double_toast_order | 5/5 | 7.7 | 8.1 | 6.9 | 双 toast 时序（Add→Edit 按 conn 序到达） |
+| dirty_kill_recovery | 5/5 | 5.5 | 5.9 | 5.5 | 每轮 SIGKILL 一个 stream 中 serve→新 serve 仍能起流（dirty-exit 回归钉） |
+| background_resume | 5/5 | 7.5 | 7.5 | 7.5 | HOME→重开，activity 态保留、元素仍可用 |
+
+合计 **35/35**（首轮未修版 34/35：stale 任务一次 harness settle race——tap 后 0.8s 窗内布局签名未变导致 tap_index 未被拒，改为轮询至导航落点后 5/5；属评测脚本竞态非产品缺陷）。
+
+\* 修复后独立复跑 N=5 全过；方差极小（全部任务 p95−p50 ≤1.6s）。
+
+### B. 真模型盲驾 round（`blind.py`，仅 describe_screen/tap/verify_after 三工具）
+
+| # | 目标 | 结果 | 归因 |
+|---|---|---|---|
+| B1 | 主列表→Views 子列表+verify text | PASS | 首点 `ok:true` 未生效（IM 注入竞态），verify 正确报 false，重点过——**tap 返回 ok≠效果，verify_after 是必需品** |
+| B2 | Views→Controls→Light Theme+verify Checkbox 1 | PASS | 途中 MIUI 系统弹窗「packageInfo is null/确定」打断——describe 可见+可点，盲驾可消 |
+| B3 | spinner Mercury→Earth+verify text | PASS | 选中值以 TextView 呈现，text 断言可验 |
+| B4 | Checkbox 1 切换+状态验证 | **FAIL** | 双重归因：(a) `describe_screen`/`list_elements` **无 checked/selected 字段**，verify_after 无状态谓词——切换不可证；(b) 验证前前台被外部 app（聊天）抢占——真实零售机环境切换 |
+| B5 | Alert Dialogs→OK CANCEL DIALOG→verify Lorem→OK→verify absent | PASS | exists+absent 双向断言均 pass |
+
+**盲驾成功率 4/5（80%）**。SoM 缺口清单（失败归因）：① widget 状态面（checked/selected/enabled/focused）全部缺失——checkbox/radio/toggle 类闭环不可证；② `describe_screen` 给全类名而 `list_elements` 给简类名——同一元素两种 class 口径（非阻塞 nit）；③ tap 无效果回执（ok 仅表注入成功）——已由 verify_after 兜住，建议文档强调「每步必 verify」。
+
+### C. OCR host-spike（`ocr_spike.py`）：**GO**
+
+- 管线：`screenshot`（agent 出 JPEG）→ 本地 `tesseract --psm 11 tsv`（5.5.0, eng）→ 词块合并为行块 → 与 `list_elements` 几何融合：文本块心落在「面积≤4×块的无文本节点」内→回填 `ocr_text`；否则若无含文本节点认领→追加 `ocr_only` 元素（i 顺延、带 center 可直接 tap）。
+- 无文本树场景：`ApiDemos .graphics.TextAlign`（canvas 绘制）——a11y 树仅 8 节点、零画布文本；OCR 产出 **13 个可编号 ocr_only 元素**（Left/Center/Right、Positioned×3、Along a pats 等）。
+- 有文本场景去重：ApiDemos 主列表 20 元素中仅 1 个 ocr_only（状态栏时钟 9:22，本就不在树内）——无重复污染。
+- 局限（诚实档）：psm11 对艺术字体误读（"Along a pats"）；状态栏/通知栏 OCR 噪声会进入列表；eng-only（无 chi_sim 语言包，中文界面 OCR 不适用）；单帧 ~1.5-2s（tesseract 本地 CPU），不适合高帧闭环但适合感知补全。
+- **判定 GO**：作为 `describe_screen ocr:true` 的 host 侧增强值得合入工具面——补全 canvas/image 文本盲区，几何融合成本极低。后续建议：`MIN_CONF` 阈值、chi_sim 语言包、与截图标注（screenshot_annotated）共用编号空间。
