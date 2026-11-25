@@ -1,7 +1,7 @@
 {
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-10-17/server.schema.json",
   "name": "io.github.mofanx/pilotdroid",
-  "description": "Android UI automation device agent: 30 MCP tools — tap/swipe/selector/watcher/stream + AI-native SoM (describe_screen/screenshot_annotated), push notifications, verify_after",
+  "description": "Android UI automation agent: 30 MCP tools — tap/watcher/stream + SoM, push, verify_after",
   "version": "0.7.0",
   "websiteUrl": "https://github.com/mofanx/pilotdroid",
   "repository": {

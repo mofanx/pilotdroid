@@ -524,3 +524,26 @@ NIE）」。`_XPathStub` 已删除；`hasattr` 探测语义由方法存在性
 | ⑥ 三件套+verify | **pass** | fmt/clippy(-D warnings)/`cargo test --workspace` **91/0**（facade 5 含 3 恢复用例、lib 19、cli 25 含更新后 dead_conn）；`verify-agent.sh ba0d072d` **37/0**。 |
 
 **附注（非阻塞硬化项）**：facade 恢复单测在 CI 首跑曾 flaky（`expected Recover, got Timeout`，rerun 即绿）——relay-fake 绑真实 localhost 端口+CI 慢机时序敏感，建议后续把 connect 超时放宽或打 `#[ignore]`-class 标记，非本次阻塞项。
+
+## §附10 t1 v0.7.0 发版列车 ledger（四面一致）
+
+- **tag**：`v0.7.0@68a8d16`（verify-tag PASS：tag=workspace=pyproject=0.7.0）。
+- **GitHub Release**：`release.yml` 45586521238 success → draft 7 assets
+  （linux/mac/win 三 bin + whl + sdist + agent.jar + SHA256SUMS.txt）→
+  notes 挂 `release-notes-v0.7.0.md` → **已 publish**（非 draft）。
+- **PyPI**：`pypi.yml` 45587024698 OIDC success → index `0.7.0` 可见。
+- **install-smoke**：`spike/e2e/install-smoke.sh ba0d072d` **9/0**——
+  venv `pip install pilotdroid==0.7.0`→bootstrap 下载+sha256 验证→
+  `pilotdroid-cli 0.7.0`、release 二进制对照 0.7.0、agent HELLO
+  ver=0.7.1 caps=0x7ff、serve tools/list 握手。
+- **MCP Registry**：`publisher` 登录刷新（JWT 过期→`login github
+  -token`）→ `io.github.mofanx/pilotdroid@0.7.0` published，registry
+  API 可查。**server.json 描述裁到 ≤100 字**（registry 422 校验）。
+- **Homebrew tap**：`hb-tap 5c244d6`——version+双 url 换 v0.7.0+
+  双 sha256 取自发布版 SHA256SUMS.txt。
+- **版本面 bump**：pyproject/Cargo.toml/server.json×2/install-smoke
+  VER 四处 0.6.4→0.7.0；doc-drift 6/6（smoke-ver 闸同步）。
+- **随行卫生**：som.py skipped 死变量清理；test_som +零高/双轴倒置
+  用例（pytest 92/92）。
+- **已知阻塞注记**：CI 首跑 facade `dead_agent_recovery_exhausted`
+  flaky 二度现身（rerun 绿）——硬化件归微批，ledger 附9 已注。
