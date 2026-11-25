@@ -583,3 +583,22 @@ notification 流中暂停、停流后恢复。facade 单测
 - **环境敏感注记**：ApiDemos 活动名/菜单文本按本机实测校准；
   `press_back` 需两连按（首按被 Light activity 吞）——已写进
   任务注释，非 shim 缺陷。
+
+## §附12 t5 复核——t2 微批三件（a1a0bc9）独立判定
+
+复核者逐条 diff `a1a0bc9` 全量（facade/stream/proto/serve/SUPPORTED/
+CHANGELOG）+ 真机独立复现两条路径 + 三件套/verify 重跑。
+
+| 复核项 | 判定 | 证据 |
+|---|---|---|
+| ① watch_id epoch 修复 | **pass** | `Session::generation` 于 `recover()` 成功重连后 +1（原位同 Session），serve 主循环顶置 epoch 检查→`armed.clear()`+`pending.retain(≠WatchHit)`——armed 无泄漏（重启即全死语义正确）；陈旧 hit 清除而 toast 保留合理。单测 `stale_armed_ids_dropped_on_recovery_epoch` 有效：fake 每 conn 独立 arm_seq 从 1 重分配+按 conn 计 disarm，断言 conn2 只见自己 arm 的 1 次 disarm（无修复时为 3）——确实钉住碰撞窗而非空转。**真机复现**：pull-only arm{2}→pkill→dump 1.06s 透明恢复→stderr 精确打出 `agent recovered — 1 stale armed watcher(s) dropped`→新 arm 得 watch_id=1（agent 重分配实证）→新 watcher 击发 notification 正常。 |
+| ② toast demux 分发 | **pass** | demux 臂 `MediaEvent::Toast` 直写 `notifications/pilotdroid/toast`（ambient 事件非 watcher-bound 恒 notify，写失败降级 `push_pending`）；`recv_event` 按 `type:"toast"` 判别 0x0002 同槽正确（hit 无 type 字段）。单测钉 params 三元组。**真机复现**：常驻 push watcher 保活 demux→PopupMenu1 点 Add→`{"has_parcel":false,"pkg":"io.appium.android.apis","text":["Clicked popup menu item Add"],"type":"toast"}` 精确到达。**边界注记**：toast notification 仅在 push watcher 保活 demux 期间流动（armed watcher 击发即摘除→demux 停→后至 toast 转 pull）——SUPPORTED 已载此语义，非缺陷。 |
+| ③ flaky 硬化合理性 | **pass（真修非掩盖）** | `dead_port` bind-即放→释放端口可被恢复阶梯 `free_port()` 复用为 relay→relay 自拨自连死循环→表现为 Timeout 而非预期 Recover（CI 首红 rerun 绿根因链完整）。`corpse_port` 常驻 accept-close：语义更贴近死 localabstract（dial 成、读即 EOF）且端口不再释放——消除竞态而非放宽断言（Recover/Timeout 断言目标原样）。`bind AddrInUse→Err` 让阶梯换端口重试，是测试基建健壮化非掩错。 |
+| ④ 三件套+verify | **pass** | fmt/clippy(-D warnings)/`cargo test --workspace` **94/0**（cli 27 含 2 新用例、facade 6）；`verify-agent.sh ba0d072d` **37/0**。 |
+
+**残留注记（非阻塞）**：(a) 显式 `watch_disarm{stale_id}` 客户端调用仍穿透至新
+agent——id 空间碰撞属协议固有，文档口径「id 按 epoch 绑定、需 re-arm」内
+的客户端误用，非服务端义务；(b) conn 被顶替（`dead`→session=None 重建）
+路径新 Session generation=0——若恰在顶替期间 agent 亦重启则 epoch 无信号，
+双故障叠加角例；(c) push watcher 媒体死时 `retain(!*p)` 先于 epoch 检查清
+场——语义一致（armed 空→无 warn）但使 warn 覆盖变窄，已实测确认。
