@@ -101,6 +101,38 @@ def test_watcher_when_text_call_hit():
         w.stop()
 
 
+def test_watcher_xpath_click_navigates():
+    """M27固化 ledger §附5 的真机路径——when(complex-xpath).click()
+    is a host-poll `_xpath` rule whose action re-evaluates _XPathLite
+    and inject-taps the first match (2b5a9fe fix). ApiDemos main list
+    'Accessibility' -> Accessibility submenu proves the tap landed."""
+    d = _require()
+    d.app_start("io.appium.android.apis", stop=True)
+    deadline = time.time() + 10
+    while "Accessibility" not in d.dump_hierarchy() \
+            and time.time() < deadline:
+        time.sleep(0.5)
+    w = d.watcher
+    w._rules.clear()
+    w.when("//*[contains(@text,'Accessibility')]").click()
+    w.start()
+    try:
+        deadline = time.time() + 12
+        while w._rules and time.time() < deadline:
+            time.sleep(0.4)
+        assert not w._rules, (f"xpath click rule never fired; "
+                              f"last_error={w.last_error}")
+        xml, deadline = d.dump_hierarchy(), time.time() + 5
+        while "Accessibility Node Querying" not in xml \
+                and time.time() < deadline:
+            time.sleep(0.4)
+            xml = d.dump_hierarchy()
+        assert "Accessibility Node Querying" in xml, (
+            "no navigation after xpath click — first-match tap missed")
+    finally:
+        w.stop()
+
+
 def main():
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     for fn in fns:

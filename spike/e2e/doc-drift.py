@@ -18,7 +18,7 @@ Checks (exit 0 = PASS):
      stale while SUPPORTED/README had already moved on — a structural
      miss this check now pins.
 """
-import re, sys, os
+import re, sys, os, subprocess
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 IGNORE = {"close"}
@@ -29,6 +29,8 @@ shim = open(os.path.join(ROOT, "compat/u2shim.py")).read()
 supported = open(os.path.join(ROOT, "compat/SUPPORTED.md")).read()
 
 fails = []
+
+changelog = open(os.path.join(ROOT, "CHANGELOG.md")).read()
 
 
 def rep(name, ok, detail=""):
@@ -79,6 +81,29 @@ sver = re.search(r'VER="\$\{PILOTDROID_SMOKE_VER:-([^}]+)\}"', smoke)
 rep("smoke-ver", bool(pyver and sver and sver.group(1) == pyver.group(1)),
     f"install-smoke VER={sver.group(1) if sver else 'NONE'} vs "
     f"pyproject={pyver.group(1) if pyver else 'NONE'}")
+
+# 5. CHANGELOG [Unreleased] must carry >=1 bullet once commits exist
+# past the latest release tag — release notes are sourced from this
+# hand-updated section and it silently lags (M26: 7 commits landed
+# post-tag with zero Unreleased coverage; caught only in review, this
+# gate turns the recurrence into a CI check). `git describe` can fail
+# on shallow clones that never fetched tags — there we cannot prove
+# staleness, so we note-and-pass rather than break CI.
+tag_r = subprocess.run(["git", "-C", ROOT, "describe", "--tags",
+                        "--abbrev=0"], capture_output=True, text=True)
+if tag_r.returncode != 0 or not tag_r.stdout.strip():
+    rep("changelog-unreleased", True,
+        "no tag reachable (shallow clone?) — skipped")
+else:
+    tag = tag_r.stdout.strip()
+    log_r = subprocess.run(["git", "-C", ROOT, "log",
+                            f"{tag}..HEAD", "--oneline"],
+                           capture_output=True, text=True)
+    n_new = len([l for l in log_r.stdout.splitlines() if l.strip()])
+    sec = changelog.split("## [Unreleased]", 1)[1].split("\n## ", 1)[0]
+    n_bullets = len(re.findall(r"^\s*[-*] ", sec, re.M))
+    rep("changelog-unreleased", n_new == 0 or n_bullets >= 1,
+        f"{n_new} commit(s) since {tag}; Unreleased bullets={n_bullets}")
 
 print(f"{'PASS' if not fails else 'FAIL'}: {len(fails)} check(s) failed" +
       (f" {fails}" if fails else ""))

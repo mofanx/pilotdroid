@@ -23,6 +23,13 @@ worked examples from that cycle.
       `docs/release-notes-<tag>.md` content. If a retag rebuilt the
       draft after notes were applied, re-run
       `gh release edit v<VER> --notes-file docs/release-notes-<tag>.md`.
+- [ ] `CHANGELOG.md` `[Unreleased]` covers every **user-facing** commit
+      in `git log v<prev-tag>..HEAD` before that range is folded into
+      `## [<VER>]`. The `changelog-unreleased` doc-drift gate only
+      catches a fully-empty section — coverage completeness is still
+      this human step (M26: 7 commits landed post-tag with zero
+      Unreleased coverage; the wrong "0.6.3 shipped defect" label on
+      the click fix was caught only in review).
 
 ## The five user steps
 
