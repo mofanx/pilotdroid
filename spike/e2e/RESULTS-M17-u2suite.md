@@ -709,3 +709,22 @@ ghost-conn 修复条目（doc-drift 第 5 闸会随 commit 检查）；`resvWrot
 - 入库后验证：doc-drift **6/6 PASS**（changelog 第 5 闸含新条目）；
   ghost_repro 复跑 8/8；CI `45607557629` + CodeQL `45607557417`
   **双 success**。
+
+## 附16 v0.7.1 patch 发版列车（2026-11-25）
+
+| 步 | 证据 |
+|---|---|
+| bump×4 | Cargo workspace/pyproject/server.json/install-smoke VER →0.7.1（`917e3e5`；Cargo.lock 首发误伤上游 pem-rfc7468 锁定版本，`b34e1a5` 还原并 retag——tag-follow 实证） |
+| notes | `docs/release-notes-v0.7.1.md`：agent.jar **0.7.1→0.7.2** 随行说明+ghost 修复诚实档（非纯 Rust 修复），limits 沿用 0.7.0 口径 |
+| tag→draft | `v0.7.1@b34e1a5` → release.yml 2m46s success → draft 7 assets（linux/macos/windows bin+whl+sdist+agent.jar+SHA256SUMS），agent.jar sha256 `22431f80…` 与提交 jar 逐字节一致 |
+| PyPI | pypi.yml `45616131367` success（OIDC）；索引传播 ~1min 延迟后 `pip install pilotdroid==0.7.1` 成功 |
+| install-smoke | `install-smoke.sh ba0d072d` **9/9**——真机 `hello ver=0.7.2 caps=0x7ff` 实证内嵌 jar 随件 |
+| Registry | `mcp-publisher publish`（v1.8.9 客户端，github token auth）→ `io.github.mofanx/pilotdroid@0.7.1` published |
+| tap | `mofanx/homebrew-pilotdroid` `558cdac`——version/urls/sha256×2 随 SHA256SUMS 更新 |
+
+**随行 docs**：`docs/02-protocol.md` §4.8 新增 conn 生命周期判别段——
+「单向通道上成功写过 ≥1 次是唯一可靠活性证据」+`LocalSocket`
+read-timeout 探针证伪记；`AGENTS.md` 新增 fake relay 半关闭保真度
+注记（db62975 flake 根治的教训外化）。
+
+CI+CodeQL 于 `b34e1a5`/`917e3e5`（lock 修复后）持续 success。
