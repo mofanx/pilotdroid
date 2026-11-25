@@ -36,6 +36,11 @@ query, shorthand+ElementPath subset, advanced axes NIE).
 import os, re, socket, subprocess, sys, threading, time, types
 import xml.etree.ElementTree as ET
 
+try:  # packaged as pilotdroid.u2shim (relative) or bare u2shim (compat/)
+    from .xpath_eval import eval_xpath, _NIE, _parse_step, _split_steps
+except ImportError:
+    from xpath_eval import eval_xpath, _NIE, _parse_step, _split_steps
+
 try:
     from .agent_client import (Agent, media_connect,  # installed `pilotdroid` package
                                read_frame)
@@ -1471,8 +1476,6 @@ class Session:
 # set + the ElementPath subset; advanced axes/predicates raise
 # NotImplementedError honestly (compat/SUPPORTED.md xpath row).
 
-_XP_CONTAINS = re.compile(
-    r"^\.//(\*|[\w-]+)\[contains\(@([\w-]+),\s*['\"]([^'\"]+)['\"]\)\]$")
 _XP_EQ = re.compile(
     r"^//(\*|[\w-]+)\[@([\w-]+)=['\"]([^'\"]+)['\"]\]$")
 _XP_CONTAINS_ABS = re.compile(
@@ -1506,15 +1509,11 @@ def _xp_eval(root, x):
         x = f".//*[@resource-id='{x}']"
     elif not x.startswith((".", "(")):
         x = f".//*[@text='{x}']"
-    m = _XP_CONTAINS.match(x)
-    if m:  # ET has no function calls — contains() gets a custom pass
-        tag, attr, val = m.groups()
-        return [e for e in root.iter(tag) if val in (e.get(attr) or "")]
     try:
-        return root.findall(x)
-    except SyntaxError as e:
+        return eval_xpath(root, x)
+    except _NIE as e:
         raise NotImplementedError(
-            f"u2shim: xpath-lite subset only — {x!r} unsupported") from e
+            f"u2shim: xpath-lite {e}") from e
 
 
 def _xp_match(el, x):
@@ -1542,6 +1541,15 @@ def _xp_match(el, x):
                         and (val in (el.get(attr) or "")
                              if pat is _XP_CONTAINS_ABS
                              else el.get(attr) == val))
+        try:  # new grammar: single-step '//tag[preds]' as predicate
+            steps = _split_steps(x[2:])
+            if len(steps) == 1:
+                _, tag, preds = _parse_step(steps[0][1])
+                return (tag in ("*", el.tag)
+                        and all(p(el) for p in preds
+                                if not isinstance(p, int)))
+        except Exception:
+            pass
         raise NotImplementedError(
             f"u2shim: ancestor match {x!r} unsupported")
     return el.get("text") == x

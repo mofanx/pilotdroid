@@ -35,9 +35,13 @@ d.screenshot("shot.jpg", scale=0.5)
 ## Supported selector keys
 
 `text, resourceId, description, className, packageName, scrollable, index`
-(AND semantics; `index` = nth match). `xpath` is a **host-side
-approximation** (xpath-lite: one a11y dump + ElementTree per query —
-text/`@id`/`%fuzzy%`/`//*[@attr]`/`contains()`/`parent()`/`scroll_to`;
-advanced axes raise `NotImplementedError`. Not the u2 plugin pipeline).
+(AND semantics; `index` = nth match). `xpath` is **host-side
+evaluation** (xpath-lite, upgraded Track B: one a11y dump + a
+stdlib-only evaluator per query — text/`@id`/`%fuzzy%`/`//`,`/` steps,
+axes `child`/`descendant`/`ancestor`/`parent`/`following-sibling`/
+`preceding-sibling`, predicates `[@a='v']`/`contains()`/`and`/`or`/
+`[n]`/union `|`, `parent()`/`scroll_to`; `last()`/`position()`/
+`text()`/non-sibling `following::` etc raise `NotImplementedError`.
+Not the u2 plugin pipeline).
 
 See `compat/u2shim.py` docstring for the full covered API surface.

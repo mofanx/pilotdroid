@@ -333,10 +333,23 @@ class TestXPathLite(unittest.TestCase):
         self.assertEqual(len(u2shim._xp_eval(
             root, "//*[contains(@text,'Alarm')]")), 1)
 
+    def test_supported_axes_no_longer_nie(self):
+        # Track B: and/or + axes are in the common surface now
+        root = ET.fromstring(self._XML)
+        self.assertEqual(len(u2shim._xp_eval(
+            root, "//node[@text='App' and @index='0']")), 1)
+        self.assertEqual(len(u2shim._xp_eval(
+            root, "//node[@text='App' or @text='Nope']")), 1)
+        self.assertEqual(u2shim._xp_eval(
+            root, "//node[@text='App']/parent::node")[0]
+            .get("resource-id"), "android:id/list")
+        self.assertEqual(len(u2shim._xp_eval(
+            root, "//*[contains(@text,'App') and @bounds]")), 1)
+
     def test_unsupported_axis_raises_nie(self):
         root = ET.fromstring(self._XML)
-        for bad in ["//x[position()=1]", "//x[contains(@a,'b') and @c]",
-                    "//parent::node"]:
+        for bad in ["//x[position()=1]", "//x[last()]",
+                    "//x[text()='y']", "//x/following::*"]:
             with self.assertRaises(NotImplementedError, msg=bad):
                 u2shim._xp_eval(root, bad)
 
@@ -413,9 +426,94 @@ class TestXPathLite(unittest.TestCase):
         w.when("//*[contains(@text,'x')]").call(lambda: None)
         self.assertEqual(w._rules[-1][0]["_xpath"],
                          "//*[contains(@text,'x')]")
-        # beyond the xpath-lite subset → still fail-fast NIE
+        # and/or now evaluable → host-poll rule (Track B)
+        w.when("//*[@a='1' and @b='2']").call(lambda: None)
+        self.assertEqual(w._rules[-1][0]["_xpath"],
+                         "//*[@a='1' and @b='2']")
+        # still beyond the subset → fail-fast NIE
         with self.assertRaises(NotImplementedError):
-            w.when("//*[@a='1' and @b='2']")
+            w.when("//*[position()=1]")
+
+
+class TestXPathAxes(unittest.TestCase):
+    """Track B — axes/predicates/position over the dump tree
+    (u2 常见面: sibling/ancestor/parent/descendant + [n] + and/or)."""
+
+    _XML = (
+        '<hierarchy>'
+        '<node class="ListView" resource-id="android:id/list">'
+        '<node text="A" index="0" clickable="true"/>'
+        '<node text="B" index="1"/>'
+        '<node class="Button" text="C" index="2"/>'
+        '</node>'
+        '<node text="Foot" index="0"/>'
+        '</hierarchy>')
+
+    def _e(self, x):
+        return u2shim._xp_eval(ET.fromstring(self._XML), x)
+
+    def test_positional_predicate(self):
+        hits = self._e("//node[@resource-id='android:id/list']/node[2]")
+        self.assertEqual(hits[0].get("text"), "B")
+        hits = self._e("//node[@resource-id='android:id/list']"
+                       "/node[@class='Button'][1]")
+        self.assertEqual(hits[0].get("text"), "C")
+        self.assertEqual(
+            self._e("//node[@resource-id='android:id/list']/node[9]"), [])
+
+    def test_sibling_axes(self):
+        got = [e.get("text") for e in
+               self._e("//node[@text='A']/following-sibling::*")]
+        self.assertEqual(got, ["B", "C"])
+        got = [e.get("text") for e in
+               self._e("//node[@text='C']/preceding-sibling::*")]
+        self.assertEqual(got, ["A", "B"])
+        # sibling axis with tag filter + position
+        got = self._e("//node[@text='A']"
+                      "/following-sibling::node[@text='C']")
+        self.assertEqual(len(got), 1)
+
+    def test_ancestor_parent_descendant(self):
+        anc = self._e("//node[@text='B']/ancestor::*")
+        self.assertEqual([e.get("resource-id") or "hierarchy"
+                          for e in anc],
+                         ["android:id/list", "hierarchy"])
+        self.assertEqual(self._e(
+            "//node[@text='B']/ancestor::node[@class='ListView']")
+            [0].get("resource-id"), "android:id/list")
+        self.assertEqual(self._e("//node[@text='B']/parent::*")
+                         [0].get("class"), "ListView")
+        self.assertEqual(len(self._e(
+            "//node[@class='ListView']/descendant::*")), 3)
+
+    def test_and_or_contains_not(self):
+        self.assertEqual(len(self._e(
+            "//node[@text='A' and @clickable='true']")), 1)
+        self.assertEqual(len(self._e(
+            "//node[@text='A' and @clickable='false']")), 0)
+        self.assertEqual(len(self._e(
+            "//node[@text='A' or @text='C' or @text='Foot']")), 3)
+        self.assertEqual(len(self._e(
+            "//node[@index='0' or @index='1' and @text='B']")), 3)
+        self.assertEqual(len(self._e(
+            "//node[contains(@text,'o') and @clickable='true']")), 0)
+        self.assertEqual(len(self._e(
+            "//node[not(@clickable='true') and @text]")), 3)
+
+    def test_nested_path_and_union(self):
+        self.assertEqual(len(self._e(
+            "//node[@class='ListView']//node[@text='C']")), 1)
+        self.assertEqual(len(self._e(
+            "//node[@text='A'] | //node[@text='Foot']")), 2)
+
+    def test_parent_x_match_new_predicates(self):
+        # .parent(x) arg accepts single-step '//tag[preds]' forms now
+        d = u2shim.Device.__new__(u2shim.Device)
+        d.dump_hierarchy = lambda: self._XML
+        p = d.xpath("B").parent(
+            "//node[@class='ListView' or @class='X']")
+        self.assertIsNotNone(p)
+        self.assertEqual(p.info["resourceId"], "android:id/list")
 
 
 class TestImplicitlyWaitDual(unittest.TestCase):

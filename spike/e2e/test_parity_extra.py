@@ -133,6 +133,77 @@ def test_watcher_xpath_click_navigates():
         w.stop()
 
 
+def test_xpath_full_axes_real_device():
+    """Track B — axes/and-or/[n] evaluate on the real ApiDemos dump
+    (was NIE pre-upgrade). Main list: 'Accessibility' sits between
+    'App' and 'Animation' — ancestor/sibling/position probes + a
+    sibling-axis tap that must land on Animation's submenu."""
+    d = _require()
+    d.app_start("io.appium.android.apis", stop=True)
+    deadline = time.time() + 10
+    while "Accessibility" not in d.dump_hierarchy() \
+            and time.time() < deadline:
+        time.sleep(0.5)
+    # and/or + contains predicate
+    assert d.xpath("//*[@text='Accessibility' and @index='0']"
+                   ).exists, "and-predicate missed Accessibility row"
+    assert d.xpath("//*[contains(@text,'Access') or "
+                   "@text='NoSuchThing']").exists
+    # ancestor axis resolves the android:id/list container
+    anc = d.xpath("//*[@text='Accessibility']"
+                  "/ancestor::*[@resource-id='android:id/list']").all()
+    assert anc, "ancestor::*[@resource-id] found no list parent"
+    # [n] positional predicate: first row of the main list
+    first = d.xpath("//node[@resource-id='android:id/list']"
+                    "/node[1]").all()
+    assert first and first[0].get_text() == "Accessibility", (
+        f"position[1] got {first[0].get_text() if first else None!r}")
+    # following-sibling axis lands on Animation; tap proves the
+    # coordinate path through the new grammar
+    sib = d.xpath("//*[@text='Accessibility']"
+                  "/following-sibling::node[@text='Animation']").all()
+    assert sib, "following-sibling::node[@text='Animation'] missed"
+    sib[0].click()
+    xml, deadline = d.dump_hierarchy(), time.time() + 5
+    while "Bouncing Balls" not in xml and time.time() < deadline:
+        time.sleep(0.4)
+        xml = d.dump_hierarchy()
+    assert "Bouncing Balls" in xml, (
+        "sibling-axis click missed Animation submenu")
+
+
+def test_watcher_xpath_new_grammar_navigates():
+    """Track B t9⑤ — `when(xpath)` host-poll path benefits from the
+    new grammar automatically: compound and/or xpath rule fires and
+    its click lands (same nav proof as the M27 test)."""
+    d = _require()
+    d.app_start("io.appium.android.apis", stop=True)
+    deadline = time.time() + 10
+    while "Accessibility" not in d.dump_hierarchy() \
+            and time.time() < deadline:
+        time.sleep(0.5)
+    w = d.watcher
+    w._rules.clear()
+    w.when("//node[@text='Accessibility' and @index] | "
+           "//node[@text='NoSuchX']").click()
+    w.start()
+    try:
+        deadline = time.time() + 12
+        while w._rules and time.time() < deadline:
+            time.sleep(0.4)
+        assert not w._rules, (f"new-grammar xpath rule never fired; "
+                              f"last_error={w.last_error}")
+        xml, deadline = d.dump_hierarchy(), time.time() + 5
+        while "Accessibility Node Querying" not in xml \
+                and time.time() < deadline:
+            time.sleep(0.4)
+            xml = d.dump_hierarchy()
+        assert "Accessibility Node Querying" in xml, (
+            "no navigation after new-grammar xpath click")
+    finally:
+        w.stop()
+
+
 def test_som_describe_screen_consistency():
     """Track A SoM-lite — describe_screen element set must equal an
     INDEPENDENT re-filter of the raw dump: same count, same bounds,

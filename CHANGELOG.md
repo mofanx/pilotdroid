@@ -33,6 +33,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   batch/verify 递归与 stream/watch 生命周期）。真机实测
   `press HOME → layout_changed:true → pass`。
 
+- **xpath-lite → 常见面全量求值器**（Track B，`compat/xpath_eval.py`
+  新模块，stdlib-only——dump 树即「融合树」前置形态，SoM 融合后
+  复用同一求值器）：axes `child`/`descendant`/`ancestor(-or-self)`/
+  `parent`/`self`/`following-sibling`/`preceding-sibling`、谓词
+  `[@a='v']`/`[@a]`/`[@a!='v']`/`contains`/`starts-with`/`ends-with`/
+  `not(...)`、`and`/`or`（标准优先级）、`[n]` 位置谓词（1-based，
+  per-context）、union `|`——原 NIE 面转实现；`last()`/`position()`/
+  `text()`/非 sibling `following::`/`preceding::`/数值比较仍显式
+  NIE（SUPPORTED.md 附清单，xpath 行升级「常见面无星号平齐」）。
+  `parent(x)` 谓词参数、`when(xpath)` host-poll 规则自动受益。
+  真机 ba0d072d：`/node[1]` 位置、`ancestor::*[@resource-id]`、
+  `following-sibling::node` 命中并点击落点导航进 Animation 子菜单；
+  `when(xpath|xpath).click()` 新语法规则触发导航进 Accessibility。
+
 ### Fixed
 
 - **SoM annotated 倒置/退化 bounds 崩溃修复**（M28 复核实锤）：
