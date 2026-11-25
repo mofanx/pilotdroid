@@ -8,6 +8,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **SoM annotated 倒置/退化 bounds 崩溃修复**（M28 复核实锤）：
+  真实 dump 含倒置 bounds（MIUI 屏底裁切区，实测单屏 27/97
+  元素）→ PIL rectangle `ValueError: y1 must be greater than or
+  equal to y0`。`screenshot_annotated` 绘制前 min/max 归一化
+  +零面积框跳过；编号空间不变（`_enumerate` 同一调用）。parity
+  补 `test_som_screenshot_annotated_no_throw` 真机断言堵覆盖洞。
+
 - **SoM-lite 宿主侧感知奠基**（Track A·M28，`compat/som.py` 新模块，
   **shim 面先行**——MCP serve 工具暴露留后续波次）：
   `describe_screen(dev)` 产出 token 预算友好的编号映射

@@ -107,6 +107,39 @@ class TestScreenshotAnnotated(unittest.TestCase):
         self.assertTrue(any(p != (255, 255, 255)
                             for p in img.getdata()))
 
+    def test_inverted_and_zero_area_bounds_no_crash(self):
+        """MIUI emits inverted bounds (e.g. [92,3236][217,3200] on
+        bottom-clipped nodes — 27/97 real elements). Drawing must
+        normalize or skip, never raise ValueError."""
+        try:
+            from PIL import Image  # noqa: F401
+        except ImportError:
+            self.skipTest("no Pillow")
+        xml = """<hierarchy>
+<node text="inv" bounds="[92,600][217,550]" clickable="true"
+      class="android.widget.TextView" resource-id="" content-desc=""
+      package="p" checkable="false" checked="false" enabled="true"
+      focusable="false" focused="false" scrollable="false"
+      long-clickable="false" password="false" selected="false" index="0"/>
+<node text="zero" bounds="[10,10][10,200]" clickable="true"
+      class="android.widget.TextView" resource-id="" content-desc=""
+      package="p" checkable="false" checked="false" enabled="true"
+      focusable="false" focused="false" scrollable="false"
+      long-clickable="false" password="false" selected="false" index="1"/>
+<node text="ok" bounds="[20,20][120,80]" clickable="true"
+      class="android.widget.TextView" resource-id="" content-desc=""
+      package="p" checkable="false" checked="false" enabled="true"
+      focusable="false" focused="false" scrollable="false"
+      long-clickable="false" password="false" selected="false" index="2"/>
+</hierarchy>"""
+        dev = FakeDev(xml, shot=self._jpeg())
+        data = som.screenshot_annotated(dev)  # must not raise
+        img = Image.open(io.BytesIO(data))
+        self.assertTrue(any(p != (255, 255, 255) for p in img.getdata()))
+        # numbering still dense over the same enumerate (incl. skipped)
+        self.assertEqual([e["id"] for e in som._enumerate(xml)],
+                         [1, 2, 3])
+
     def test_deterministic_ids_match_describe(self):
         try:
             from PIL import Image  # noqa: F401

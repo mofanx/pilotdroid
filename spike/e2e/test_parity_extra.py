@@ -158,6 +158,29 @@ def test_som_describe_screen_consistency():
             f"id#{e['id']} bounds mismatch vs raw dump")
 
 
+def test_som_screenshot_annotated_no_throw():
+    """Real screens carry inverted/degenerate bounds (27/97 measured
+    on ba0d072d) — annotated must normalize/skip, never ValueError.
+    Asserts valid JPEG back and same numbering space as describe."""
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__),
+                                    "..", "..", "compat"))
+    import som
+    d = _require()
+    try:
+        from PIL import Image
+    except ImportError:
+        if pytest:
+            pytest.skip("no Pillow")
+        print("SKIP: no Pillow")
+        return
+    data = som.screenshot_annotated(d)  # would ValueError pre-fix
+    img = Image.open(__import__("io").BytesIO(data))
+    assert img.format == "JPEG" and img.size[0] > 0
+    out = som.describe_screen(d)
+    raw_ids = [e["id"] for e in out["elements"]]
+    assert raw_ids == list(range(1, len(raw_ids) + 1))
+
+
 def main():
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     for fn in fns:
