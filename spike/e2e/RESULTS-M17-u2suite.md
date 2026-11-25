@@ -457,3 +457,55 @@ NIE）」。`_XPathStub` 已删除；`hasattr` 探测语义由方法存在性
   齐备+本机物理上限，非工程缺口）。
 - **回归**：cargo fmt+clippy(-D warnings)+test 全绿；
   `verify-agent.sh ba0d072d` **37/0**；doc-drift 6/6 PASS。
+
+## §附8 M29 复核（Track A MCP 面：SoM 工具/watch push demux/verify_after，commit 9400b4d）
+
+复核者逐项独立复验（非自报转录）：
+
+- **demux 写锁交错——pass（构造性防撕裂）**：serve 改单写者循环——
+  stdin→mpsc channel 读线程只做读，stdout 仅主循环写；notification
+  帧（`notifications/pilotdroid/watch_hit`）只在两次 response 之间
+  写出，结构性不可能与 response 帧交错。单测
+  `watch_push_hit_arrives_as_notification` 逐行 JSON 解析断言
+  notification 作为独立完整行到达；本复核者真机复跑同见
+  （watch_id=17 → notification params.matched=true）。
+- **断开 disarm 生命周期——pass**：client stdin EOF→
+  `rx.recv_timeout` Disconnected → break → loop 尾部对全部
+  `armed.keys()` 逐个 `watch_disarm`（agent 侧 conn close 亦有
+  reap——双保险）。单测 `watch_push_eof_disarms_armed` 计数
+  fake-agent 收到 disarm；本复核者真机复跑：serve EOF 退出 rc=0
+  →新会话 `watch_disarm(wid=18)` → `{disarmed:false}` 无残留。
+- **缓冲降级路径——pass**：非 push watcher 命中被 demux 消费后入
+  `pending`（PENDING_CAP=64 防膨胀）→`watch_events` 先 drain
+  pending 再 live `watch_recv`；单测
+  `watch_push_mixed_hit_buffers_to_watch_events` 钉 push→
+  notification / non-push→pullable。media socket 错误→
+  `armed.retain(!push)` 停轮询、拉路径报错（明示降级）。stream
+  激活期 demux 暂停（hit 与帧共享 ch=1，命中 agent 侧暂存）——
+  注释与代码一致。
+- **SoM MCP 与 shim 编号空间一致性——pass**：`som.rs.enumerate`
+  与 `compat/som.py._enumerate` 逐字同语义（ATTRS/FLAGS/稠密
+  id/中心 div_euclid floor 对齐 Python //）。真机同屏实测：
+  **rust_n=18 == py_n=18，id 1..18 稠密，逐元素 bounds 全等**。
+  annotated 395KB JPEG magic 正确；倒置/退化 bounds 归一化+跳过
+  策略与 Python 侧同（t6 修复语义在 Rust 复刻）。
+- **verify_after 语义——pass**：VERIFY_OPS 白名单限副作用+读 op
+  （不含 batch/verify_after 递归、stream/watch 生命周期）；
+  action 死链→显式 BrokenPipe 返回（不虚报 pass）；action
+  isError→`a_ok:false` 参与总判但 checks 仍跑（如实报告）；
+  layout_changed 双侧 signature 任一缺→pass=false（fail closed）。
+  真机实测 press HOME→settle→layout_changed:true→pass:true。
+- **真机端到端三场景——pass**：tools/list=30（三新工具在册）；
+  describe_screen 编号一致性同上；watch push notification
+  真达；EOF disarm 无残留。
+- **回归**：cargo fmt/clippy(-D warnings)/test workspace
+  **88/0 全绿**；`verify-agent.sh ba0d072d` **37/0**。
+- **复核过程自纠注记**：本复核者首轮 e2e 误报「push 未达」——
+  实因 arm 目标文本 'Accessibility' 不在屏（前测导航残留
+  Animation 子菜单，app_start 无 stop 语义不重置），selector
+  真缺席非代码缺陷；改为屏上实存文本后一次通过。
+- **nit（非阻塞）**：`uiEvent` 在 pendOut==null 时静默丢命中
+  （fire-once 已消费）——arm→agent accept 毫秒窗口理论存在，
+  注释已明示「No media conn = event dropped」；serve 侧
+  watch_attach 先于 arm 已把窗口压到极小，shim watcher 全历史
+  未踩到，如实注记不改。
