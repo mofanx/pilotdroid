@@ -736,6 +736,20 @@ class TestDetectPortSerialBackfill(unittest.TestCase):
             u2shim._detect_port(None)
         self.assertIn("PILOTDROID_SERIAL", str(e.exception))
 
+    def test_explicit_serial_no_forward_skips_probe(self):
+        # forward row exists only for ANOTHER serial → serial-specific
+        # error; the 17932 probe is skipped so a conn can't pair with a
+        # `-s` flag aimed at different devices (M27 ledger edge).
+        self._patch(fwd="11.0.0.2:5555 tcp:27932 "
+                    "localabstract:pilotdroid_agent\n")
+        orig = u2shim.Agent
+        u2shim.Agent = lambda port: (_ for _ in ()).throw(OSError())
+        self.addCleanup(lambda: setattr(u2shim, "Agent", orig))
+        with self.assertRaises(RuntimeError) as e:
+            u2shim._detect_port("ba0d072d")
+        self.assertIn("ba0d072d", str(e.exception))
+        self.assertNotIn("not alive", str(e.exception))
+
 
 class TestMaxFiresParam(unittest.TestCase):
     """M26 — `call(fn, max_fires=N)`/`click(max_fires=N)` public
@@ -760,6 +774,13 @@ class TestMaxFiresParam(unittest.TestCase):
         kw, action = w._rules[0]
         self.assertIn("_xpath", kw)
         self.assertEqual(action._pd_max_fires, 4)
+
+    def test_max_fires_below_one_raises(self):
+        w = u2shim._Watcher(_bare_device())
+        with self.assertRaises(ValueError):
+            w.when(text="x").call(lambda: None, max_fires=0)
+        with self.assertRaises(ValueError):
+            w.when(text="x").click(max_fires=-1)
 
 
 if __name__ == "__main__":

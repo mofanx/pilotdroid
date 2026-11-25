@@ -8,11 +8,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
-- **`watcher.when("//xpath").click()` 静默失效**（M26，v0.6.3
-  已发件缺陷）：`_xpath` 哨兵键被传入 `_Selector` → `ValueError`
-  被 watcher 循环吞掉 → 点击永不执行且规则被摘除。现 xpath
-  规则在命中时 eval xpath、点击首个匹配节点中心；match 与
-  action 之间节点消失（弹窗已关）为静默 no-op 不杀规则。
+- **`watcher.when("//xpath").click()` 静默失效**（M26——`_xpath`
+  哨兵系 post-0.6.3 main 的 7193b94 引入，未发件即在
+  2b5a9fe 修复）：`_xpath` 哨兵键被传入 `_Selector` →
+  `ValueError` 被 watcher 循环吞掉 → 点击永不执行且规则被
+  摘除。现 xpath 规则在命中时 eval xpath、点击首个匹配节点
+  中心；match 与 action 之间节点消失（弹窗已关）为静默
+  no-op 不杀规则。
+- **`Device()` 无 serial 多设备静默失败**（M26，v0.6.3 wheel
+  真实携带）：`adb forward --list` 行解析丢弃 serial →
+  `serial=None` 下 adb 全调用命中 "more than one
+  device/emulator" 静默 rc=1 空输出。现 `_detect_port` 返回
+  `(serial, port)`：唯一 forward 行 backfill（u2 `connect()`
+  首台语义）、多台都有 forward → 指引性错误、无 forward →
+  `adb devices` 恰一台 adopt/多台报错；serial 显式给定且无
+  该机 forward 行时跳过 17932 兜底探测（防 conn 与 `-s`
+  跨机错配）。
 
 ### Added
 
@@ -24,6 +35,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   但 xpath-lite 可求值的 xpath 从 NIE 降级为 `_xpath` 哨兵
   规则——每 tick 一次 dump 由 `_XPathLite.exists` 判定；
   连 lite 子集都拒绝的表达式仍 fail-fast NIE。
+- **`call/click(max_fires=N)` 公开参数**（M26）：用户 watcher
+  规则的 re-arm 预算——`when(...).call(fn, max_fires=N)` 与
+  `.click(max_fires=N)` 透传 `_pd_max_fires`（xpath 规则路径
+  与 builtin `_WatchContext` 走同一通道）；`max_fires<1` 抛
+  ValueError。
 
 ### Changed
 
@@ -36,6 +52,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `install-smoke.sh` 默认 `VER`→0.6.3；`docs/PUBLISH.md`
   checklist 新增 Required「smoke VER bump」步；
   `RESULTS-M22-release.md` 补 v0.6.3 发布链 ledger。
+- M26 内部批：`doc-drift.py` 新增 smoke-ver 闸
+  （install-smoke `VER` 默认值==`pyproject` version）；新增
+  `spike/e2e/test_parity_extra.py` 真机断言 4 面
+  （implicitly_wait 往返/selector 枚举/count 一致/watcher
+  call 命中）；README 加 u2 定位段（API 子集+verbatim
+  22/0/8 实测+偏差见 SUPPORTED）。
 
 ## [0.6.3] — 2026-11-25
 

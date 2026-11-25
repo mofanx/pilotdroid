@@ -598,6 +598,8 @@ class _WhenCtx:
                 _Selector(self._w.dev, **self.kw).click()
             action._pd_click = True  # armed device-side: don't re-click
         if max_fires is not None:
+            if max_fires < 1:
+                raise ValueError("max_fires must be >= 1")
             action._pd_max_fires = max_fires
         self._w._rules.append((self.kw, action))
         return self._w
@@ -607,6 +609,8 @@ class _WhenCtx:
         match (test_xpath::test_watcher uses this). `max_fires=N` makes
         the rule re-arm up to N hits (default fire-once)."""
         if max_fires is not None:
+            if max_fires < 1:
+                raise ValueError("max_fires must be >= 1")
             func._pd_max_fires = max_fires
         self._w._rules.append((self.kw, func))
         return self._w
@@ -1739,6 +1743,13 @@ def _detect_port(serial=None):
                 "`pilotdroid-cli -s <serial> setup`")
         if devs:
             serial = devs[0]
+    else:
+        raise RuntimeError(
+            f"u2shim: no pilotdroid_agent forward found for serial "
+            f"{serial!r} — run `pilotdroid-cli -s {serial} setup` (the "
+            "17932 fallback probe is skipped: a live port there may be "
+            "forwarded to a different device, leaving conn and `-s` "
+            "calls pointed at different targets)")
     for port in (17932,):
         try:
             Agent(port).connect().close()
