@@ -59,7 +59,7 @@ def _lex_pred(s):
         c = s[i]
         if c.isspace():
             i += 1
-        elif c in "[],()=@":
+        elif c in "[],()=@!":
             toks.append(c)
             i += 1
         elif c in "'\"":
@@ -68,7 +68,7 @@ def _lex_pred(s):
             i = j + 1
         else:
             j = i
-            while j < len(s) and s[j] not in "[],()=@'\" \t":
+            while j < len(s) and s[j] not in "[],()=@!'\" \t":
                 j += 1
             toks.append(s[i:j])
             i = j
@@ -122,10 +122,14 @@ def _primary(p):
             p.eat()
             v = _lit(p)
             return lambda el: _attr_val(el, name) == v
-        if p.peek() == "!=":
+        if p.peek() == "!" or p.peek() == "!=":
             p.eat()
+            p.eat("=")  # '!' and '=' lex as separate tokens
             v = _lit(p)
-            return lambda el: _attr_val(el, name) != v
+            # XPath: @a!='v' is false when @a is ABSENT (node-set
+            # comparison) — not(@a='v') would be true. Keep them apart.
+            return lambda el: el.get(name) is not None \
+                and _attr_val(el, name) != v
         return lambda el: el.get(name) is not None
     if tok in ("contains", "starts-with", "ends-with"):
         p.eat("(")
@@ -265,7 +269,7 @@ def eval_xpath(root, expr):
         raise _NIE(f"xpath must start with / or //: {expr!r}")
     for bad in ("last()", "position()", "text()", "comment()",
                 "namespace::", "attribute::", "following::",
-                "preceding::", "<=", ">=", "!= '", "' <", "' >"):
+                "preceding::", "<=", ">=", "' <", "' >"):
         if bad in x:
             raise _NIE(f"xpath-lite: {bad.strip()!r} unsupported "
                        f"(in {expr!r})")
@@ -288,12 +292,31 @@ def eval_xpath(root, expr):
                 else:
                     cand = _axis_nodes(root, pmap, ctx, axis)
                 cand = [e for e in cand if tag in ("*", e.tag)]
-                for pr in preds:
-                    if isinstance(pr, int):
-                        cand = cand[pr - 1:pr] if 0 < pr <= len(cand) \
-                            else []
-                    else:
-                        cand = [e for e in cand if pr(e)]
+                if axis == "descendant-all" and \
+                        any(isinstance(pr, int) for pr in preds):
+                    # `//x[n]` is per spec /descendant-or-self::node()/
+                    # child::x[n] — position counts within each parent's
+                    # child set, not the flat document-order list.
+                    groups = {}
+                    for e in cand:
+                        groups.setdefault(id(pmap.get(e)), []).append(e)
+                    keep = set()
+                    for g in groups.values():
+                        for pr in preds:
+                            if isinstance(pr, int):
+                                g = g[pr - 1:pr] if 0 < pr <= len(g) \
+                                    else []
+                            else:
+                                g = [e for e in g if pr(e)]
+                        keep.update(id(e) for e in g)
+                    cand = [e for e in cand if id(e) in keep]
+                else:
+                    for pr in preds:
+                        if isinstance(pr, int):
+                            cand = cand[pr - 1:pr] if 0 < pr <= len(cand) \
+                                else []
+                        else:
+                            cand = [e for e in cand if pr(e)]
                 out.extend(cand)
             ctxs = out
         results.extend(ctxs)

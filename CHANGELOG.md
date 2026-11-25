@@ -49,6 +49,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **xpath_eval 两缺陷返工**（t9 实现复盘实锤）：
+  ① `[@a!='v']` 谓词静默空集——lexer 分隔符集漏 `!`，`a!`
+  被粘连为属性名致恒假；现 `!`/`=` 正确词法化为不等谓词，
+  且遵循 XPath 语义「缺失属性不匹配」（区别于
+  `not(@a='v')`）。② `//x[n]` 位置语义——原实现取扁平
+  document-order 第 n 个（`//node[2]` 得 `['A']`），修为
+  XPath spec per-parent（各 parent 的第 n 个 x 子节点，
+  `//node[2]` 得 `[B,R,D]`）。单测钉 per-parent/`!=` 正反
+  +无空格写法+bare `!` fail-fast；parity 真机补 `!=` 命中断言。
+
 - **SoM annotated 倒置/退化 bounds 崩溃修复**（M28 复核实锤）：
   真实 dump 含倒置 bounds（MIUI 屏底裁切区，实测单屏 27/97
   元素）→ PIL rectangle `ValueError: y1 must be greater than or

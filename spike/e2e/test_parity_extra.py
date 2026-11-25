@@ -158,6 +158,12 @@ def test_xpath_full_axes_real_device():
                     "/node[1]").all()
     assert first and first[0].get_text() == "Accessibility", (
         f"position[1] got {first[0].get_text() if first else None!r}")
+    # t12 — `!=` predicate (was silent empty set: 'a!' lexed as name)
+    rest = d.xpath("//node[@resource-id='android:id/list']"
+                   "/node[@text!='Accessibility']").all()
+    rest_txt = [e.get_text() for e in rest]
+    assert "Animation" in rest_txt and "Accessibility" not in rest_txt, (
+        f"!= predicate wrong set: {rest_txt}")
     # following-sibling axis lands on Animation; tap proves the
     # coordinate path through the new grammar
     sib = d.xpath("//*[@text='Accessibility']"

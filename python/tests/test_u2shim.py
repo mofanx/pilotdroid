@@ -461,6 +461,44 @@ class TestXPathAxes(unittest.TestCase):
         self.assertEqual(
             self._e("//node[@resource-id='android:id/list']/node[9]"), [])
 
+    def test_descendant_position_is_per_parent(self):
+        # XPath spec: //node[n] = the nth node-child of EACH parent,
+        # not the nth of the flat descendant list (t12 defect B —
+        # flat counting returned ['A'] instead of per-parent seconds).
+        xml = ('<hierarchy>'
+               '<node class="L"><node text="A"/><node text="B"/></node>'
+               '<node class="R"><node text="C"/><node text="D"/></node>'
+               '</hierarchy>')
+        root = ET.fromstring(xml)
+        got = [e.get("text") or e.get("class")
+               for e in u2shim._xp_eval(root, "//node[2]")]
+        self.assertEqual(got, ["B", "R", "D"])  # B(L's 2nd), R(root's
+        # 2nd), D(R's 2nd) — flat doc-order would wrongly give ['A']
+        got = [e.get("text") or e.get("class")
+               for e in u2shim._xp_eval(root, "//node[@text][2]")]
+        self.assertEqual(got, ["B", "D"])  # tag+predicate filter first
+        got = [e.get("text") or e.get("class")
+               for e in u2shim._xp_eval(root, "//node[1]")]
+        self.assertEqual(got, ["L", "A", "C"])
+
+    def test_neq_predicate(self):
+        # t12 defect A: '!' was missing from the predicate lexer so
+        # [@a!='v'] parsed attr 'a!' — silent empty set, never an error.
+        xml = ('<hierarchy><node text="A"/><node text="B"/>'
+               '<node/></hierarchy>')
+        root = ET.fromstring(xml)
+        got = [e.get("text") for e in
+               u2shim._xp_eval(root, "//*[@text!='A']")]
+        self.assertEqual(got, ["B"])  # absent @text does NOT match
+        # (XPath: != is a node-set compare — not(@text='A') differs)
+        got = [e.get("text") for e in
+               u2shim._xp_eval(root, "//*[@text != 'A']")]
+        self.assertEqual(got, ["B"])  # spaced form parses the same
+        self.assertEqual(u2shim._xp_eval(
+            root, "//*[@text!='B' and @text!='A']"), [])
+        with self.assertRaises(NotImplementedError):
+            u2shim._xp_eval(root, "//*[@text!]")  # '!' without '=' fail-fast
+
     def test_sibling_axes(self):
         got = [e.get("text") for e in
                self._e("//node[@text='A']/following-sibling::*")]
