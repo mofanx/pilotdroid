@@ -9,6 +9,14 @@ Checks (exit 0 = PASS):
      the file that defines our drop-in promise ("表外调用按显式拒绝").
      Methods in IGNORE are shim-internal extras, not u2 surface:
        close — Device.close() disposes the agent conn (shim lifecycle)
+  3. python/README.md xpath wording must agree with SUPPORTED.md —
+     the wheel's long description is the PyPI store-front: when
+     SUPPORTED marks xpath as the host-side approximation subset
+     (近似子集), python/README.md must not keep the stale
+     "not supported" wording and must name the approximation
+     (xpath-lite/approximat/近似). Forensics: M23 found this line
+     stale while SUPPORTED/README had already moved on — a structural
+     miss this check now pins.
 """
 import re, sys, os
 
@@ -46,6 +54,18 @@ for m in re.finditer(r"class (\w+)[^:]*:\n(.*?)(?=\nclass |\Z)", shim, re.S):
         if n not in supported:
             missing.append(f"{m.group(1)}.{n}")
 rep("shim-methods", not missing, f"missing from SUPPORTED.md: {missing or 'none'}")
+
+# 3. python/README.md xpath 口径 ↔ SUPPORTED.md（wheel 长描述不带假话）。
+pyreadme = open(os.path.join(ROOT, "python/README.md")).read()
+lite = "近似子集" in supported or "approximat" in supported.lower()
+neg = re.search(r"xpath[^\n]{0,80}not supported", pyreadme, re.I)
+pos = re.search(r"xpath[^\n]{0,80}(lite|approximat|近似)", pyreadme, re.I)
+if lite:
+    rep("pyreadme-xpath", pos is not None and neg is None,
+        f"SUPPORTED=approximation; pyREADME stale-neg={bool(neg)} "
+        f"approx-claim={bool(pos)}")
+else:
+    rep("pyreadme-xpath", True, "SUPPORTED has no approximation row; skipped")
 
 print(f"{'PASS' if not fails else 'FAIL'}: {len(fails)} check(s) failed" +
       (f" {fails}" if fails else ""))

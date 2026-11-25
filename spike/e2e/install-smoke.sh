@@ -9,7 +9,7 @@
 # 用法: spike/e2e/install-smoke.sh [serial]   每步打印 PASS/FAIL，末尾汇总。
 set -u
 # 被测发布版本；下个 milestone 只需改这一处（或 env 覆盖）。
-VER="${PILOTDROID_SMOKE_VER:-0.6.1}"
+VER="${PILOTDROID_SMOKE_VER:-0.6.2}"
 SERIAL="${1:-}"
 ADB=(adb); [ -n "$SERIAL" ] && ADB+=( -s "$SERIAL" )
 V="$(mktemp -d)"; trap 'rm -rf "$V"' EXIT
@@ -34,6 +34,18 @@ echo "=== 1. pip install pilotdroid (venv) ==="
 echo "=== 2. import u2shim ==="
 "$V/venv/bin/python" -c "from pilotdroid import u2shim" \
   && ok "import pilotdroid.u2shim" || bad "import pilotdroid.u2shim"
+
+echo "=== 2b. shim 符号面（xpath-lite 打包回归防）==="
+# wheel 长描述承诺 xpath 近似子集——防 Device.xpath 方法或 _xp_eval
+# 在打包过程中丢失（M23 xpath-lite 是 asset 内容）。eval 用罐头
+# XML，不依赖设备。
+"$V/venv/bin/python" - <<'PY' && ok "Device.xpath + _xp_eval present" || bad "shim xpath-lite symbols missing"
+import xml.etree.ElementTree as ET
+from pilotdroid import u2shim
+assert callable(getattr(u2shim.Device, "xpath", None)), "Device.xpath missing"
+root = ET.fromstring('<hierarchy><node text="OK" bounds="[0,0][1,1]"/></hierarchy>')
+assert u2shim._xp_eval(root, "OK"), "_xp_eval shorthand miss"
+PY
 
 echo "=== 3. pip-only 用户的错误提示可行动（应指到 pilotdroid-cli 而非 pilotdroid setup）==="
 "$V/venv/bin/python" - <<'PY' && ok "connect error message actionable" || bad "connect error message still dead-ends"

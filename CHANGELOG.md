@@ -4,6 +4,57 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+### Added
+
+- **u2shim xpath-lite**（M23，官方套件 verbatim **9 xpath fail 全数
+  转正 → 22 pass / 0 fail / 8 skip** 达可达上限）：`d.xpath(x)` 改
+  为 host-side 近似子集 `_XPathLite`/`_XEl`（~210 行 stdlib-only，
+  每查询一次 `dump_hierarchy`+ElementTree）——text 简写 /
+  `%模糊%` / `@resource-id` / 裸 `pkg:id/name` / `//*[@attr]` /
+  `contains()` / `parent()` / `scroll_to` / `all()`/`get()`/`exists`/
+  `wait()`/`click()`/`get_text()`/`info`/`swipe`；高级轴/位置轴/
+  and-or 谓词显式 `NotImplementedError`。watcher `when()` 支持
+  `//*[@text|@resource-id|@content-desc|@class|@package=...]` 1:1
+  wire 翻译，非 wireable xpath 显式 NIE。
+- **`%` LIKE 三态语义**（M24）：`v%`→startswith / `%v`→endswith /
+  `%v%`→contains 按 u2 SQL-LIKE 语义精确实现（不再一律坍缩
+  contains——此前为超集匹配偏差）。
+- **`implicitly_wait` getter/setter 双态 + selector 迭代**（M24）：
+  `d.implicitly_wait()` 无参返回当前值；`_Selector` 实装
+  `__len__`/`__iter__`/`__getitem__`（skip 掩蔽面补齐）。
+- **`watch_context(builtin=True)` MIUI dialog recipes**（M24）：
+  u2 通用规则外加 MIUI 规则集（`AdbInstallActivity`「继续安装」
+  10s 倒计时竞速 / LBE ReviewPermissions 多页「确定」/
+  NotificationShade 收起）。
+- **`spike/e2e/u2suite/fixture-doctor.sh`**：fixture 一键恢复——
+  `pm path` 幂等检测 → ApiDemos 缓存下载/push → `adb install
+  --bypass-low-target-sdk-block` 期间 agent a11y 自动点
+  AdbInstallActivity「继续安装」→ `monkey` 首启自动点多页 LBE
+  审查「确定」。conftest guard 报错消息指向该脚本。
+
+### Changed
+
+- **Homebrew tap 升格发布必做步骤**（docs/PUBLISH.md）：formula
+  bump 从 follow-up 改为 Required（v0.6.2 发布时 tap 曾滞留
+  0.6.1，已由本次 bump 实证修复并验证 sha256）。
+- **xpath 口径文档修正**：`xpath` 从「不支持/非目标」改为
+  「host-side 近似子集（非 u2 插件管线，高级轴 NIE）」——
+  README.md / python/README.md / compat/SUPPORTED.md 三处同步。
+- **registry 重发流程文档化**（docs/mcp/SUBMIT.md）：
+  draft→published 状态、republish-per-release 步骤、`login github
+  -token` fallback（registry JWT 过期 401→re-login 实证）。
+
+### Docs
+
+- `spike/e2e/RESULTS-M22-release.md`：v0.6.2 发布链 ledger
+  （tag/7 assets/OIDC 首绿/smoke 8:8/环境项）。
+- `spike/e2e/RESULTS-M17-u2suite.md`：fixture 恢复后复跑定稿
+  （13/9/8）+ M23 xpath-lite 落地复跑（22/0/8）+ 独立复验附记
+  + AdbInstallActivity 10s 自动拒绝机制与 a11y 解法。
+- `spike/e2e/u2suite/README.md`：MIUI USB 安装确认弹窗机制说明。
+
 ## [0.6.2] — 2026-11-24
 
 ### Added
