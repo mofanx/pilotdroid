@@ -381,3 +381,44 @@ NIE）」。`_XPathStub` 已删除；`hasattr` 探测语义由方法存在性
   cli_bootstrap 7）；u2suite verbatim 复跑 **22 pass /
   0 fail / 8 skip（51.95s）** 零回归；`test_parity_extra.py`
   真机 4/4（implicitly_wait 往返/枚举/count/watcher call 命中）。
+
+## 附 6 — M27 复核段（t1 交叉复核，p3 独立判定）
+
+复核对象 `1fa45af`（CHANGELOG 事实修正+shim 两边角），复核者
+与落地者不同人；另含 t2 产物（`e3d863b`）连带核。
+
+- **CHANGELOG 逐条核——pass**：click 条目标注已改为「`_xpath`
+  哨兵系 post-0.6.3 main 的 7193b94 引入，未发件即在
+  2b5a9fe 修复」——伪注删净（`git show v0.6.3:compat/u2shim.py`
+  无 `_xpath`，上轮已证）；serial=None 条目正确归 Fixed 并
+  标注「v0.6.3 wheel 真实携带」——0.6.3 `_detect_port` 无
+  backfill，多设备裸 `Device()` adb 全调用
+  `more than one device` 静默 rc=1，事实性核实成立；
+  `call/click(max_fires=N)` 归 Added、M26 内部批（smoke-ver
+  闸/parity/README 定位）归 Docs，覆盖 db96583+2eba28f。
+  **partial nit**：SUPPORTED.md 四注记（connect backfill/xpath
+  click 首匹配+guard/re-arm 窗口/demux defer 裁决）未单列
+  条目——前三者语义已被相邻条目隐含，demux defer 属文档化
+  设计裁决，可接受但不完整（下轮补一行即可，非阻塞）。
+- **u2shim 两边角——pass**：`max_fires<1` 在 `call()`/`click()`
+  对称 `ValueError`（附 5 建议项落地），单测
+  `test_max_fires_below_one_raises` 双路径断言一致；
+  `_detect_port` 新增 `else` 挂在 `if serial is None:` 上——
+  显式 serial+无该机 forward 行→具名错跳过 17932 探针
+  （conn 与 `-s` 跨机错配防住），serial=None 主路径
+  backfill/adopt/歧义语义零改动；
+  `test_explicit_serial_no_forward_skips_probe` 断言错误含
+  serial 且非 "not alive"（证探针未走）——fixture 设计正确。
+  残余 nit：`max_fires=2.5` 仍放行（≥1 成立，ceil 语义 3 次），
+  int 校验未加——如实记，非阻塞。
+- **闸+parity 连带核（t2 `e3d863b`）——pass**：doc-drift 第 5
+  闸 `changelog-unreleased` 双向实证（清空 Unreleased→FAIL
+  rc=1 `8 commits bullets=0`；真实树 PASS `bullets=8`），
+  浅克隆无 tag→note-pass 不 break CI；parity 新断言
+  `when(contains-xpath).click()` 真机 ba0d072d 实跑——
+  host-poll 命中→inject-tap 首匹配→ApiDemos 进 Accessibility
+  子菜单（dump 含 `Accessibility Node Querying`）5/5 PASS，
+  §附 5 的落点证据永久固化。
+- **回归**：pytest `python/tests/` **68/68**（u2shim 61 +
+  cli_bootstrap 7，与 t1 报的 61 单文件口径一致）；
+  doc-drift **5/5 PASS**（含新闸）。
