@@ -772,7 +772,7 @@ CI+CodeQL 于 `b34e1a5`/`917e3e5`（lock 修复后）持续 success。
 ### A. 缺陷与修复
 
 - **缺陷**：`uiEvent` 对 media pend conn 是单槽 newest-wins——无 curWrote 判别、无 reserve。host 脏杀后遗留的 backlog 尸体 conn 一旦 attach 即顶掉活 reader 并关闭之；或 hit 写给尸体 conn 静默蒸发。另 adb forward 半死管道对单次写**假性成功**（adbd 缓冲吸收），单笔写不足判死。
-- **修复（Agent.java）**：watch 侧 media conn 改为**有界集合广播**——`watchConns` 容量 4、超容逐最旧（evict 记日志）；`uiEvent` 序列化一次帧后逐 conn 尝试写，写败即丢该 conn；零送达时 hit 入**暂存槽**（容量 8、TTL 30s），下一个 watch conn attach 时 flush 补发。stream 路径（curSock/resvSock/curWrote/gen）不动。
+- **修复（Agent.java）**：watch 侧 media conn 改为**有界集合广播**——`watchConns` 容量 4、超容逐最旧（evict 记日志）；`uiEvent` 序列化一次帧后逐 conn 尝试写，写败即丢该 conn；零送达时 hit 入**暂存槽**（容量 8、TTL 15s），下一个 watch conn attach 时 flush 补发。stream 路径（curSock/resvSock/curWrote/gen）不动。
 - 附带发现（归因非本修复）：watcher poll 的 `catch(Throwable)→break` 静默死面仍存在（脏杀余波中 a11y 竞争可杀 watcher）——9/10 中 r5 的 phase-2 失手疑此，未证为产品缺陷。
 
 ### B. 复现器与断言
@@ -792,3 +792,25 @@ CI+CodeQL 于 `b34e1a5`/`917e3e5`（lock 修复后）持续 success。
 | agent.jar | Agent.java 重建部署，`pilotdroid-agent 0.7.3` 设备实证 |
 
 文档随行：docs/02-protocol.md §4.8 watch conn 语义（有界集合+零送达暂存）；CHANGELOG Unreleased。
+
+## 附19 t5 —— t3+t4 独立交叉复核（2026-11-26，ba0d072d，复核人 devin/t5）
+
+### A. eval v2（t3）
+
+- **判定逻辑审**：7 任务断言均钉真实终态、非永真——cross_app 要求双向导航落点、stale 任务区分「stale 拒绝」与一般错误（`"stale" not in err → raise`）、double_toast 断顺序与文本、dirty_kill 每轮真 SIGKILL 兄弟进程后新流仍得帧。`stale_i` 缺省 0 为唯一软弱处（目标缺席时仍走拒绝路径），非阻塞。
+- **独立复跑**：`loop_v2.py --rounds=3` → **21/21**，p50/p95 与 t3 五轮数据同量级（cross_app 6.1 vs 6.2s、double_toast 5.8 vs 7.7s）。
+- **盲驾归因表**：B4 失败双归因（SoM 无 checked 态谓词+前台被外部 app 抢占）如实可信——describe/tap/verify 三面确实无状态字段；「tap ok≠效果」结论与协议一致。**PASS**。
+
+### B. OCR spike（t3）
+
+- **独立复跑**：TextAlign canvas（a11y 树 8 节点零画布文本）→ **12 个 ocr_only 可编号元素**（Left/Center/Right/Positioned×3 全中；t3 报 13，差异为状态栏噪声随时间变——如实记档）。有文本场景去重逻辑复核无误（claimed 检查防止与树文本重复）。**GO 结论成立，PASS**。
+
+### C. pendOut ghost 修复（t4）
+
+- **代码审**：广播集合+写败丢弃+暂存槽 flush 与 Streamer「写过才算活」判别同构；对单次写可被半死 forward 吸收的 push 场景，广播严格优于 reserve-promote。`attach`/`uiEvent`/`start` 全在 Streamer 类锁内，无新竞态。**两处非阻塞 nit**：①暂存 TTL 是滚动窗（以 `lastHitDropTs` 整体过期，非逐条 TTL）；②attach-flush 只推最新 conn 后即 clear——attach 的恰是 ghost 时暂存 hit 会被「假成功」吞掉（窗窄，dup-vs-loss 取舍已注释）。
+- **独立复跑**：`ghost_repro.py --watch 10` → **10/10**（t3 报 9/10，r5 失手确证非系统性）；`ghost_repro.py 10`（stream）→ **10/10** 无回归；`verify-agent.sh` → **42/0** 含 `watch_ghost_live`/`watch_corpse_heal`/`agent_ver`=0.7.3。**PASS**。
+- **文档勘误**：§18 记「TTL 30s」与代码 `PENDING_HIT_TTL_MS=15_000` 不符（§4.8 协议文档 15s 正确）——本附录已更正为 15s。
+
+### D. 回归抽样
+
+- `test_parity_extra.py` → **12/12**；`cargo` 三件套于 t3/t4 提交各自已绿、CI/CodeQL success（gh run 45620754611/45628026909）。
