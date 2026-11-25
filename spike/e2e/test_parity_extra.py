@@ -133,6 +133,31 @@ def test_watcher_xpath_click_navigates():
         w.stop()
 
 
+def test_som_describe_screen_consistency():
+    """Track A SoM-lite — describe_screen element set must equal an
+    INDEPENDENT re-filter of the raw dump: same count, same bounds,
+    same doc order (ids are the SoM handles agents will tap by)."""
+    import xml.etree.ElementTree as ET
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__),
+                                    "..", "..", "compat"))
+    import som
+    d = _require()
+    out = som.describe_screen(d)
+    raw = ET.fromstring(d.dump_hierarchy())
+    keep = [n for n in raw.iter("node")
+            if any(n.get(a) for a in ("text", "content-desc",
+                                      "resource-id"))
+            or any(n.get(f) == "true" for f in
+                   ("clickable", "scrollable", "checkable",
+                    "focusable", "long-clickable"))]
+    assert len(out["elements"]) == len(keep) >= 1, (
+        f"som={len(out['elements'])} vs raw-filtered={len(keep)}")
+    for e, n in zip(out["elements"], keep):
+        l, t, r, b = e["bounds"]
+        assert f"[{l},{t}][{r},{b}]" == n.get("bounds"), (
+            f"id#{e['id']} bounds mismatch vs raw dump")
+
+
 def main():
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     for fn in fns:

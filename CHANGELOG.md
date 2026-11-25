@@ -8,6 +8,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **SoM-lite 宿主侧感知奠基**（Track A·M28，`compat/som.py` 新模块，
+  **shim 面先行**——MCP serve 工具暴露留后续波次）：
+  `describe_screen(dev)` 产出 token 预算友好的编号映射
+  （id↔bounds 中心↔text/desc/rid/class/clickable，doc-order
+  确定性编号，仅保留有属性或交互标志的节点）；
+  `screenshot_annotated(dev)` 在 JPEG 上叠同编号空间框+标签
+  （PIL 惰性导入，无 Pillow 时报可操作错）。parity 真机断言
+  `test_som_describe_screen_consistency` 钉元素集与原始 dump
+  独立重过滤的一致性。
+### Added
+
 - **`stream-stop` 抓帧观测面**（M28 spike 沉淀）：ack 新增
   `{cap, cap_nulls, cap_ms, enc_ms}`——cap 后端名（当前
   `uia`）、takeScreenshot null 计数、抓帧/编码分相均值。
