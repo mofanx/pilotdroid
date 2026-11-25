@@ -349,3 +349,35 @@ NIE）」。`_XPathStub` 已删除；`hasattr` 探测语义由方法存在性
 - 单测 49/49（+7：fire_done 计数/双态、tick hit-miss-rearm、
   run_async host-poll、wire hit→re-arm 新 watch_id 计数、
   when() NIE 边界收窄、builtin max_fires 映射）。
+
+## 附 5：M26 复核段（serial 复合修/click 修复/max_fires 边界，2026-11-25）
+
+- **serial=None 复合修复核**（`db96583`，复核通过）：
+  `_detect_port` 优先序正确——显式 serial > env > forward 行
+  backfill > `adb devices` adopt/fail-fast > 17932 探针+指引错。
+  backfill 取命中行 `parts[0]`（u2.connect() 首台语义对齐）；
+  同设备多条 forward 规则按 serial 去重后才判歧义（同机
+  17932+38077 不误报）。`_adb_devices` 仅计 attached 状态行。
+  **真机复现**（双设备在场 `ba0d072d`+`11.0.0.2:5555`）：
+  `env -u PILOTDROID_SERIAL Device()` → `serial='ba0d072d'`、
+  `d.shell` rc=0（修复前同环境 rc=1 静默空输出）。
+  边角（如实记，非阻塞）：显式 `port=` 路径跳过 detect 不回填
+  serial；serial 显式给定但该机无 forward 时仍会落到 17932
+  探针——若该口属他机则 conn 与 `-s` 指向不同设备。
+- **`2b5a9fe` click 修复核**：`_WhenCtx.click` `_xpath` 分支
+  fire 时 `_XPathLite.all()` 重评→`els[0].click()`→
+  `_XEl.click()`→`dev.click(center)`→**agent inject_tap 坐标
+  注入**——与 builtin `_mk_builtin_click`（`sel.click`）同一
+  FLAG_SECURE 安全路径，非 a11y ACTION_CLICK；空 re-eval
+  no-op 保规则存活语义合理。xpath 分支不标 `_pd_click`
+  正确（`_xpath` 规则永不 arm 设备侧）。真机实证：contains()
+  xpath 规则 tick→点击落点→ApiDemos 进 Accessibility 子菜单
+  （dump 前后对比）。
+- **max_fires 边界如实**：`_fire_done` 计数后比较——
+  N≤1（含 0/负）退化为 fire-once（**命中一次后摘除，不是
+  "不触发"**）；N=2.5 → 3 次。语义边角建议后续收紧
+  `max_fires<1 → ValueError` 或文档注记（非阻塞）。
+- **回归**：pytest `python/tests/` 66/66（u2shim 59 +
+  cli_bootstrap 7）；u2suite verbatim 复跑 **22 pass /
+  0 fail / 8 skip（51.95s）** 零回归；`test_parity_extra.py`
+  真机 4/4（implicitly_wait 往返/枚举/count/watcher call 命中）。
