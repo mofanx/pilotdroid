@@ -276,3 +276,23 @@ PASS；8 skip 全部为上游自带 deprecated/TODO/大屏标记（verbatim
 「host-side 近似子集（每查询一次 dump，非 u2 插件管线；高级轴
 NIE）」。`_XPathStub` 已删除；`hasattr` 探测语义由方法存在性
 承载（`d.xpath` 是方法）。
+
+### 附2-a：独立复验（t5 复核轮）
+
+- 独立全量复跑 **22 passed / 0 failed / 8 skipped（43.99s）**——
+  与实装者自报 47.7s/22-0-8 逐条一致，xpath 桶清零可复现。
+- 代码抽查：`_xp_eval` 简写翻译（text/`%`/`@rid`/裸 `pkg:id`）
+  与 `_xp_match` 祖先谓词同构；`parent(None)` 返最近祖先、
+  `parent(x)` 沿 parent-map 上溯匹配——u2 语义对齐如实；
+  `scroll_to`/`_XEl.swipe` docstring 明示近似口径，无夸大。
+- NIE 面未被击穿：`d.xpath` 现为方法（hasattr→False），
+  `_XPathLite` 无 `__getattr__`（未知属性 AttributeError）；
+  `_xp_eval` 对子集外表达式经 findall SyntaxError→显式 NIE；
+  watcher `when()` 仅 5 属性 `//*[@attr=v]` wire 翻译，余者 NIE
+  ——与 SUPPORTED.md ⚠️ 行声明一致。
+- 单测有效性：43/43 pass（+14 xpath 用例钉简写翻译、parent
+  解析、scroll_to、watcher wire 翻译、NIE 面）。
+- t1 复核：Homebrew formula `version 0.6.2`+双 url/sha256 与
+  v0.6.2 SHA256SUMS.txt 一致（gh api 读回）；README 版本钉
+  摘除、PUBLISH.md tap-bump 升格 Required、suite README 补
+  AdbInstallActivity 10s 机制——四处均在库。
