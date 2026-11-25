@@ -611,8 +611,10 @@ class _Watcher:
 
     def when(self, *args, **kw):
         # u2 allows positional text / resourceId strings. xpath-shaped
-        # args translate to wire keys when 1:1-expressible — full xpath
-        # in watcher rules needs a host-poll eval, NIE honestly.
+        # args translate to wire keys when 1:1-expressible; anything
+        # else the xpath-lite subset can still evaluate degrades to a
+        # host-poll rule (`_xpath` key) — only constructs _xp_eval
+        # rejects stay NIE (probed fail-fast on an empty doc).
         for a in args:
             if isinstance(a, str) and a.startswith("@"):
                 kw["resourceId"] = a[1:]
@@ -622,15 +624,32 @@ class _Watcher:
                        "content-desc": "description", "class": "className",
                        "package": "packageName"}.get(
                     m.group(2)) if m else None
-                if not m or key is None:
-                    raise NotImplementedError(
-                        "u2shim watcher: only //*[@text|@resource-id|"
-                        "@content-desc|@class|@package=...] xpath "
-                        "shorthand is wireable")
-                kw[key] = m.group(3)
+                if m and key is not None:
+                    kw[key] = m.group(3)
+                else:
+                    _xp_eval(ET.fromstring("<hierarchy/>"), a)
+                    kw["_xpath"] = a
             else:
                 kw["text" if "text" not in kw else "description"] = a
         return _WhenCtx(self, kw)
+
+    @staticmethod
+    def _fire_done(action):
+        """Bounded re-arm bookkeeping: a rule is removed only after it
+        has fired `_pd_max_fires` times (default 1 — u2 fire-once
+        parity; builtin recipes raise the cap for multi-page dialogs)."""
+        n = getattr(action, "_pd_fired", 0) + 1
+        action._pd_fired = n
+        return n >= getattr(action, "_pd_max_fires", 1)
+
+    def _host_match(self, kw):
+        """Match check for rules the wire can't express — the `_xpath`
+        sentinel evals via _XPathLite.exists over one dump (host-poll
+        semantics); leftover keys AND through _Selector."""
+        xp = kw.get("_xpath")
+        rest = {k: v for k, v in kw.items() if k != "_xpath"}
+        ok = True if xp is None else _XPathLite(self.dev, xp).exists
+        return ok and (not rest or _Selector(self.dev, **rest).exists)
 
     def _tick(self):
         # device mode (CAP_WATCH): the poll loop runs inside the agent —
@@ -639,6 +658,14 @@ class _Watcher:
         fired = []
         for i, (kw, action) in enumerate(self._rules):
             try:
+                if "_xpath" in kw:
+                    # host-poll rule — one dump per tick; never
+                    # wireable so the armed/device path is skipped
+                    if self._host_match(kw):
+                        action()
+                        if self._fire_done(action):
+                            fired.append(i)
+                    continue
                 s = _Selector(self.dev, **kw)
                 if device_mode and s._wireable():
                     dev_act = "click" \
@@ -653,10 +680,12 @@ class _Watcher:
                                 action()
                             except Exception:
                                 pass
-                        fired.append(i)
+                        if self._fire_done(action):
+                            fired.append(i)
                 elif s.exists:
                     action()
-                    fired.append(i)
+                    if self._fire_done(action):
+                        fired.append(i)
             except Exception:
                 fired.append(i)  # a broken rule must not kill the loop
         for i in reversed(fired):
@@ -682,6 +711,18 @@ class _Watcher:
             while self._running:
                 for rule in list(self._rules):
                     if rule not in armed.values():
+                        if "_xpath" in rule[0]:
+                            # xpath rules can never arm — host-poll
+                            # one dump per loop pass
+                            if self._host_match(rule[0]):
+                                try:
+                                    rule[1]()
+                                except Exception:
+                                    pass
+                                if self._fire_done(rule[1]):
+                                    self._rules.remove(rule)
+                                    break
+                            continue
                         s = _Selector(self.dev, **rule[0])
                         if s._wireable():
                             dev_act = "click" if getattr(
@@ -697,8 +738,9 @@ class _Watcher:
                                 rule[1]()
                             except Exception:
                                 pass
-                            self._rules.remove(rule)
-                            break
+                            if self._fire_done(rule[1]):
+                                self._rules.remove(rule)
+                                break
                 try:
                     fr = read_frame(ms)
                 except socket.timeout:
@@ -714,10 +756,13 @@ class _Watcher:
                             rule[1]()  # .call(fn): agent was armed
                         except Exception:  # observe-only ("none")
                             pass
-                    for i, r_ in enumerate(list(self._rules)):
-                        if r_ is rule:
-                            self._rules.pop(i)
-                            break
+                    if self._fire_done(rule[1]):
+                        for i, r_ in enumerate(list(self._rules)):
+                            if r_ is rule:
+                                self._rules.pop(i)
+                                break
+                    # budget left → rule stays in _rules and out of
+                    # armed → next pass re-arms it (bounded re-arm)
         except Exception as e:
             # media_connect refused / frame decode died — surface it via
             # last_error + running()==False instead of a silent thread.
@@ -763,14 +808,19 @@ class _Watcher:
 # real-device runs). Selectors AND-match package + label so a stray
 # "确定" elsewhere can't fire.
 _BUILTIN_DIALOGS = (
+    # (selector, action, max_fires) — fire-once default; the third
+    # element raises the bound for dialogs that are really multi-page
+    # flows.
     # MIUI AdbInstallActivity — "正在通过USB安装此应用" auto-denies
     # after a 10s countdown if nobody taps 继续安装 (RESULTS-M17 §附).
     ({"packageName": "com.miui.securitycenter",
-      "text": "继续安装"}, "click"),
-    # MIUI LBE first-run permission review — one-shot 确定 ack; left
-    # alone it steals foreground from every app_start.
+      "text": "继续安装"}, "click", 1),
+    # MIUI LBE first-run permission review — multi-PAGE 确定 ack flow
+    # (fixture-doctor loops pages for the same reason): max_fires=3
+    # keeps the rule armed past the first page, still bounded so a
+    # permanently-matching dialog can't click forever.
     ({"packageName": "com.lbe.security.miui",
-      "text": "确定"}, "click"),
+      "text": "确定"}, "click", 3),
     # Expanded NotificationShade masking the a11y tree (M22 two-layer
     # env failure) — collapse, don't click. resourceIdMatches covers
     # stock/MIUI expanded-shade ids; ids a ROM doesn't use simply keep
@@ -778,7 +828,7 @@ _BUILTIN_DIALOGS = (
     ({"resourceIdMatches":
       r"com\.android\.systemui:id/(notification_panel|"
       r"expanded_status_bar|quick_settings.*|notification_container.*)"},
-     ("shell", "cmd statusbar collapse")),
+     ("shell", "cmd statusbar collapse"), 1),
 )
 
 
@@ -815,14 +865,14 @@ class _WatchContext:
     def __enter__(self):
         self._w = self.dev.watcher
         if self.builtin:
-            for kw, act in _BUILTIN_DIALOGS:
+            for kw, act, max_fires in _BUILTIN_DIALOGS:
                 if act == "click":
-                    self._w.when(**kw).call(
-                        _mk_builtin_click(self.dev, kw))
+                    fn = _mk_builtin_click(self.dev, kw)
                 else:
                     cmd = act[1]
-                    self._w.when(**kw).call(
-                        lambda c=cmd: self.dev.shell(c))
+                    fn = lambda c=cmd: self.dev.shell(c)
+                fn._pd_max_fires = max_fires  # bounded re-arm budget
+                self._w.when(**kw).call(fn)
         self._w.start()
         return self
 

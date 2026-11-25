@@ -1,6 +1,7 @@
 """u2shim M21 unit tests — G8 Session object model + G10 settings
 semantics, exercised with fake devices (no agent/device needed)."""
 import os
+import socket
 import sys
 import time
 import unittest
@@ -408,8 +409,13 @@ class TestXPathLite(unittest.TestCase):
         w.when("@io.test:id/field").click()
         self.assertEqual(w._rules[-1][0]["resourceId"],
                          "io.test:id/field")
+        # non-wireable but xpath-lite-evaluable → host-poll rule
+        w.when("//*[contains(@text,'x')]").call(lambda: None)
+        self.assertEqual(w._rules[-1][0]["_xpath"],
+                         "//*[contains(@text,'x')]")
+        # beyond the xpath-lite subset → still fail-fast NIE
         with self.assertRaises(NotImplementedError):
-            w.when("//*[contains(@text,'x')]")
+            w.when("//*[@a='1' and @b='2']")
 
 
 class TestImplicitlyWaitDual(unittest.TestCase):
@@ -477,6 +483,13 @@ class TestBuiltinDialogs(unittest.TestCase):
                            "text": "确定"}, kws)
             self.assertTrue(
                 any("resourceIdMatches" in k for k in kws))
+            # bounded re-arm budgets: LBE multi-page review keeps 3
+            # fires; one-shot dialogs stay fire-once
+            mf = {r[0].get("packageName", r[0].get("resourceIdMatches")):
+                  getattr(r[1], "_pd_max_fires", 1)
+                  for r in w._rules}
+            self.assertEqual(mf["com.lbe.security.miui"], 3)
+            self.assertEqual(mf["com.miui.securitycenter"], 1)
         # builtin=False: nothing pre-armed
         d2 = _bare_device()
         w2 = u2shim._Watcher(d2)
@@ -485,6 +498,150 @@ class TestBuiltinDialogs(unittest.TestCase):
         d2._watcher = w2
         with d2.watch_context(builtin=False):
             self.assertEqual(w2._rules, [])
+
+
+class TestWatcherReArmAndXPathPoll(unittest.TestCase):
+    """M25 — bounded re-arm (`_pd_max_fires`) + `when("//..")` host-poll
+    rules (`_xpath` sentinel → _XPathLite.exists once per pass)."""
+
+    _XML_HIT = ('<hierarchy><node text="target-x"'
+                ' bounds="[0,0][9,9]"/></hierarchy>')
+    _XML_NO = '<hierarchy><node text="Nope"/></hierarchy>'
+
+    def _dev(self, xml):
+        d = _bare_device()
+        d.caps = 0
+        d.dump_hierarchy = lambda: xml
+        return d
+
+    def test_fire_done_default_once(self):
+        fn = lambda: None
+        self.assertTrue(u2shim._Watcher._fire_done(fn))
+        self.assertEqual(fn._pd_fired, 1)
+
+    def test_fire_done_budget(self):
+        fn = lambda: None
+        fn._pd_max_fires = 3
+        self.assertFalse(u2shim._Watcher._fire_done(fn))
+        self.assertFalse(u2shim._Watcher._fire_done(fn))
+        self.assertTrue(u2shim._Watcher._fire_done(fn))
+
+    def test_tick_xpath_hit_and_remove(self):
+        w = u2shim._Watcher(self._dev(self._XML_HIT))
+        hit = []
+        w.when("//*[contains(@text,'target')]").call(
+            lambda: hit.append(1))
+        self.assertEqual(w._rules[0][0]["_xpath"],
+                         "//*[contains(@text,'target')]")
+        self.assertTrue(w._tick())  # fired once → rules empty
+        self.assertEqual(hit, [1])
+        self.assertEqual(w._rules, [])
+
+    def test_tick_xpath_miss_keeps_rule(self):
+        w = u2shim._Watcher(self._dev(self._XML_NO))
+        hit = []
+        w.when("//*[contains(@text,'target')]").call(
+            lambda: hit.append(1))
+        self.assertFalse(w._tick())
+        self.assertEqual(hit, [])
+        self.assertEqual(len(w._rules), 1)
+
+    def test_tick_rearm_counts_to_cap(self):
+        w = u2shim._Watcher(self._dev(self._XML_HIT))
+        hits = []
+
+        def cb():
+            hits.append(1)
+        cb._pd_max_fires = 3
+        w._rules.append(({"_xpath":
+                         "//*[contains(@text,'target')]"}, cb))
+        self.assertFalse(w._tick())  # 1/3 — stays armed
+        self.assertFalse(w._tick())  # 2/3 — stays armed
+        self.assertTrue(w._tick())   # 3/3 — removed
+        self.assertEqual(hits, [1, 1, 1])
+
+    def test_run_async_xpath_hostpoll(self):
+        d = self._dev(self._XML_HIT)
+        d._media_forward = lambda: None
+        w = u2shim._Watcher(d)
+        w._running = True
+        hit = []
+        w.when("//*[contains(@text,'target')]").call(
+            lambda: hit.append(1))
+
+        class _S:
+            def settimeout(self, t):
+                pass
+
+            def close(self):
+                pass
+
+        orig_mc, orig_rf = u2shim.media_connect, u2shim.read_frame
+
+        def rf(_ms):
+            if not w._rules:
+                w._running = False
+            raise socket.timeout
+        u2shim.media_connect = lambda _f: _S()
+        u2shim.read_frame = rf
+        try:
+            w._run_async()
+        finally:
+            u2shim.media_connect = orig_mc
+            u2shim.read_frame = orig_rf
+        self.assertEqual(hit, [1])
+        self.assertEqual(w._rules, [])
+
+    def test_run_async_wire_hit_rearm(self):
+        d = self._dev(self._XML_NO)
+        d._media_forward = lambda: None
+        arms = []
+
+        class _A:
+            def watch_arm(self, sel, act, poll_ms=50):
+                arms.append((sel, act))
+                return {"payload": {"watch_id": 7}}
+
+            def watch_disarm(self, wid):
+                pass
+        d.a = _A()
+        w = u2shim._Watcher(d)
+        w._running = True
+        hits = []
+
+        def cb():
+            hits.append(1)
+        cb._pd_max_fires = 2
+        w.when("//*[@text='OK']").call(cb)  # wireable: text key
+
+        class _S:
+            def settimeout(self, t):
+                pass
+
+            def close(self):
+                pass
+
+        frames = [(0, 0x0002, 0, 0,
+                   {"watch_id": 7, "matched": True}),
+                  (0, 0x0002, 0, 0,
+                   {"watch_id": 7, "matched": True})]
+        orig_mc, orig_rf = u2shim.media_connect, u2shim.read_frame
+
+        def rf(_ms):
+            if frames:
+                return frames.pop(0)
+            w._running = False
+            raise socket.timeout
+        u2shim.media_connect = lambda _f: _S()
+        u2shim.read_frame = rf
+        try:
+            w._run_async()
+        finally:
+            u2shim.media_connect = orig_mc
+            u2shim.read_frame = orig_rf
+        self.assertEqual(hits, [1, 1])
+        self.assertEqual(len(arms), 2)  # hit → re-arm → hit → removed
+        self.assertEqual(w._rules, [])
 
 
 if __name__ == "__main__":
