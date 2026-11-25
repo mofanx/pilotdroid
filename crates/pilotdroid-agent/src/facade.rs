@@ -994,8 +994,12 @@ mod tests {
                                     let mut u2 = up.try_clone().unwrap();
                                     thread::spawn(move || {
                                         let _ = std::io::copy(&mut d2, &mut u2);
+                                        // propagate half-close like a
+                                        // real adb relay
+                                        let _ = u2.shutdown(std::net::Shutdown::Both);
                                     });
                                     let _ = std::io::copy(&mut up, &mut down);
+                                    let _ = down.shutdown(std::net::Shutdown::Both);
                                 }
                             });
                         }
