@@ -337,6 +337,13 @@ impl<T: AdbTransport> Session<T> {
     /// Read the next media-channel event; a `MediaEvent::WatchHit` is the
     /// armed watcher's result. Blocks up to `timeout_ms` (default: the
     /// media read timeout set at connect).
+    /// Pop a media event stashed while a frame stream was active —
+    /// socket-free, so safe to call mid-stream (a `watch_recv` at that
+    /// point would steal frames off the shared media conn).
+    pub fn pop_stashed(&mut self) -> Option<MediaEvent> {
+        self.stashed_events.pop_front()
+    }
+
     pub fn watch_recv(&mut self, timeout_ms: Option<u64>) -> Result<MediaEvent> {
         if let Some(ev) = self.stashed_events.pop_front() {
             return Ok(ev);

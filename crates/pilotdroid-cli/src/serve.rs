@@ -91,20 +91,26 @@ pub fn run<T: AdbTransport, R: std::io::BufRead + Send + 'static, W: Write>(
     // every list_elements call; indexes are meaningless across snapshots.
     // (elements, layout signature, focused pkg at snapshot time).
     let mut snapshot: Option<(Vec<pilotdroid_agent::ElemInfo>, u64, Option<String>)> = None;
-    // Armed async watchers: watch_id → push flag. `push=true` (watch_arm
-    // arg) routes a hit to an MCP notification instead of only the
-    // watch_events pull — Track A demux, overriding the M26 defer.
-    let mut armed: HashMap<u32, bool> = HashMap::new();
+    // Armed async watchers: watch_id → the re-armable rule (selector,
+    // action, push flag, epoch tag). `push=true` (watch_arm arg) routes
+    // a hit to an MCP notification instead of only the watch_events
+    // pull — Track A demux, overriding the M26 defer.
+    let mut armed: HashMap<u32, ArmedRule> = HashMap::new();
     // Recovery epoch observed from Session::generation() — the t14
     // watchdog reconnects transparently, but a restarted agent
-    // re-allocates watch ids from scratch: ids in `armed` from an
-    // earlier epoch are dead and may collide with fresh watchers, so
-    // they (and stale buffered hits) are dropped on an epoch change.
+    // re-allocates watch ids from scratch: rules in `armed` tagged with
+    // an older gen are re-armed on the new agent (watch_id remapped),
+    // stale buffered hits dropped, and the client notified via
+    // notifications/pilotdroid/session_recovered.
     let mut epoch: u64 = 0;
     // Media events consumed by the demux that weren't pushed — pullable
     // via watch_events (degrade path). Bounded: a client that never
     // pulls shouldn't grow memory forever.
     let mut pending: VecDeque<MediaEvent> = VecDeque::new();
+    // Media-demux liveness flag: suppress repeated warnings while the
+    // conn stays broken; armed rules are kept (not dropped) so the next
+    // epoch change re-arms them once the agent heals.
+    let mut demux_dead = false;
 
     // stdin → channel: lines() blocks forever otherwise, and the demux
     // needs timed wakeups while push-armed watchers exist. The reader
@@ -120,74 +126,113 @@ pub fn run<T: AdbTransport, R: std::io::BufRead + Send + 'static, W: Write>(
     });
 
     let result = loop {
-        // Epoch check first: a control op during the previous iteration
-        // may have healed a dead agent — its ids are all stale now.
-        if let Some(s) = session.as_ref() {
-            if s.generation() != epoch {
-                epoch = s.generation();
-                if !armed.is_empty() {
+        if let Some(s) = session.as_mut() {
+            // Epoch check first: a control op during the previous
+            // iteration may have healed a dead agent — watchers armed on
+            // it are dead agent-side, so re-arm them from their stored
+            // selectors (watch_id remapped to the new allocation).
+            let cur_gen = s.generation();
+            if cur_gen != epoch {
+                epoch = cur_gen;
+                // Buffered hits from the dead epoch reference dead ids —
+                // drop them (toasts/frames stay pullable).
+                while let Some(ev) = s.pop_stashed() {
+                    if !matches!(ev, MediaEvent::WatchHit(_)) {
+                        push_pending(&mut pending, ev);
+                    }
+                }
+                pending.retain(|e| !matches!(e, MediaEvent::WatchHit(_)));
+                let mut stale_n = 0usize;
+                let mut rearmed = 0usize;
+                let mut failed = 0usize;
+                let old = std::mem::take(&mut armed);
+                if old.iter().any(|(_, r)| r.gen != cur_gen) {
+                    // Best effort pre-attach so early hits aren't dropped.
+                    let _ = s.watch_attach();
+                }
+                for (id, mut rule) in old {
+                    if rule.gen == cur_gen {
+                        armed.insert(id, rule);
+                        continue;
+                    }
+                    stale_n += 1;
+                    match s.watch_arm(rule.sel.clone(), &rule.action, rule.timeout_ms) {
+                        Ok(ack) => {
+                            // Tag the gen observed *after* the call — a
+                            // re-arm can itself trigger another recovery
+                            // (double-fault corner), and the id belongs
+                            // to the newest agent.
+                            rule.gen = s.generation();
+                            armed.insert(ack.watch_id, rule);
+                            rearmed += 1;
+                        }
+                        Err(_) => failed += 1,
+                    }
+                }
+                let note = json!({
+                    "jsonrpc": "2.0",
+                    "method": "notifications/pilotdroid/session_recovered",
+                    "params": {
+                        "generation": cur_gen,
+                        "stale_watchers": stale_n,
+                        "rearmed": rearmed,
+                        "rearm_failed": failed,
+                    },
+                });
+                if let Err(e) = write_resp(out, &note) {
+                    break Err(e);
+                }
+                if stale_n > 0 {
                     eprintln!(
-                        "pilotdroid-serve: agent recovered — {} stale armed watcher(s) dropped",
-                        armed.len()
+                        "pilotdroid-serve: agent recovered — {stale_n} stale watcher(s), \
+                         {rearmed} re-armed, {failed} failed"
                     );
                 }
-                armed.clear();
-                pending.retain(|e| !matches!(e, MediaEvent::WatchHit(_)));
+                demux_dead = false;
+            }
+            // Stash drain (socket-free): hits/toasts that interleaved
+            // into the media conn while a frame stream was active were
+            // sorted into the session stash by stream_read/stream_stop —
+            // push them here so notifications keep flowing mid-stream
+            // instead of waiting for a pull or stream end.
+            let drain: Result<()> = loop {
+                let Some(ev) = s.pop_stashed() else {
+                    break Ok(());
+                };
+                if let Err(e) = route_event(out, &mut pending, &mut armed, ev) {
+                    break Err(e);
+                }
+            };
+            if let Err(e) = drain {
+                break Err(e);
             }
         }
         // Push demux (Track A): while any watcher is armed with
         // push=true, poll the media channel between requests. Gated on
         // !streaming — frames and hits share ch=1, and consuming frames
-        // here would starve stream_read; hits buffer agent-side until
-        // the stream stops or watch_events pulls (documented degrade).
-        let push_active = armed.values().any(|&p| p);
+        // here would starve stream_read; interleaved events still reach
+        // the client via the stash drain above.
+        let push_active = armed.values().any(|r| r.push);
         if push_active {
             if let Some(s) = session.as_mut() {
                 if !s.is_streaming() {
                     match s.watch_recv(Some(PUSH_POLL_MS)) {
-                        Ok(MediaEvent::WatchHit(h)) => {
-                            // Fired = removed agent-side (one-shot).
-                            let want_push = armed.remove(&h.watch_id).unwrap_or(false);
-                            if want_push {
-                                let note = json!({
-                                    "jsonrpc": "2.0",
-                                    "method": "notifications/pilotdroid/watch_hit",
-                                    "params": h,
-                                });
-                                if let Err(e) = write_resp(out, &note) {
-                                    // stdout dead — buffer then bail
-                                    // (client is gone anyway, but the
-                                    // event stays consistent).
-                                    push_pending(&mut pending, MediaEvent::WatchHit(h));
-                                    break Err(e);
-                                }
-                            } else {
-                                push_pending(&mut pending, MediaEvent::WatchHit(h));
-                            }
-                        }
-                        Ok(MediaEvent::Toast(t)) => {
-                            // Ambient agent event (≥0.7.1 a11y listener)
-                            // — not watcher-bound: always notify, with
-                            // the pending buffer as the write-dead
-                            // degrade path.
-                            let note = json!({
-                                "jsonrpc": "2.0",
-                                "method": "notifications/pilotdroid/toast",
-                                "params": t,
-                            });
-                            if let Err(e) = write_resp(out, &note) {
-                                push_pending(&mut pending, MediaEvent::Toast(t));
+                        Ok(ev) => {
+                            demux_dead = false;
+                            if let Err(e) = route_event(out, &mut pending, &mut armed, ev) {
                                 break Err(e);
                             }
                         }
-                        Ok(ev) => push_pending(&mut pending, ev),
                         Err(pilotdroid_agent::AgentError::Timeout) => {}
                         Err(e) => {
-                            // Media socket broken — hits can no longer be
-                            // demuxed; stop polling (pull path surfaces
-                            // its own error on next watch_events).
-                            eprintln!("pilotdroid-serve: watch push demux stopped: {e}");
-                            armed.retain(|_, p| !*p);
+                            // Media socket broken — keep armed rules: the
+                            // epoch change from watch_recv's heal will
+                            // re-arm them; warn only once per broken
+                            // streak.
+                            if !demux_dead {
+                                demux_dead = true;
+                                eprintln!("pilotdroid-serve: watch push demux paused: {e}");
+                            }
                         }
                     }
                 }
@@ -373,6 +418,63 @@ fn push_pending(pending: &mut VecDeque<MediaEvent>, ev: MediaEvent) {
     pending.push_back(ev);
 }
 
+/// An armed watcher plus the payload needed to re-arm it after a
+/// session recovery — the restarted agent re-allocates watch ids, so
+/// `gen` tags which recovery epoch the id belongs to (a watcher armed
+/// on the current agent is kept; anything older is re-armed).
+struct ArmedRule {
+    push: bool,
+    sel: Selector,
+    action: String,
+    timeout_ms: Option<u64>,
+    gen: u64,
+}
+
+/// Route a demuxed/stashed media event: a WatchHit on a push-armed
+/// watcher and ambient Toast events become MCP notifications; anything
+/// else buffers into the watch_events pull path. A fired watcher is
+/// one-shot agent-side — removed from `armed` either way.
+fn route_event<W: Write>(
+    out: &mut W,
+    pending: &mut VecDeque<MediaEvent>,
+    armed: &mut HashMap<u32, ArmedRule>,
+    ev: MediaEvent,
+) -> Result<()> {
+    match ev {
+        MediaEvent::WatchHit(h) => {
+            let want_push = armed.remove(&h.watch_id).map(|r| r.push).unwrap_or(false);
+            if want_push {
+                let note = json!({
+                    "jsonrpc": "2.0",
+                    "method": "notifications/pilotdroid/watch_hit",
+                    "params": h,
+                });
+                if let Err(e) = write_resp(out, &note) {
+                    // stdout dead — buffer then bail (the event stays
+                    // consistent for the pull path).
+                    push_pending(pending, MediaEvent::WatchHit(h));
+                    return Err(e);
+                }
+            } else {
+                push_pending(pending, MediaEvent::WatchHit(h));
+            }
+        }
+        MediaEvent::Toast(t) => {
+            let note = json!({
+                "jsonrpc": "2.0",
+                "method": "notifications/pilotdroid/toast",
+                "params": t,
+            });
+            if let Err(e) = write_resp(out, &note) {
+                push_pending(pending, MediaEvent::Toast(t));
+                return Err(e);
+            }
+        }
+        ev => push_pending(pending, ev),
+    }
+    Ok(())
+}
+
 // ---- tool dispatch ----------------------------------------------------------
 
 /// Selector fields arrive flat in `arguments` (u2-style kw args).
@@ -427,7 +529,7 @@ fn call_tool<T: AdbTransport>(
     name: &str,
     args: Value,
     snap: &mut Option<(Vec<pilotdroid_agent::ElemInfo>, u64, Option<String>)>,
-    armed: &mut HashMap<u32, bool>,
+    armed: &mut HashMap<u32, ArmedRule>,
     pending: &mut VecDeque<MediaEvent>,
 ) -> (Value, bool) {
     let r: std::result::Result<Value, anyhow::Error> =
@@ -646,19 +748,35 @@ fn call_tool<T: AdbTransport>(
                     // silently dropped (§4.8/§4.9).
                     s.watch_attach()?;
                     let push = args.get("push").and_then(Value::as_bool).unwrap_or(false);
-                    let ack = s.watch_arm(
-                        sel,
-                        &str_arg(&args, "action").unwrap_or_else(|| "click".into()),
-                        num_arg(&args, "timeout_ms").map(|v| v as u64),
-                    )?;
-                    armed.insert(ack.watch_id, push);
+                    let action = str_arg(&args, "action").unwrap_or_else(|| "click".into());
+                    let timeout_ms = num_arg(&args, "timeout_ms").map(|v| v as u64);
+                    let ack = s.watch_arm(sel.clone(), &action, timeout_ms)?;
+                    // gen tagged post-call — the arm itself may have
+                    // healed a dead agent, and the id belongs to it.
+                    armed.insert(
+                        ack.watch_id,
+                        ArmedRule {
+                            push,
+                            sel,
+                            action,
+                            timeout_ms,
+                            gen: s.generation(),
+                        },
+                    );
                     Ok(json!(ack))
                 }
                 "watch_disarm" => {
                     let id =
                         num_arg(&args, "watch_id").context("watch_disarm needs watch_id")? as u32;
-                    armed.remove(&id);
-                    Ok(json!({"disarmed": s.watch_disarm(id)?}))
+                    // Forward only for ids armed in the tracked map — a
+                    // stale/unknown id must not reach the agent: after a
+                    // recovery the restarted agent re-allocated that id
+                    // to a live watcher (t5 nit (a), stale-disarm hole).
+                    if armed.remove(&id).is_some() {
+                        Ok(json!({"disarmed": s.watch_disarm(id)?}))
+                    } else {
+                        Ok(json!({"disarmed": false}))
+                    }
                 }
                 "watch_events" => {
                     // Demux leftovers first (non-push hits, frames,
@@ -854,7 +972,7 @@ fn tools() -> Value {
         {"name":"query","description":"selector → {found,node{text,id,desc,bounds,class,...}}","inputSchema":sel.clone()},
         {"name":"watch","description":"device-side selector→action watch loop (CAP_WATCH, docs/02 §4.9) — blocks this session until the selector is matched+acted or timeout_ms","inputSchema":json!({
             "type":"object","allOf":[sel.clone()],"properties":{"action":prop("string","default click"),"timeout_ms":prop("integer","default 5000")}})},
-        {"name":"watch_arm","description":"async watcher (CAP_WATCH_ASYNC, §4.9): returns {armed,watch_id} immediately; hits arrive on the media channel — read via watch_events, or push=true to get a notifications/pilotdroid/watch_hit notification between responses (paused while a frame stream is active; client disconnect auto-disarms). Control ops stay unblocked while armed","inputSchema":json!({
+        {"name":"watch_arm","description":"async watcher (CAP_WATCH_ASYNC, §4.9): returns {armed,watch_id} immediately; hits arrive on the media channel — read via watch_events, or push=true to get a notifications/pilotdroid/watch_hit notification between responses (hits interleaved into an active frame stream are still pushed via the session stash; client disconnect auto-disarms; session recovery re-arms rules automatically — see notifications/pilotdroid/session_recovered). Control ops stay unblocked while armed","inputSchema":json!({
             "type":"object","allOf":[sel.clone()],"properties":{"action":prop("string","default click"),"timeout_ms":prop("integer","auto-disarm deadline, optional"),"push":prop("boolean","emit MCP notification on hit instead of pull-only, default false")}})},
         {"name":"watch_disarm","description":"cancel an armed watcher by watch_id → {disarmed}; a fired (one-shot) watcher is already removed, so disarming it returns {disarmed:false} — not an error","inputSchema":schema(
             &[("watch_id",prop("integer","from watch_arm"))],&["watch_id"])},
@@ -1358,6 +1476,24 @@ mod tests {
                                     OpCode::WatchDisarm as u16,
                                     encode(&WatchDisarmAck { disarmed: true }).unwrap(),
                                 )
+                            }
+                            Ok(OpCode::StreamCtrl) => {
+                                let r: StreamCtrlReq = decode(&req.payload).unwrap();
+                                let p = match r.op {
+                                    StreamOp::Start => encode(&StreamStartAck {
+                                        ok: true,
+                                        socket: "pilotdroid_agent_media".into(),
+                                        effective_fps_hint: None,
+                                    })
+                                    .unwrap(),
+                                    StreamOp::Stop => encode(&StreamStopAck {
+                                        ok: true,
+                                        frames_sent: 3,
+                                        dropped: 0,
+                                    })
+                                    .unwrap(),
+                                };
+                                (OpCode::StreamCtrl as u16, p)
                             }
                             _ => {
                                 let p = encode(&ErrorAck {
@@ -1893,11 +2029,21 @@ mod tests {
             },
         )
         .unwrap();
-        let resps: Vec<Value> = String::from_utf8(out)
+        let lines: Vec<Value> = String::from_utf8(out)
             .unwrap()
             .lines()
             .map(|l| serde_json::from_str(l).unwrap())
             .collect();
+        // The transparent recovery surfaces as a session_recovered
+        // notification on stdout — id-less, interleaved with responses.
+        let notes: Vec<&Value> = lines
+            .iter()
+            .filter(|v| v["method"].as_str() == Some("notifications/pilotdroid/session_recovered"))
+            .collect();
+        assert_eq!(notes.len(), 1, "recovery must notify: {lines:?}");
+        assert_eq!(notes[0]["params"]["generation"], 1);
+        assert_eq!(notes[0]["params"]["stale_watchers"], 0);
+        let resps: Vec<&Value> = lines.iter().filter(|v| v["id"].is_u64()).collect();
         assert_eq!(resps.len(), 2);
         for (i, r) in resps.iter().enumerate() {
             assert_eq!(
@@ -1985,13 +2131,13 @@ mod tests {
     }
 
     #[test]
-    fn stale_armed_ids_dropped_on_recovery_epoch() {
+    fn armed_watchers_rearmed_on_recovery_epoch() {
         // Watch ids are agent-allocated and restart at 1 after a crash:
-        // armed={1,2} pre-crash, recovery, arm again → the fresh agent
-        // returns id 1 for ITS first watcher. If the stale map were
-        // kept, EOF cleanup would send disarm(1)+disarm(2) — killing a
-        // live watcher (1) plus a nonexistent one (2). The epoch check
-        // drops stale ids → conn2 sees exactly one disarm.
+        // armed={1,2} pre-crash → recovery → the epoch check re-arms both
+        // rules on the new agent (fresh ids {1,2} again), notifies the
+        // client via session_recovered, then the explicit arm gets id 3.
+        // EOF cleanup disarms exactly the live watchers on conn2 (3) —
+        // no stale disarm leaks, and the re-armed rules stay tracked.
         let (addr, disarms) = spawn_fake_revive(2);
         let arm = |id: u64| {
             json!({"jsonrpc":"2.0","id":id,"method":"tools/call",
@@ -2010,6 +2156,11 @@ mod tests {
             .join("\n"),
             addr,
         );
+        let notes: Vec<&Value> = resps
+            .iter()
+            .filter(|v| v["method"].as_str() == Some("notifications/pilotdroid/session_recovered"))
+            .collect();
+        let resps: Vec<&Value> = resps.iter().filter(|v| v["id"].is_u64()).collect();
         assert_eq!(resps[0]["result"]["isError"], false);
         assert_eq!(resps[1]["result"]["isError"], false);
         // Post-recovery dump must succeed transparently.
@@ -2018,14 +2169,158 @@ mod tests {
             "dump after recovery: {resps:?}"
         );
         assert_eq!(resps[3]["result"]["isError"], false);
+        assert_eq!(notes.len(), 1, "session_recovered must fire: {resps:?}");
+        assert_eq!(notes[0]["params"]["generation"], 1);
+        assert_eq!(notes[0]["params"]["stale_watchers"], 2);
+        assert_eq!(notes[0]["params"]["rearmed"], 2);
+        assert_eq!(notes[0]["params"]["rearm_failed"], 0);
         let counts = disarms.lock().unwrap();
         assert!(
             counts.len() >= 2,
             "recovery should have opened a second conn: {counts:?}"
         );
         assert_eq!(
-            counts[1], 1,
-            "stale armed ids must not reach the recovered agent: {counts:?}"
+            counts[1], 3,
+            "conn2 disarms = 2 re-armed + 1 explicitly armed: {counts:?}"
         );
+    }
+
+    /// Stream-capable fake: control serves WatchArm/Disarm/StreamCtrl;
+    /// media conn #1 (the watch_attach pre-attach) is held, conn #2 (the
+    /// stream reader) gets FRAME/WATCH_HIT/FRAME/TOAST/FRAME — the hit
+    /// and toast interleave into the frame stream the way the real
+    /// agent interleaves ui_events on ch=1.
+    fn spawn_fake_stream_hit() -> SocketAddr {
+        let (ctrl, media, addr) = watch_pair();
+        let disarms = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        watch_ctrl(ctrl, disarms);
+        thread::spawn(move || {
+            let mut held = Vec::new();
+            let mut n = 0usize;
+            while let Ok((mut msock, _)) = media.accept() {
+                n += 1;
+                if n < 2 {
+                    held.push(msock);
+                    continue;
+                }
+                thread::spawn(move || {
+                    let frame = |seq: u32| {
+                        Frame::new(
+                            Channel::Media,
+                            MediaType::Frame as u16,
+                            flags::STREAM_MORE,
+                            seq,
+                            encode(&MediaFrame {
+                                format: "jpeg".into(),
+                                w: 2,
+                                h: 2,
+                                ts_ns: seq as u64,
+                                take_ns: None,
+                                enc_ns: None,
+                                dropped: 0,
+                                data: vec![seq as u8].into(),
+                            })
+                            .unwrap(),
+                        )
+                    };
+                    let ui = |p: Vec<u8>| Frame::new(Channel::Media, MSG_WATCH_HIT, 0, 0, p);
+                    let hit = ui(encode(&WatchHit {
+                        watch_id: 1,
+                        matched: true,
+                        waited_ms: 5,
+                        action_ok: Some(true),
+                        node: None,
+                    })
+                    .unwrap());
+                    let toast = ui(encode(&pilotdroid_proto::payload::ToastEvent {
+                        r#type: "toast".into(),
+                        pkg: "com.x".into(),
+                        has_parcel: false,
+                        text: vec!["mid-stream".into()],
+                    })
+                    .unwrap());
+                    for f in [frame(1), hit, frame(2), toast, frame(3)] {
+                        if f.write_to(&mut msock).is_err() {
+                            return;
+                        }
+                    }
+                    thread::sleep(Duration::from_secs(5));
+                });
+            }
+        });
+        addr
+    }
+
+    #[test]
+    fn stashed_hit_and_toast_push_during_stream() {
+        // Frames and ui_events share ch=1: while a frame stream is
+        // active, recv_event sorts the interleaved hit/toast into the
+        // session stash — the serve drain then pushes them as
+        // notifications mid-stream (no pull, no wait for stream_stop).
+        let addr = spawn_fake_stream_hit();
+        let resps = serve_once_at(
+            &[
+                json!({"jsonrpc":"2.0","id":1,"method":"tools/call",
+                       "params":{"name":"watch_arm","arguments":{"text":"OK","push":true}}})
+                .to_string(),
+                r#"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"stream_start","arguments":{"fps":5,"scale":0.5}}}"#.to_string(),
+                r#"{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"stream_read","arguments":{"n":3}}}"#.to_string(),
+                r#"{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"stream_stop","arguments":{}}}"#.to_string(),
+            ]
+            .join("\n"),
+            addr,
+        );
+        // stream_read returned 3 frames with the hit/toast stashed.
+        let text = resps[2]["result"]["content"][0]["text"].as_str().unwrap();
+        assert_eq!(resps[2]["result"]["isError"], false, "stream_read: {text}");
+        let hits: Vec<&Value> = resps
+            .iter()
+            .filter(|v| v["method"].as_str() == Some("notifications/pilotdroid/watch_hit"))
+            .collect();
+        assert_eq!(hits.len(), 1, "stashed hit must push mid-stream: {resps:?}");
+        assert_eq!(hits[0]["params"]["watch_id"], 1);
+        let toasts: Vec<&Value> = resps
+            .iter()
+            .filter(|v| v["method"].as_str() == Some("notifications/pilotdroid/toast"))
+            .collect();
+        assert_eq!(
+            toasts.len(),
+            1,
+            "stashed toast must push mid-stream: {resps:?}"
+        );
+        assert_eq!(toasts[0]["params"]["text"][0], "mid-stream");
+    }
+
+    #[test]
+    fn stale_watch_disarm_not_forwarded() {
+        // watch_id 99 was never armed — forwarding it would let a stale
+        // id kill a coincidentally re-allocated live watcher after a
+        // recovery (t5 nit (a)). Unknown ids return disarmed:false
+        // locally and never reach the agent; id 1 disarms normally.
+        let (addr, disarms) = spawn_fake_watch(vec![]);
+        let resps = serve_once_at(
+            &[
+                json!({"jsonrpc":"2.0","id":1,"method":"tools/call",
+                       "params":{"name":"watch_arm","arguments":{"text":"OK"}}})
+                .to_string(),
+                r#"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"watch_disarm","arguments":{"watch_id":99}}}"#.to_string(),
+                r#"{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"watch_disarm","arguments":{"watch_id":1}}}"#.to_string(),
+            ]
+            .join("\n"),
+            addr,
+        );
+        let text99 = resps[1]["result"]["content"][0]["text"].as_str().unwrap();
+        let text1 = resps[2]["result"]["content"][0]["text"].as_str().unwrap();
+        assert!(text99.contains("\"disarmed\":false"), "stale id: {text99}");
+        assert!(text1.contains("\"disarmed\":true"), "live id: {text1}");
+        // EOF cleanup also ran — total forwarded disarms must be exactly
+        // 1 (the known watcher); the stale id never reached the fake.
+        for _ in 0..40 {
+            if disarms.load(std::sync::atomic::Ordering::SeqCst) >= 1 {
+                break;
+            }
+            thread::sleep(Duration::from_millis(25));
+        }
+        assert_eq!(disarms.load(std::sync::atomic::Ordering::SeqCst), 1);
     }
 }

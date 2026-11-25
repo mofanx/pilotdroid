@@ -140,17 +140,21 @@ benchmark/suite 跑旧 targetSdk app 前需先放行（openatx u2 官方
   命中即发 `notifications/pilotdroid/watch_hit` MCP notification；
   非 push 命中缓冲降级 `watch_events` 可拉；client 断开自动 disarm
   全部 armed 规则（agent conn close 亦 reap，双保险）；stream 激活期
-  demux 暂停（帧/命中共享 ch=1）——**实测定论（M31 eval
-  `stream_watch_coexist`，ba0d072d）**：流中 hit/toast 与帧交错在
-  同一 conn 到达，host 侧 `recv_event` 分拣入 session stash，
-  `watch_events` 流中与停流后均可拉出（hit 先于其动作产生的
-  toast），push notification 停流后恢复。pull 面
+  实时轮询暂停（帧/命中共享 ch=1，demux 读会抢帧）——**实测定论（M31
+  eval `stream_watch_coexist`+M32 stash→push，ba0d072d）**：流中
+  hit/toast 与帧交错在同一 conn 到达，host 侧 `recv_event` 分拣入
+  session stash，serve 每迭代排干 stash——**push notification 流中
+  照推**（hit 到达不再等停流），`watch_events` pull 亦可用（hit 先
+  于其动作产生的 toast）。pull 面
   `watch_arm`/`watch_disarm`/`watch_events` 保持齐备。
   同槽位的 toast ui_event 经 demux 推
   `notifications/pilotdroid/toast`（上表 toast 行）。
-  session 恢复后 `armed` 随 epoch 变更清空——agent 重启重分配
-  watch_id，陈旧 id 不再误指新 watcher（需 re-arm，崩溃即丢的
-  语义同 session 看护条）。
+  session 恢复后 armed 规则按原 selector **自动 re-arm**（watch_id
+  映射新分配，透明自愈），并推
+  `notifications/pilotdroid/session_recovered`
+  `{generation,stale_watchers,rearmed,rearm_failed}`；陈旧/未知 id 的
+  显式 `watch_disarm` 不透传至 agent（防 id 空间碰撞误杀新 watcher，
+  返回 `{disarmed:false}`）。
 - **超出 u2 面的 MCP 工具**（shim 不覆盖，记此防口径漂移）：
   `describe_screen`/`screenshot_annotated`（SoM-lite 感知，编号空间
   与 `compat/som.py` 一致）、`verify_after`（操作后 dump 断言闭环，

@@ -6,6 +6,28 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- **恢复 UX 闭环**：session 恢复（`Session::generation` epoch 变更）
+  时 serve 推 `notifications/pilotdroid/session_recovered`
+  `{generation,stale_watchers,rearmed,rearm_failed}`——崩溃/顶替不
+  再静默；**armed watcher 自动 re-arm**（按存存的 selector/action/
+  timeout 重发 ARM，watch_id 映射新分配，「崩溃即丢」升级为透明
+  自愈），恢复代际的首个 hit 照推到 push（真机实证：pkill→dump
+  恢复→`Add` hit notification 到达）。media conn 死掉时 demux 不
+  再摘除 armed 规则——留给 epoch re-arm 自愈（warn 覆盖收窄洞修
+  复，且每 streak 只 warn 一次）。
+- **stream 激活期 stash→push**：帧流激活时 `recv_event` 分拣入
+  session stash 的 watch_hit/toast 由 serve 每迭代排干并补发为
+  `notifications/pilotdroid/*`——「push 暂停」档消除（真机实证：
+  流中 `Add` hit 以完整 node payload 到达 notification）。
+
+### Fixed
+
+- **stale `watch_disarm` 穿透**：陈旧/未登记的 watch_id 显式
+  disarm 不再透传至 agent——id 空间碰撞下可能误杀恢复后重分配的
+  活 watcher；未知 id 本地返回 `{disarmed:false}`。
+
 ## [0.7.1] — 2026-11-25
 
 ### Added
