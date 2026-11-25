@@ -8,7 +8,8 @@
 > per-call HTTP/JSON-RPC round-trip ceiling. Three surfaces over one device
 > backend: `pilotdroid-cli` (one-shot ops + stdio MCP server, 27 tools),
 > a Rust facade (`pilotdroid-agent`), and a uiautomator2 drop-in Python shim
-> (`from pilotdroid import u2shim`; xpath explicitly out of scope).
+> (`from pilotdroid import u2shim`; xpath = host-side approximation
+> subset, not the u2 plugin pipeline).
 > Same-script wall-clock vs real u2 on retail devices: **8.8× USB /
 > 4.7–7.4× adb-TCP** (op-mix sensitive, `spike/e2e/RESULTS-M7.md`). Details
 > in Chinese below; protocol contract: `docs/02-protocol.md`.
@@ -82,11 +83,11 @@ exposed to MCP clients via `stream_read`.
 后 `import pilotdroid`）：u2 脚本零改动跑通。
 支持集（明确不暗示全覆盖）：`click/long_click/swipe/press/set_text/dump_hierarchy/
 screenshot/app_start/app_stop/app_current/info` + selector `text/resourceId/
-description/className/packageName/scrollable/index` + `d(scrollable=True).scroll.*`；
-仅 `xpath` 显式拒绝（ValueError，非目标）。M6 真实脚本对拍：**23/24 op 通过，唯一
-unsupported = xpath**（`spike/e2e/m6-compat.json`）；方法级矩阵见
-`compat/SUPPORTED.md`。**xpath 明确不在
-supported-set 目标内**（u2 xpath 本为可选插件，非 drop-in 承诺）。
+description/className/packageName/scrollable/index` + `d(scrollable=True).scroll.*`。
+M6 真实脚本对拍：**23/24 op 通过**（`spike/e2e/m6-compat.json`）；方法级矩阵见
+`compat/SUPPORTED.md`。**`d.xpath` 为 host-side 近似子集**（xpath-lite：每次查询
+一次 dump+ElementTree，覆盖 text/@id/%模糊%/contains()/parent()/scroll_to，
+高级轴显式 NIE；非 u2 插件管线，非 drop-in 承诺）。
 
 MCP client 挂接（mcpServers 片段，二进制名 `pilotdroid-cli`，cargo install 后在 PATH）：
 

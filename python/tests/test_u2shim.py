@@ -4,6 +4,7 @@ import os
 import sys
 import time
 import unittest
+import xml.etree.ElementTree as ET
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__),
                                 "..", "..", "compat"))
@@ -180,19 +181,21 @@ class TestStubs(unittest.TestCase):
         self.assertIs(d.jsonrpc, d.a)
 
     def test_xpath_stub_errors_honestly(self):
+        # xpath-lite era: d.xpath(x) returns a lite selector — honesty
+        # moved to eval-time NIE for axes outside the subset.
         d = _bare_device()
-        stub = d.xpath
+        lite = d.xpath("anything")
+        self.assertIsInstance(lite, u2shim._XPathLite)
+        d.dump_hierarchy = lambda: "<hierarchy/>"
         with self.assertRaises(NotImplementedError):
-            stub("//node")
+            d.xpath("//x[position()=1]").exists
 
     def test_xpath_stub_hasattr_not_blown(self):
-        # __getattr__ must raise AttributeError so hasattr() probing
-        # returns False instead of surfacing NIE.
+        # d.xpath is now a bound method — hasattr() probing on it stays
+        # False for unknown names (was the _XPathStub.__getattr__ fix).
         d = _bare_device()
-        stub = d.xpath("anything") if False else u2shim._XPathStub()
-        self.assertFalse(hasattr(stub, "parent"))
-        with self.assertRaises(NotImplementedError):
-            stub("App")
+        self.assertFalse(hasattr(d.xpath, "parent"))
+        self.assertTrue(hasattr(d.xpath("App"), "parent"))
 
 
 class TestSerialEnv(unittest.TestCase):
@@ -261,6 +264,132 @@ class TestWatcherError(unittest.TestCase):
             u2shim.media_connect = old
         self.assertIsInstance(w.last_error, _s.timeout)
         self.assertFalse(w._running)
+
+
+class TestXPathLite(unittest.TestCase):
+    """d.xpath(x) — host-side approximation (one dump per query).
+    Fake device: dump_hierarchy returns a fixed a11y tree."""
+
+    _XML = (
+        '<hierarchy>'
+        '<node resource-id="android:id/list" class="android.widget.ListView"'
+        ' scrollable="true" bounds="[0,100][1000,2000]" text="">'
+        '<node text="App" bounds="[0,100][1000,300]" index="0"/>'
+        '<node text="Alarm" bounds="[0,300][1000,500]" index="1"/>'
+        '<node text="Accessibility" bounds="[0,500][1000,700]" index="2"/>'
+        '</node>'
+        '<node resource-id="io.test:id/field" text="hello"'
+        ' bounds="[0,2100][500,2200]" index="0"/>'
+        '</hierarchy>')
+
+    def _d(self, xml=None):
+        d = _bare_device()
+        d.dump_hierarchy = lambda: xml or self._XML
+        return d
+
+    # -- shorthand translation / eval ------------------------------------
+    def test_shorthand_text(self):
+        self.assertEqual(len(u2shim._xp_eval(
+            ET.fromstring(self._XML), "App")), 1)
+
+    def test_shorthand_fuzzy_contains(self):
+        root = ET.fromstring(self._XML)
+        self.assertEqual(len(u2shim._xp_eval(root, "%ccessibility")), 1)
+        self.assertEqual(len(u2shim._xp_eval(root, "Accessibilit%")), 1)
+        self.assertEqual(len(u2shim._xp_eval(root, "%cessib%")), 1)
+
+    def test_shorthand_at_id_and_bare_rid(self):
+        root = ET.fromstring(self._XML)
+        self.assertEqual(len(u2shim._xp_eval(root, "@android:id/list")), 1)
+        self.assertEqual(
+            len(u2shim._xp_eval(root, "io.test:id/field")), 1)
+
+    def test_native_elementpath_and_contains(self):
+        root = ET.fromstring(self._XML)
+        self.assertEqual(len(u2shim._xp_eval(root, "//*[@text='App']")), 1)
+        self.assertEqual(
+            len(u2shim._xp_eval(root, "//*[@text='Nope']")), 0)
+        self.assertEqual(len(u2shim._xp_eval(
+            root, "//*[contains(@text,'Alarm')]")), 1)
+
+    def test_unsupported_axis_raises_nie(self):
+        root = ET.fromstring(self._XML)
+        for bad in ["//x[position()=1]", "//x[contains(@a,'b') and @c]",
+                    "//parent::node"]:
+            with self.assertRaises(NotImplementedError, msg=bad):
+                u2shim._xp_eval(root, bad)
+
+    # -- _XPathLite API ---------------------------------------------------
+    def test_exists_get_text_all(self):
+        d = self._d()
+        self.assertTrue(d.xpath("App").exists)
+        self.assertFalse(d.xpath("Nope").exists)
+        self.assertEqual(d.xpath("App").get_text(), "App")
+        self.assertEqual(len(d.xpath("//*[@text]").all()), 5)
+        self.assertEqual(len(d.xpath("//*[@text='App']").all()), 1)
+
+    def test_wait_hit_and_miss(self):
+        d = self._d()
+        d.settings["wait_timeout"] = 0.3
+        self.assertTrue(d.xpath("App").wait())
+        self.assertFalse(d.xpath("Nope").wait())
+
+    def test_click_by_bounds_center(self):
+        d = self._d()
+        hits = []
+        d.click = lambda x, y: hits.append((x, y)) or True
+        d.xpath("App").click()
+        self.assertEqual(hits, [(500, 200)])  # bounds [0,100][1000,300]
+
+    def test_info_shape(self):
+        d = self._d()
+        info = d.xpath("io.test:id/field").info
+        self.assertEqual(info["resourceId"], "io.test:id/field")
+        self.assertEqual(info["text"], "hello")
+        self.assertEqual(info["bounds"]["right"], 500)
+
+    def test_parent_matching_ancestor(self):
+        d = self._d()
+        p = d.xpath("App").parent("@android:id/list")
+        self.assertIsNotNone(p)
+        self.assertEqual(p.info["resourceId"], "android:id/list")
+        # unmatched ancestor arg → climbs to root → None
+        self.assertIsNone(d.xpath("App").parent("@no/such"))
+
+    def test_scroll_to_finds_target_after_swipe(self):
+        d = self._d()
+        xmls = [self._XML,
+                '<hierarchy><node text="Target"'
+                ' bounds="[0,0][1,1]"/></hierarchy>']
+        d.dump_hierarchy = lambda: xmls.pop(0) if xmls else xmls[-1]
+        d.swipe = lambda *a, **kw: True
+        el = d.xpath("@android:id/list").scroll_to("Target")
+        self.assertIsNotNone(el)
+        self.assertEqual(el.get_text(), "Target")
+
+    def test_get_missing_raises_u2_not_found(self):
+        d = self._d()
+        d.settings["wait_timeout"] = 0.1
+        with self.assertRaises(u2shim.UiObjectNotFoundError):
+            d.xpath("Nope").get()
+
+    def test_xpath_method_attr_probing(self):
+        # bound-method surface: hasattr probing still False for unknown
+        d = self._d()
+        self.assertFalse(hasattr(d.xpath, "nosuch"))
+        self.assertTrue(hasattr(d.xpath("x"), "parent"))
+
+    # -- watcher xpath shorthand -------------------------------------------
+    def test_watcher_when_xpath_to_wire(self):
+        w = u2shim._Watcher.__new__(u2shim._Watcher)
+        w._rules = []
+        w.when("//*[@text='OK']").click()
+        self.assertEqual(w._rules[-1][0]["text"], "OK")
+        w.when("@io.test:id/field").click()
+        self.assertEqual(w._rules[-1][0]["resourceId"],
+                         "io.test:id/field")
+        with self.assertRaises(NotImplementedError):
+            w.when("//*[contains(@text,'x')]")
 
 
 if __name__ == "__main__":

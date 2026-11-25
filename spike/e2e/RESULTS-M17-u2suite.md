@@ -242,3 +242,37 @@ collected，34.8s）**——`watch_context` **PASS**（M22 归因
 插曲：复装后首启被 `com.lbe.security.miui` ReviewPermissions
 拦（SUPPORTED.md 已登记环境敏感项）导致 session 两测先挂，
 手动启动一次 ApiDemos 过审后全绿——该拦截属一次性首启行为。
+
+## 附2：M23 xpath-lite 落地后复跑（2026-11-25，v0.6.2 之后代码线）
+
+`t3` spike 判 GO（10/10 用例 host-side 可行）后 `_XPathLite`
+实装（stdlib-only，每查询一次 `dump_hierarchy`+ElementTree 评估，
+~50ms/次；简写翻译层 text/`%模糊%`/`@rid`/裸 `pkg:id` +
+`//*[@attr]`/`contains()`/`parent`/`scroll_to`/`swipe`；高级轴
+position/ancestor/and-or 谓词显式 `NotImplementedError`）。
+
+**全量复跑：22 pass / 0 fail / 8 skip（30 collected，47.7s）**
+——此前 9 个 xpath NIE fail 全数转正，`watch_context` 保持
+PASS；8 skip 全部为上游自带 deprecated/TODO/大屏标记（verbatim
+面板上限）。**非 skip 用例 22/22 全过**。
+
+**watcher `.call` xpath 归属**：wire `watch_arm` Selector 键表
+仅 7 键（text/id/desc/class/pkg/index/scrollable），xpath 键会
+被 agent 静默忽略成空选择器恒真（假阳性，spike 实证）——故
+`_WhenCtx.call` 的 xpath 规则走 host-poll 分支；`when("//…")`
+仅在可 1:1 翻译成 wire 键时放行（`//*[@text|@resource-id|…=…]`），
+其余 `when()` xpath 显式 NIE。
+
+**踩坑记（scroll_to 三连调）**：
+1. 大 swipe 惯性一次越过目标页——慢速 drag
+   （`duration=0.7, steps=24`，0.8→0.4 视口）后 Pictures 页可达；
+2. 命中后断言再 dump 已滑过——drag 后 `sleep(0.5)` settle 再
+   进入下一轮 eval；
+3. 套件无 settle 点击 `Graphics` 后首 eval 撞中导航过渡态 dump
+   （ListView 未填充 `scrollable="false"`）→ `sc=None` 提前
+   break——改为容忍连续 4 次无 scrollable 才放弃。
+
+**口径修正**：SUPPORTED.md/README xpath 行从「非目标」改
+「host-side 近似子集（每查询一次 dump，非 u2 插件管线；高级轴
+NIE）」。`_XPathStub` 已删除；`hasattr` 探测语义由方法存在性
+承载（`d.xpath` 是方法）。

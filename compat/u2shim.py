@@ -30,7 +30,8 @@ validation (xpath_debug must be bool etc.), wait_timeout couples into
 wait()/wait_gone()/click implicit wait via d.wait_timeout +
 implicitly_wait(), operation_delay=(before,after) seconds applies to
 methods in operation_delay_methods (click/swipe/press by default).
-(xpath still rejected with ValueError — see _SUPPORTED.)
+`d.xpath` is a host-side approximation (xpath-lite — one dump per
+query, shorthand+ElementPath subset, advanced axes NIE).
 """
 import os, re, socket, subprocess, sys, threading, time, types
 import xml.etree.ElementTree as ET
@@ -219,7 +220,7 @@ class _Selector:
         if bad:
             raise ValueError(
                 f"u2shim selector: keys {bad} need host post-filter "
-                f"(not wire-expressible); xpath not supported")
+                f"(not wire-expressible); use d.xpath() instead")
         s = {}
         if "text" in self.kw:
             s["text"] = self.kw["text"]
@@ -244,7 +245,7 @@ class _Selector:
         if bad:
             raise ValueError(
                 f"u2shim selector: unsupported keys {bad} "
-                f"(xpath not supported)")
+                f"(use d.xpath() for xpath queries)")
         return all(_PRED[k](info, v)
                    for k, v in self.kw.items()
                    if k != "instance")
@@ -593,9 +594,26 @@ class _Watcher:
                                 # instead of a silently-dead thread
 
     def when(self, *args, **kw):
-        # u2 allows positional text / resourceId strings
+        # u2 allows positional text / resourceId strings. xpath-shaped
+        # args translate to wire keys when 1:1-expressible — full xpath
+        # in watcher rules needs a host-poll eval, NIE honestly.
         for a in args:
-            kw["text" if "text" not in kw else "description"] = a
+            if isinstance(a, str) and a.startswith("@"):
+                kw["resourceId"] = a[1:]
+            elif isinstance(a, str) and a.startswith("//"):
+                m = _XP_EQ.match(a)
+                key = {"text": "text", "resource-id": "resourceId",
+                       "content-desc": "description", "class": "className",
+                       "package": "packageName"}.get(
+                    m.group(2)) if m else None
+                if not m or key is None:
+                    raise NotImplementedError(
+                        "u2shim watcher: only //*[@text|@resource-id|"
+                        "@content-desc|@class|@package=...] xpath "
+                        "shorthand is wireable")
+                kw[key] = m.group(3)
+            else:
+                kw["text" if "text" not in kw else "description"] = a
         return _WhenCtx(self, kw)
 
     def _tick(self):
@@ -1134,12 +1152,12 @@ class Device:
         RESULTS-M17 §5-G6 still documents that defer)."""
         return self.a
 
-    @property
-    def xpath(self):
-        """u2 `d.xpath` — xpath is a documented NON-goal; the attribute
-        exists so `dev.xpath` checks don't AttributeError. Any use
-        raises honestly."""
-        return _XPathStub()
+    def xpath(self, x):
+        """u2 `d.xpath(x)` — host-side approximation (xpath-lite): one
+        dump per query, shorthand (text / %fuzzy% / @id / bare pkg:id) +
+        `//*[@attr]`/contains()/parent()/scroll_to. NOT the u2 plugin
+        pipeline; advanced axes raise NotImplementedError."""
+        return _XPathLite(self, x)
 
     def push(self, src, dst="/sdcard/"):
         """u2 `d.push(local, remote)` — adb spawn; `src` may be a path,
@@ -1295,17 +1313,210 @@ class Session:
                 f"session app {self._pkg} is not running")
 
 
-class _XPathStub:
-    """Placeholder behind `d.xpath` — xpath is a documented non-goal.
-    Any attribute/call raises NotImplementedError honestly."""
+# ---------- xpath-lite (host-side approximation, stdlib-only) ----------
+# Each query = one dump_hierarchy + ElementTree eval (~50ms on-device).
+# NOT the u2 plugin pipeline — supported surface is the u2 shorthand
+# set + the ElementPath subset; advanced axes/predicates raise
+# NotImplementedError honestly (compat/SUPPORTED.md xpath row).
 
-    def __call__(self, *a, **kw):
-        raise NotImplementedError("u2shim: xpath not supported")
+_XP_CONTAINS = re.compile(
+    r"^\.//(\*|[\w-]+)\[contains\(@([\w-]+),\s*['\"]([^'\"]+)['\"]\)\]$")
+_XP_EQ = re.compile(
+    r"^//(\*|[\w-]+)\[@([\w-]+)=['\"]([^'\"]+)['\"]\]$")
+_XP_CONTAINS_ABS = re.compile(
+    r"^//(\*|[\w-]+)\[contains\(@([\w-]+),\s*['\"]([^'\"]+)['\"]\)\]$")
+_XP_RID = re.compile(r"^[\w.]+:[\w/]+$")
 
-    def __getattr__(self, name):
-        # AttributeError (not NIE) so hasattr()/duck-probing isn't
-        # blown through — calling still raises NIE honestly.
-        raise AttributeError(name)
+
+def _xp_eval(root, x):
+    """Evaluate a u2 xpath-ish expression against an ET root →
+    [Element]. Shorthand: text / %contains% / @resource-id / bare
+    pkg:id/name; `//` ElementPath subset + contains(). Anything the
+    subset can't express raises NotImplementedError."""
+    if x.startswith("%") or x.endswith("%"):
+        v = x.strip("%")
+        return [e for e in root.iter() if v in (e.get("text") or "")]
+    if x.startswith("@"):
+        x = f".//*[@resource-id='{x[1:]}']"
+    elif x.startswith("//"):
+        x = "." + x
+    elif _XP_RID.match(x):
+        x = f".//*[@resource-id='{x}']"
+    elif not x.startswith((".", "(")):
+        x = f".//*[@text='{x}']"
+    m = _XP_CONTAINS.match(x)
+    if m:  # ET has no function calls — contains() gets a custom pass
+        tag, attr, val = m.groups()
+        return [e for e in root.iter(tag) if val in (e.get(attr) or "")]
+    try:
+        return root.findall(x)
+    except SyntaxError as e:
+        raise NotImplementedError(
+            f"u2shim: xpath-lite subset only — {x!r} unsupported") from e
+
+
+def _xp_match(el, x):
+    """Predicate form of the shorthand — is `el` an `x` node? (used by
+    parent() ancestor matching)."""
+    if x.startswith("%") or x.endswith("%"):
+        return x.strip("%") in (el.get("text") or "")
+    if x.startswith("@"):
+        return el.get("resource-id") == x[1:]
+    if _XP_RID.match(x):
+        return el.get("resource-id") == x
+    if x.startswith("//"):
+        for pat in (_XP_EQ, _XP_CONTAINS_ABS):
+            m = pat.match(x)
+            if m:
+                tag, attr, val = m.groups()
+                return (tag in ("*", el.tag)
+                        and (val in (el.get(attr) or "")
+                             if pat is _XP_CONTAINS_ABS
+                             else el.get(attr) == val))
+        raise NotImplementedError(
+            f"u2shim: ancestor match {x!r} unsupported")
+    return el.get("text") == x
+
+
+class _XEl:
+    """One resolved xpath node — attrs straight from the a11y dump."""
+    _B = re.compile(r"\[(\d+),(\d+)\]\[(\d+),(\d+)\]")
+
+    def __init__(self, dev, el):
+        self.dev, self._el = dev, el
+
+    @property
+    def bounds(self):
+        m = self._B.match(self._el.get("bounds", ""))
+        return tuple(int(g) for g in m.groups()) if m else (0, 0, 0, 0)
+
+    def center(self):
+        l, t, r, b = self.bounds
+        return (l + r) // 2, (t + b) // 2
+
+    @property
+    def info(self):
+        a = self._el.attrib
+        l, t, r, b = self.bounds
+        i = dict(a)
+        i.update({"text": a.get("text", ""),
+                  "resourceId": a.get("resource-id", ""),
+                  "className": a.get("class", ""),
+                  "packageName": a.get("package", ""),
+                  "bounds": {"left": l, "top": t, "right": r,
+                             "bottom": b}})
+        return i
+
+    def get_text(self):
+        return self._el.get("text", "")
+
+    def click(self):
+        return self.dev.click(*self.center())
+
+    def swipe(self, direction, scale=0.5):
+        """u2 XMLElement.swipe — host approx: directional swipe inside
+        the element's bounds (u2 semantics differ slightly; this is
+        the documented approximation)."""
+        l, t, r, b = self.bounds
+        cx, cy = (l + r) // 2, (t + b) // 2
+        dx, dy = {"up": (0, -1), "down": (0, 1),
+                  "left": (-1, 0), "right": (1, 0)}[direction]
+        return self.dev.swipe(cx, cy, cx + int(dx * (r - l) * scale),
+                              cy + int(dy * (b - t) * scale), 0.3)
+
+
+class _XPathLite:
+    """`d.xpath(x)` result — chainable host-side selector. Methods
+    mirror the u2 XPathSelector surface used by the verbatim suite."""
+
+    def __init__(self, dev, xp):
+        self.dev, self._xp = dev, xp
+
+    def _eval(self):
+        root = ET.fromstring(self.dev.dump_hierarchy())
+        return root, _xp_eval(root, self._xp)
+
+    @property
+    def exists(self):
+        return bool(self._eval()[1])
+
+    def wait(self, timeout=None):
+        if timeout is None:
+            timeout = self.dev.wait_timeout
+        deadline = time.time() + timeout
+        while True:
+            if self._eval()[1]:
+                return True
+            if time.time() >= deadline:
+                return False
+            time.sleep(min(0.5, max(0.0, deadline - time.time())))
+
+    def all(self):
+        return [_XEl(self.dev, e) for e in self._eval()[1]]
+
+    def get(self):
+        if not self.wait():
+            raise UiObjectNotFoundError(
+                f"u2shim: no xpath match {self._xp!r}")
+        return self.all()[0]
+
+    def click(self):
+        return self.get().click()
+
+    def get_text(self):
+        return self.get().get_text()
+
+    @property
+    def info(self):
+        return self.get().info
+
+    def parent(self, x=None):
+        """u2 .parent([x]) — first hit's ancestor (x → nearest matching
+        ancestor via shorthand predicate)."""
+        root, hits = self._eval()
+        if not hits:
+            return None
+        pmap = {c: p for p in root.iter() for c in p}
+        p = pmap.get(hits[0])
+        if x is None:
+            return _XEl(self.dev, p) if p is not None else None
+        while p is not None and not _xp_match(p, x):
+            p = pmap.get(p)
+        return _XEl(self.dev, p) if p is not None else None
+
+    def scroll_to(self, target, max_swipes=12):
+        """u2 .scroll_to(x): swipe inside the scrollable node until
+        `target` matches — host loop (dump ~50ms per pass)."""
+        no_sc = 0
+        for _ in range(max_swipes):
+            root, _ = self._eval()
+            t = _xp_eval(root, target)
+            if t:
+                return _XEl(self.dev, t[0])
+            sc = next((e for e in root.iter()
+                       if e.get("scrollable") == "true"), None)
+            if sc is None:
+                # mid-navigation dumps can show the unpopulated list
+                # (scrollable=false) — tolerate a few before giving up.
+                no_sc += 1
+                if no_sc >= 4:
+                    break
+                time.sleep(0.4)
+                continue
+            no_sc = 0
+            # Slow half-viewport drag — a fast full-height swipe flings
+            # ~2 viewports and skips the band holding `target` (empirical:
+            # ApiDemos Graphics 'Pictures' is missed by 0.8-scale flings).
+            l, top, r, b = _XEl(self.dev, sc).bounds
+            cx = (l + r) // 2
+            self.dev.swipe(cx, top + int((b - top) * 0.8),
+                           cx, top + int((b - top) * 0.4),
+                           duration=0.7, steps=24)
+            # settle: let inertia die before the next dump — a dump mid-
+            # fling can catch `target` sliding through view, then the
+            # caller's re-eval sees it scrolled past again.
+            time.sleep(0.5)
+        return None
 
 
 def _detect_port(serial=None):

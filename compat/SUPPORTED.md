@@ -14,7 +14,7 @@ uiautomator2 `Device` 公共 API 的逐条标注。约定：**drop-in 只承诺�
 | `index` `instance` | ✅ | M13 语义对齐 u2：**`index`** = 节点在父中的子位置（XML `index` attr，host post-filter 谓词）；**`instance`** = 第 N 个命中（0-based；wire `index` 字段语义即此，shim 映射 instance→wire index）。注意 M11-12 曾把两者混为 Nth-match——旧脚本的 `d(index=N)` 语义会变 |
 | `clickable` `checkable` `checked` `enabled` `focusable` `focused` `selected` `longClickable` | ✅ | M12 host post-filter attrs |
 | relative selector（`child`/`sibling`/`left`/`right`/`up`/`down`） | ✅ | M12 host post-filter：空间向=节点 bounds 完全落在锚点方向区；child/sibling 用 dump 树父子关系 |
-| `xpath` | ❌ **非目标** | u2 xpath 为可选插件，明确不做 |
+| `xpath` | ⚠️ **host-side 近似子集** | M23 xpath-lite：每次查询一次 `dump_hierarchy`+ElementTree（~50ms），**非 u2 插件管线**。覆盖：text 简写 / `%模糊%` / `@resource-id` / 裸 `pkg:id/x` / `//*[@attr]` / `contains()` / `parent()` / `scroll_to` / `all()`/`get()`/`exists`/`wait()`/`click()`/`get_text()`/`info`/`swipe`。位置轴/`and-or` 谓词/ancestor 轴等高级面 → 显式 `NotImplementedError`。watcher `when()` 仅接 `//*[@text|@resource-id|@content-desc|@class|@package=...]` 1:1 wire 翻译，复杂 xpath 规则 NIE |
 
 > 解析路径注（M12）：全精确键走 wire QUERY（仅 active window）；含
 > contains/matches/attrs/relative 时整体切 dump+post-filter（全窗口树，
@@ -103,8 +103,8 @@ benchmark/suite 跑旧 targetSdk app 前需先放行（openatx u2 官方
 
 - **defer（明示不复制 u2 内部对象模型）**：G6 `jsonrpc` 等 u2 内部面
   ——`d.jsonrpc` 现为 agent client 透传（可访问 shim 底层 ops，非 u2
-  jsonrpc 对象模型）；`d.xpath` 返回 stub，任何调用诚实报错（xpath
-  仍为明确非目标）。
+  jsonrpc 对象模型）；`d.xpath` 现为 host-side 近似子集（xpath-lite，
+  见上行表格——非 u2 插件管线，高级轴 NIE）。
 - **M21 已实装（近似注记）**：G8 session 对象模型（`Session`/
   `running()`/`with` 退出 stop/`SessionBrokenError`——惰性轮询非
   常驻看护）；G10 settings 全语义（已知键类型校验——
