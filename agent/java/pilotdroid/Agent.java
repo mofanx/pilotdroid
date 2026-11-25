@@ -872,6 +872,8 @@ public final class Agent {
         private static int sFps, sQuality;
         private static float sScale;
         private static boolean nullWarned;
+        private static int capNulls;
+        private static long capNsSum, encNsSum;
 
         /** New media connection: becomes pending (pre-start) or is
          *  rejected — at most one media conn at a time. */
@@ -897,7 +899,7 @@ public final class Agent {
                 throws Exception {
             if (running) throw new OpError("ERR_STREAM_BUSY", "stream already running");
             owner = o; running = true; frames = 0; dropped = 0; seq = 0;
-            nullWarned = false;
+            nullWarned = false; capNulls = 0; capNsSum = 0; encNsSum = 0;
             sFps = Math.max(1, Math.min(30, fps));
             sScale = scale; sQuality = quality;
             queue = new java.util.concurrent.ArrayBlockingQueue<>(1);
@@ -927,6 +929,10 @@ public final class Agent {
             m.put("ok", true);
             m.put("frames_sent", frames);
             m.put("dropped", dropped);
+            m.put("cap", "uia");                   // capture backend (ADR-008)
+            m.put("cap_nulls", capNulls);        // takeScreenshot() null count
+            m.put("cap_ms", frames > 0 ? capNsSum / frames / 1_000_000L : 0);
+            m.put("enc_ms", frames > 0 ? encNsSum / frames / 1_000_000L : 0);
             return m;
         }
 
@@ -970,6 +976,7 @@ public final class Agent {
                 try {
                     Bitmap bmp = shotSync(uia);
                     if (bmp == null) {
+                        capNulls++;
                         if (seq == 0 && !nullWarned) {
                             nullWarned = true;
                             System.out.println("cap: null bitmap");
@@ -998,6 +1005,8 @@ public final class Agent {
                     p.put("dropped", dropped);
                     p.put("data", bos.toByteArray());
                     f = frame(++seq, p);
+                    capNsSum += t2 - t0;
+                    encNsSum += t3 - t2;
                     outBmp.recycle();
                     if (outBmp != bmp) bmp.recycle();
                 } catch (Throwable t) {

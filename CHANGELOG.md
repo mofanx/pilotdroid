@@ -6,6 +6,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- **`stream-stop` 抓帧观测面**（M28 spike 沉淀）：ack 新增
+  `{cap, cap_nulls, cap_ms, enc_ms}`——cap 后端名（当前
+  `uia`）、takeScreenshot null 计数、抓帧/编码分相均值。
+
+### Docs
+
+- ADR-008 收录 MIUI API34 高帧抓帧面 spike 实录（7 路径全测
+  证：uia 5.6fps 为唯一可用源上限；VD 镜像含 `screenrecord`
+  同构全被 ROM 封锁）——supersede ADR-006 的帧率语境假设，
+  media 通道设计不变。
+
 ## [0.6.4] — 2026-11-25
 
 ### Fixed
