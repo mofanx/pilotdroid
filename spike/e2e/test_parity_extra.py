@@ -258,6 +258,60 @@ def test_som_screenshot_annotated_no_throw():
     assert raw_ids == list(range(1, len(raw_ids) + 1))
 
 
+def test_toast_get_message_real_device():
+    """t15: agent a11y listener (≥0.7.1) pushes TYPE_NOTIFICATION_STATE
+    _CHANGED events; ApiDemos PopupMenu1 fires a REAL toast on item
+    click — get_message must return its text."""
+    d = _require()
+    d.app_start("io.appium.android.apis", activity=".view.PopupMenu1",
+                stop=True)
+    import threading
+    res = {}
+    t = threading.Thread(
+        target=lambda: res.setdefault(
+            "m", d.toast.get_message(timeout=12)))
+    t.start()
+    time.sleep(0.8)  # let get_message attach the media conn first
+    d(text="MAKE A POPUP!").click()
+    time.sleep(1.0)
+    d(text="Add").click()
+    t.join(13)
+    assert res.get("m") == "Clicked popup menu item Add", res
+    d.press("home")
+    time.sleep(1.5)  # settle — a11y root goes transient right after a toast
+
+
+def test_ime_surfaces_real_device():
+    """t15: current_ime/ime_list read the settings+`ime` surface;
+    set_ime round-trip restores the original."""
+    d = _require()
+    cur = d.current_ime()
+    ids = d.ime_list()
+    assert cur and "/" in cur, f"no current IME: {cur!r}"
+    assert cur in ids, f"current {cur} not in installed {ids}"
+    if len(ids) > 1:
+        other = next(i for i in ids if i != cur)
+        try:
+            assert d.set_ime(other) == 0
+            time.sleep(0.5)
+            assert d.current_ime() == other
+        finally:
+            d.set_ime(cur)
+
+
+def test_screenrecord_produces_mp4_real_device():
+    """t15: file-recording path exists (u2-compatible ctx manager) —
+    but on this MIUI API34 ROM the encoder is throttled (~1-3 frames
+    per 4s, `screenrecord --verbose` self-reports). Assert a valid
+    mp4 lands locally, NOT a usable frame rate — see SUPPORTED.md."""
+    d = _require()
+    out = "/tmp/pilotdroid_parity_rec.mp4"
+    with d.screenrecord(out, time_limit=6):
+        time.sleep(4)
+    assert os.path.exists(out) and os.path.getsize(out) > 4096, out
+    os.unlink(out)
+
+
 def main():
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     for fn in fns:

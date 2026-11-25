@@ -1340,6 +1340,58 @@ class Device:
         return subprocess.run(cmd, capture_output=True).returncode == 0
 
     @property
+    def toast(self):
+        """u2 `d.toast` — a11y-event toast detection (agent ≥0.7.1).
+        get_message(timeout) blocks until a toast event arrives on the
+        media channel; real notifications are filtered out (parcel !=
+        toast). Mutually exclusive with a RUNNING watcher — the media
+        conn is single-client."""
+        t = getattr(self, "_toast", None)
+        if t is None:
+            t = self._toast = _Toast(self)
+        return t
+
+    @property
+    def clipboard(self):
+        """u2 `d.clipboard` — NIE with hard evidence on ba0d072d:
+        agent has no app Context (UiAutomationConnection path), and
+        ActivityThread.systemMain() self-kills (ADR-008); host-side
+        `service call clipboard` returns opaque parcels / `cmd
+        clipboard` unimplemented / `dumpsys clipboard` silent on
+        MIUI API34."""
+        raise NotImplementedError(
+            "u2shim: clipboard unsupported — no app Context in "
+            "app_process agent (systemMain self-kills, ADR-008) and "
+            "host service-call route is undocumented-parcel only")
+
+    @clipboard.setter
+    def clipboard(self, _v):
+        self.clipboard  # raises NotImplementedError
+
+    def screenrecord(self, output, time_limit=180):
+        """u2 `d.screenrecord()` — file-recording context manager via
+        the /system/bin/screenrecord binary (present on ba0d072d; the
+        15fps STREAM wall in ADR-008 is a different path — capture to
+        mp4 works). `output` is the LOCAL path; the mp4 is pulled on
+        exit and the device copy removed."""
+        return _ScreenRecord(self, output, time_limit)
+
+    def current_ime(self):
+        """u2 `d.current_ime()` — default input method id."""
+        return self.shell(
+            "settings get secure default_input_method").output.strip()
+
+    def set_ime(self, ime_id):
+        """u2 `d.set_ime(ime_id)` — switch default input method
+        (`ime list -s` for ids). Returns the `ime set` exit code."""
+        return self._sh(["adb", "shell", "ime", "set", ime_id])
+
+    def ime_list(self):
+        """Available input method ids (`ime list -s`)."""
+        out = self.shell("ime list -s").output
+        return [l.strip() for l in out.splitlines() if l.strip()]
+
+    @property
     def wlan_ip(self):
         """u2 `d.wlan_ip` — device IPv4 on wlan0, None if absent."""
         out = self.shell("ip addr show wlan0").output
@@ -1553,6 +1605,76 @@ def _xp_match(el, x):
         raise NotImplementedError(
             f"u2shim: ancestor match {x!r} unsupported")
     return el.get("text") == x
+
+
+class _Toast:
+    """u2 `d.toast` surface: agent pushes {type:"toast"} ui_events for
+    TYPE_NOTIFICATION_STATE_CHANGED (real toasts have no parcelable —
+    notifications do and are filtered out)."""
+
+    def __init__(self, dev):
+        self.dev = dev
+        self.last = None
+
+    def get_message(self, timeout=10.0, default=None):
+        """Block until a toast event arrives → its text; `default` on
+        timeout. Opens the media conn itself — fails fast if the
+        watcher is already holding it (single-client channel)."""
+        w = getattr(self.dev, "_watcher", None)
+        if w is not None and getattr(w, "_running", False):
+            raise RuntimeError(
+                "u2shim: toast.get_message can't run while watcher is "
+                "running — media conn is single-client")
+        ms = media_connect(self.dev._media_forward())
+        try:
+            deadline = time.time() + timeout
+            while time.time() < deadline:
+                ms.settimeout(max(0.05, deadline - time.time()))
+                try:
+                    _ch, _ty, _fl, _seq, payload = read_frame(ms)
+                except socket.timeout:
+                    break
+                if isinstance(payload, dict) \
+                        and payload.get("type") == "toast" \
+                        and not payload.get("has_parcel"):
+                    txt = " ".join(payload.get("text") or []) or None
+                    self.last = txt
+                    return txt
+            return default
+        finally:
+            ms.close()
+
+    def reset(self):
+        self.last = None
+
+
+class _ScreenRecord:
+    """`with d.screenrecord(local_path) as r:` — record the screen to
+    /sdcard via /system/bin/screenrecord, SIGINT-finalize + pull."""
+
+    def __init__(self, dev, output, time_limit):
+        self.dev, self.output, self.limit = dev, output, time_limit
+        self.remote = f"/sdcard/pilotdroid_rec_{int(time.time())}.mp4"
+
+    def __enter__(self):
+        sh = subprocess.Popen(
+            (["adb"] + (["-s", self.dev.serial] if self.dev.serial else [])
+             + ["shell", "screenrecord", "--time-limit",
+                str(self.limit), self.remote]),
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        self._proc = sh
+        return self
+
+    def stop(self):
+        self.__exit__(None, None, None)
+
+    def __exit__(self, *exc):
+        self.dev.shell("pkill -INT -f 'screenrecord.*pilotdroid_rec'")
+        self._proc.wait(timeout=10)
+        time.sleep(0.5)  # encoder finalizes the moov box
+        ok = self.dev.pull(self.remote, self.output)
+        self.dev.shell(f"rm -f {self.remote}")
+        return False
 
 
 class _XEl:

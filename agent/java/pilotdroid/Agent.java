@@ -42,7 +42,7 @@ import java.util.Set;
 public final class Agent {
     private static final String SOCKET_NAME = "pilotdroid_agent";
     private static final String MEDIA_SOCKET = "pilotdroid_agent_media";
-    private static final String AGENT_VER = "0.7.0";
+    private static final String AGENT_VER = "0.7.1";
     private static final int PROTO_VER = 0;
 
     // capability bitmap — normative spec is pilotdroid-proto `caps` (bit-for-bit)
@@ -73,6 +73,28 @@ public final class Agent {
         UiAutomation uia = connectUiAutomation();
         Dumper dumper = new Dumper(uia);
         Injector injector = new Injector(uia);
+        // toast detection (u2 parity): TYPE_NOTIFICATION_STATE_CHANGED
+        // events — toast posts carry no ParcelableData while real
+        // notifications do; push {type:"toast"} on the media channel.
+        try {
+            uia.setOnAccessibilityEventListener(ev -> {
+                if (ev == null || ev.getEventType() !=
+                        android.view.accessibility.AccessibilityEvent
+                                .TYPE_NOTIFICATION_STATE_CHANGED) return;
+                Map<String, Object> p = new LinkedHashMap<>();
+                p.put("type", "toast");
+                CharSequence pkg = ev.getPackageName();
+                p.put("pkg", pkg == null ? "" : pkg.toString());
+                p.put("has_parcel", ev.getParcelableData() != null);
+                List<String> tx = new ArrayList<>();
+                for (CharSequence t : ev.getText())
+                    if (t != null) tx.add(t.toString());
+                p.put("text", tx);
+                Streamer.uiEvent(p);
+            });
+        } catch (Throwable t) {
+            System.out.println("a11y event listener unavailable: " + t);
+        }
 
         LocalServerSocket srv = new LocalServerSocket(SOCKET_NAME);
         // media channel (§4.8): second localabstract, isolated from control

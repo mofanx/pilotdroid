@@ -66,7 +66,10 @@ uiautomator2 `Device` 公共 API 的逐条标注。约定：**drop-in 只承诺�
 | `send_keys(text,clear)` | ✅ | TEXT op（ACTION_SET_TEXT 于 focused 节点，M11） |
 | `open_notification()` `open_quick_settings()` | ✅ | `cmd statusbar expand-*`（M11） |
 | `freeze_rotation(bool)` | ✅ 近似 | `settings accelerometer_rotation` 开关（M11） |
-| `clipboard` `toast` | ❌ 未实现 | clipboard 在 API34 service-call 签名漂移不可靠；toast 需注入 overlay |
+| `clipboard` | ❌ ROM/架构级不可达（t15 实证） | agent 走 `UiAutomationConnection` 无 app `Context`（`ActivityThread.systemMain()` 会自杀，ADR-008）；宿主侧三路实证全死：①`service call clipboard 1/2` 返回未公开 parcel（负状态码）②`cmd clipboard` 无该子命令实现 ③`dumpsys clipboard` 静默。复现：`adb shell service call clipboard 1` |
+| `toast` `.get_message(timeout,default)` `.last` `.reset` | ✅ 实现（agent ≥0.7.1） | u2 同机制：a11y `TYPE_NOTIFICATION_STATE_CHANGED` 事件推 media ch，`has_parcel` 区分真 toast（无 parcel）与通知；与运行中 watcher 互斥（media 单连接）。真机实证：ApiDemos `PopupMenu1` 菜单点击 → `Clicked popup menu item Add` |
+| `screenrecord(output,time_limit)` ctx-mgr | ⚠️ API 在，输出 ROM 节流 | `/system/bin/screenrecord` 存在且 SIGINT/pull 链路通，但 MIUI API34 编码器 ~1-3 帧/4s（`screenrecord --verbose` 自报 `recorded 3 frames in 4 seconds`）→ 产出近静态 mp4，非可用录屏。与 ADR-008 流式墙同根因（虚拟显示源受限）。复现：`adb shell screenrecord --verbose --time-limit 4 /sdcard/x.mp4` |
+| `current_ime()` `set_ime(id)` `ime_list()` | ✅ | `settings get secure default_input_method` + `ime set/list -s`；真机 round-trip 切回验证（ba0d072d） |
 
 ## 实测数据
 

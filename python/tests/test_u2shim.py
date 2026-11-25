@@ -919,5 +919,102 @@ class TestMaxFiresParam(unittest.TestCase):
             w.when(text="x").click(max_fires=-1)
 
 
+class TestFourFace(unittest.TestCase):
+    """t15 — clipboard NIE + toast event filter + IME + screenrecord
+    wiring (host-side fakes; real-device coverage in parity)."""
+
+    def test_clipboard_nie(self):
+        d = _bare_device()
+        with self.assertRaises(NotImplementedError):
+            _ = d.clipboard
+        with self.assertRaises(NotImplementedError):
+            d.clipboard = "x"
+
+    def test_ime_methods(self):
+        d = _bare_device()
+        d.shell = lambda c: u2shim.ShellResponse(
+            "com.foo/.BarIME\ncom.baz/.QuuxIME\n" if "ime list" in c
+            else "com.foo/.BarIME\n", 0)
+        self.assertEqual(d.current_ime(), "com.foo/.BarIME")
+        self.assertEqual(d.ime_list(),
+                         ["com.foo/.BarIME", "com.baz/.QuuxIME"])
+        calls = []
+        d.serial = "S"
+        d._sh = lambda c: calls.append(c) or 0
+        self.assertEqual(d.set_ime("com.baz/.QuuxIME"), 0)
+        self.assertEqual(calls[0][-3:], ["ime", "set", "com.baz/.QuuxIME"])
+
+    def _feed(self, frames):
+        """Monkeypatch media_connect/read_frame with synthetic frames."""
+        import u2shim as u
+        it = iter(frames)
+        u.media_connect = lambda port: socket.socket()
+        def rf(ms):
+            try:
+                return next(it)
+            except StopIteration:
+                raise socket.timeout()
+        u.read_frame = rf
+
+    def test_toast_filters_notifications(self):
+        saved = u2shim.media_connect, u2shim.read_frame
+        try:
+            self._feed([
+                (1, 2, 0, 0, {"type": "toast", "pkg": "x",
+                              "has_parcel": True, "text": ["notif"]}),
+                (1, 2, 0, 0, {"type": "watch", "payload": {}}),
+                (1, 2, 0, 0, {"type": "toast", "pkg": "y",
+                              "has_parcel": False, "text": ["hi", "there"]}),
+            ])
+            d = _bare_device()
+            d._media_forward = lambda: 1
+            self.assertEqual(d.toast.get_message(timeout=3), "hi there")
+            self.assertEqual(d.toast.last, "hi there")
+        finally:
+            u2shim.media_connect, u2shim.read_frame = saved
+
+    def test_toast_timeout_default(self):
+        saved = u2shim.media_connect, u2shim.read_frame
+        try:
+            self._feed([])
+            d = _bare_device()
+            d._media_forward = lambda: 1
+            self.assertIsNone(d.toast.get_message(timeout=1))
+            self.assertEqual(d.toast.get_message(timeout=1, default="d"), "d")
+        finally:
+            u2shim.media_connect, u2shim.read_frame = saved
+
+    def test_toast_rejects_running_watcher(self):
+        d = _bare_device()
+        w = u2shim._Watcher(d)
+        w._running = True
+        d._watcher = w
+        with self.assertRaises(RuntimeError):
+            d.toast.get_message(timeout=1)
+
+    def test_screenrecord_cycle(self):
+        d = _bare_device(serial="S")
+        calls = []
+        d.shell = lambda c: calls.append(c) or u2shim.ShellResponse("", 0)
+        d.pull = lambda s, dst: calls.append(("pull", s, dst)) or True
+        pops = []
+        class _P:
+            def __init__(*a, **k):
+                pops.append(a[1] if len(a) > 1 else k.get("args"))
+            def wait(self, timeout=None):
+                return 0
+        saved = u2shim.subprocess.Popen
+        u2shim.subprocess.Popen = _P
+        try:
+            with d.screenrecord("/tmp/x.mp4") as r:
+                pass
+        finally:
+            u2shim.subprocess.Popen = saved
+        self.assertIn("screenrecord", " ".join(map(str, pops[0])))
+        self.assertTrue(any("pkill -INT" in str(c) for c in calls))
+        self.assertTrue(any(c[0] == "pull" for c in calls if isinstance(c, tuple)))
+        self.assertTrue(any("rm -f" in str(c) for c in calls))
+
+
 if __name__ == "__main__":
     unittest.main()

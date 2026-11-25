@@ -23,6 +23,28 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   后下一 `describe_screen` 1.11s 透明成功（含 800ms 拉起 settle），
   再次 op 恢复 0.02s 常态。
 
+- **Track B 四 ❌ 面清零/证伪**（t15，`compat/u2shim.py` +
+  `agent/java` 0.7.1 + `SUPPORTED.md`）：
+  - `d.toast.get_message(timeout,default)`/`.last`/`.reset` ✅
+    ——agent 注册 `UiAutomation.setOnAccessibilityEventListener`，
+    `TYPE_NOTIFICATION_STATE_CHANGED` → media ch 推
+    `{type:"toast",pkg,has_parcel,text[]}`；真 toast 无 parcel
+    与通知区分。u2 同事件机制。真机实证：ApiDemos `PopupMenu1`
+    菜单点击 → `Clicked popup menu item Add`。与运行中 watcher
+    互斥（media 单连接，`RuntimeError` 明示）。
+  - `d.current_ime()`/`d.set_ime(id)`/`d.ime_list()` ✅——
+    `settings get secure default_input_method` + `ime set/list
+    -s`，真机切换 round-trip 验证。
+  - `d.screenrecord(output,time_limit)` ⚠️——u2 同 shell 机制
+    ctx-manager（后台录制→SIGINT 收尾→pull），链路可用但
+    MIUI API34 编码器节流 ~1-3 帧/4s（`screenrecord --verbose`
+    自报），产出近静态 mp4——API ✅、录屏实效 ⚠️，与 ADR-008
+    流式墙同根因。
+  - `d.clipboard` ❌ NIE 证伪落地——`UiAutomationConnection` 无
+    app `Context`（`systemMain()` 自杀，ADR-008）；宿主
+    `service call` 未公开 parcel / `cmd clipboard` 未实现 /
+    `dumpsys` 静默三路实证全死，SUPPORTED 附复现命令。
+
 - **SoM 感知 MCP 工具面**（Track A·M29，`crates/pilotdroid-cli` 新
   `som.rs`——编号空间与 `compat/som.py` 逐字一致）：`describe_screen`
   返回 `{elements, text}`（id↔center↔label/rid/class/C）；
