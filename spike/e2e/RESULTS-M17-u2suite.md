@@ -322,3 +322,30 @@ NIE）」。`_XPathStub` 已删除；`hasattr` 探测语义由方法存在性
   自动点「继续安装」→Success；shade 展开→0.4s collapse。
 - 测试有效性：49/49（+6 钉 LIKE 三态/双态/枚举/getitem/
   builtin 注册含 builtin=False 对照）。
+
+### 附4：M25 收口复核（t3 复核轮，commit 7193b94 + c0d65d8）
+
+- 独立全量复跑 **22 passed / 0 failed / 8 skipped（45.41s）**——
+  re-arm+host-poll 改动后零回归。
+- **re-arm 语义复核**：`_pd_max_fires` 预算挂 action 函数属性
+  （lambda/闭包通吃），默认 1=fire-once parity 不破；命中路径
+  （device WATCH_HIT / host `s.exists` / `_xpath` host-poll）三处
+  摘除统一走 `_fire_done` 预算门。泄漏面核过：agent 侧 Watcher
+  `run()` 命中即 `break` 自退（Agent.java §"Fire-once"），
+  `armed.pop` 摘的是已死线程 id 非泄漏；`finally` 只 disarm
+  存活 watch_id——重臂换新 id 无累积。
+- **xpath host-poll 复核**：`when("//非wireable")` 先经
+  `_xp_eval` 罐头文档探针 fail-fast NIE，可求值者落 `_xpath`
+  哨兵→`_host_match`（`_XPathLite.exists`+残余 selector key
+  AND）；`_xpath` 规则恒不 arm 走每 tick 一 dump——与
+  SUPPORTED.md poll 语义+延迟注记一致。`when()` NIE 边界
+  从"非wireable xpath"收窄为"连 lite 子集都拒绝的表达式"。
+- **真机双证**（ba0d072d，走 suite seam 包→u2shim）：
+  `//*[@class='android.widget.FrameLayout']` 恒真规则
+  `_pd_max_fires=2` → **精确 2 次命中摘除**（tick 间隔 0.04s）；
+  无预算规则 → **1 次命中**（fire-once 默认不变）。
+- builtin LBE `max_fires=3` 与 fixture-doctor `while page<8`
+  多页循环同一实测依据；其余两条规则预算=1。
+- 单测 49/49（+7：fire_done 计数/双态、tick hit-miss-rearm、
+  run_async host-poll、wire hit→re-arm 新 watch_id 计数、
+  when() NIE 边界收窄、builtin max_fires 映射）。
