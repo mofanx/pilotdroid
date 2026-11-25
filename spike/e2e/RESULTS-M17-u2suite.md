@@ -422,3 +422,38 @@ NIE）」。`_XPathStub` 已删除；`hasattr` 探测语义由方法存在性
 - **回归**：pytest `python/tests/` **68/68**（u2shim 61 +
   cli_bootstrap 7，与 t1 报的 61 单文件口径一致）；
   doc-drift **5/5 PASS**（含新闸）。
+
+## 附 7 — M28 复核段（t2 高帧流批交叉复核，p3 独立判定）
+
+复核对象 `ce18f2d`（stream-stop 观测面+ADR-008+jar 重建），
+复核者与落地者不同人。
+
+- **Streamer 生命周期/异常面代码审——pass**：
+  `ctrlClosed`（ctrl 会话终→隐式 halt 会话绑定）、`mediaDead`
+  （media 写失败→halt）、`stop` owner 校验（他会话停他人流
+  ERR_STREAM_BUSY）、`halt` 幂等（running=false+interrupt+
+  curSock 关闭解 writer write 阻塞+双 join）、start 丢弃
+  pre-start pendSock（§4.8 尸体连接防护——本复核者亲手踩到：
+  media_connect 先于 start 会收 0 帧，顺序反即正常）；
+  背压 queue(1)+dropped 计数——慢读者不堵 capture/ctrl；
+  bitmap 双路 recycle 正确（scale<1 两图都收，=1 收一）。
+  与既有 screenshot 路径零干扰（独立 media socket+单 owner）。
+  nit（非阻塞）：`stop` 在未运行时返回上一轮旧计数；
+  capNulls 的重试耗时不入 cap_ms（语义正确——cap_ms 是
+  帧均捕获成本，空帧损耗单列 cap_nulls 即可）。
+- **真机独立复测——pass（≥15fps 判 partial 确认）**：
+  30s 持续 `stream --fps 15 --duration 30` → **166 帧/30.05s
+  = 5.5fps，seq_gaps=0，dropped=0**（与 p2 的 5.3fps/90f/17s
+  一致，非单次侥幸）；8s python 复测 45f/8.1s=5.5fps，
+  `stream-stop` 实测 `{cap:"uia", cap_nulls:1, cap_ms:115,
+  enc_ms:65}`——与 p2 报的 113/67 吻合，分相账自洽
+  （115+65≈180ms/帧 → 5.6fps 理论顶，实测 5.5 贴顶）。
+- **ADR-008 事实核——pass**：supersede 表述精确限定「ADR-006
+  中 >6fps 档语境假设」非整篇替换（ADR-006 的 socket/背压
+  决定仍有效）；七路径矩阵与实测一致（uia 5.6/screencap 2.1/
+  VD 0 帧/screenrecord 2 帧/DMS null/并行 uia 单注册/
+  systemMain 自杀）；「MIUI 封锁、非 MIUI ROM 预留 surface
+  后端」注记与 cap 字段契约闭环；partial 判定如实（substrate
+  齐备+本机物理上限，非工程缺口）。
+- **回归**：cargo fmt+clippy(-D warnings)+test 全绿；
+  `verify-agent.sh ba0d072d` **37/0**；doc-drift 6/6 PASS。
