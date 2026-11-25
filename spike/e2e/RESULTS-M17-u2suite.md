@@ -814,3 +814,37 @@ CI+CodeQL 于 `b34e1a5`/`917e3e5`（lock 修复后）持续 success。
 ### D. 回归抽样
 
 - `test_parity_extra.py` → **12/12**；`cargo` 三件套于 t3/t4 提交各自已绿、CI/CodeQL success（gh run 45620754611/45628026909）。
+
+## 附19 t6 复核——t1 发版 + t2 恢复 UX 独立复验（2026-11-26，复核人 p4）
+
+### A. t1 v0.7.1 四面复验：**PASS**
+
+| 面 | 复核证据 | 判 |
+|---|---|---|
+| Release | tag `v0.7.1`@b34e1a5，7 assets 齐（3 平台 cli+whl+sdist+agent.jar+SHA256SUMS） | PASS |
+| agent.jar 一致性 | `git show v0.7.1:agent/agent.jar` sha256=`22431f…` == release SHA256SUMS 中 `22431f…` 逐字节一致（HEAD b5a36e 为 t4 0.7.3，属预期） | PASS |
+| PyPI | `pilotdroid 0.7.1` latest | PASS |
+| Registry | `io.github.mofanx/pilotdroid 0.7.1` 已上架；server.json version=0.7.1、30 tools 描述 | PASS |
+| tap | `homebrew-pilotdroid` Formula 0.7.1@558cdac，双 sha256 与 SHA256SUMS 一致 | PASS |
+| notes 诚实档 | body 含 agent.jar 0.7.1→0.7.2 随行说明+三层 ghost 修复机制+沿用 0.7.0 limits（clipboard❌/screenrecord⚠️/fps 5.6 ceiling） | PASS |
+| 文档注记 | §4.8「写过≥1 次=唯一可靠活性证据，read-timeout 探针证伪」在档；AGENTS.md fake relay 半关闭保真度注记在档 | PASS |
+
+### B. t2 三件套代码审+真机独立实证：**PASS**
+
+- 代码审（5c51f86）：epoch 变更时先 socket-free `pop_stashed` 排干（WatchHit 弃/Toast 存）→`watch_attach` 预挂→逐 ArmedRule `watch_arm` 重臂并标 post-call gen（双故障角例覆盖）→`session_recovered{generation,stale_watchers,rearmed,rearm_failed}`；流中 `pop_stashed` 每迭代排干经 `route_event` 补推 notification；demux 断连不再摘 armed（留给 re-arm），`demux_dead` 每 streak warn 一次；stale `watch_disarm` 本地 `{disarmed:false}` 不透传。
+- 真机实证（`t6_verify.py`，ba0d072d，agent 0.7.3/gen 新代际）：
+  - A `pkill -f pilotdroid.Agent`（pid 5840→12533）→ `describe_screen` 触发恢复 → `session_recovered{generation:1,stale_watchers:1,rearmed:1,rearm_failed:0}` 到达 notification 通道 —— **PASS**
+  - B 重臂规则 `app_start settings` 首 hit 到 `watch_hit` notification，watch_id 重映射（1，新代际 id 空间）—— **PASS**
+  - C `stream_start` 激活期 hit 经 stash 排干为 mid-stream push notification（同调用窗读 4 帧）—— **PASS**
+- nit 有效性：serve.rs:778 stale disarm 本地返回、`demux_dead` warn 收窄在档；SUPPORTED.md demux 段（push 流中照推/re-arm/stale disarm 语义）已更新。
+
+### C. 回归面板
+
+| 检查 | 结果 |
+|---|---|
+| `cargo test --workspace` | 96/0 |
+| `cargo fmt/clippy -D warnings` | 净 |
+| u2 套件 run.sh | **22 passed / 0 failed / 8 skipped** 零回归 |
+| python/tests | 92 passed |
+
+插曲：复核期间 /home 100% 满致 lld Bus error——`cargo clean` 释放 3G 后全绿（环境故障非代码）。
