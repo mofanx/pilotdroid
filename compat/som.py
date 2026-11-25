@@ -113,10 +113,8 @@ def screenshot_annotated(dev, path=None, quality=80):
     img = Image.open(io.BytesIO(dev.screenshot(quality=quality,
                                              scale=1.0))).convert("RGB")
     draw = ImageDraw.Draw(img)
-    skipped = 0
     for e in elements:
         if not e["bounds"]:
-            skipped += 1
             continue
         color = _PALETTE[(e["id"] - 1) % len(_PALETTE)]
         l, t, r, b = e["bounds"]
@@ -127,7 +125,6 @@ def screenshot_annotated(dev, path=None, quality=80):
         l, r = min(l, r), max(l, r)
         t, b = min(t, b), max(t, b)
         if r <= l or b <= t:
-            skipped += 1
             continue
         draw.rectangle([l, t, r, b], outline=color, width=3)
         tag = str(e["id"])
