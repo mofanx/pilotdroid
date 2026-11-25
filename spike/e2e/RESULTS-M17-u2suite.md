@@ -905,7 +905,7 @@ states 面落地后重跑 B4 场景（describe→tap→verify_after）：describ
 
 `expect.state.match.i` 在 serve.rs:1087 用 `list_elements(false)`（全树索引）解析，而 host 可见 `i` 是 `list_elements(true)`（interactive 子集）空间——**同一 `i` 指不同元素**，match.i 命中错节点（实测 i=5 在 full-tree 落到非目标节点，checked 永 false）。任务侧改 match.text 规避；**应修 serve.rs 对齐为 interactive 空间或文档明示**（归 t2 文件域，移交）。
 
-### D. 多设备矩阵第一行（V816=11.0.0.2:5555，dash 2602BRT18C，**API37/Android17**）
+### D. 多设备矩阵第一行（V816=dash 2602BRT18C，**API37/Android17**；net-adb 11.0.0.2:5555→改址 192.168.123.125:5555）
 
 | 项 | 结果 |
 |---|---|
@@ -915,7 +915,7 @@ states 面落地后重跑 B4 场景（describe→tap→verify_after）：describ
 | ApiDemos 安装 | **USER_RESTRICTED**——V816 未开「USB 安装」，pm install 同拒；无物理确认通道 |
 | `--portable` 核心子集 | **有意未跑**——该机经用户确认为**日常用机**（非测试机），eval 按指示只在 USB 测试机 ba0d072d 跑；诊断期曾陷 MIUI AOD doze↔防误触页循环（proximity covered 即弹 `ScreenOnProximitySensorGuide`，远端不可解） |
 | serial 切换 | `PILOTDROID_SERIAL` 环境变量即切换（Serve() 消费），双机各自 hello/tree 实证 |
-| 设置恢复 | 诊断期 `settings put system enable_screen_on_proximity_sensor 0`（试关防误触页，无效）——**待恢复为 1**；`/data/local/tmp` 可能有 ApiDemos apk 残留待清；agent.jar 0.5.0→0.7.4 为用户预装 pilotdroid 的原地升级（保留） |
+| 设置恢复 | **已完成**：`enable_screen_on_proximity_sensor` 恢复为 1、/data/local/tmp/apidemos.apk 残留已清（2026-11-27 经 192.168.123.125:5555 执行；无线 adb 曾掉线改址重连）；agent.jar 0.5.0→0.7.4 为用户预装 pilotdroid 的原地升级（保留） |
 
 **serial 切换正确性注记**：harness 全程只用 `adb -s $SERIAL` + CLI `-s $SERIAL`，无隐式单设备假设；V816 为 net-adb（5555），forward 建链与 USB 设备同路径、各自 abstract socket 不串。
 
