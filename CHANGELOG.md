@@ -4,7 +4,7 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## [Unreleased]
+## [0.6.3] — 2026-11-25
 
 ### Added
 
@@ -27,7 +27,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **`watch_context(builtin=True)` MIUI dialog recipes**（M24）：
   u2 通用规则外加 MIUI 规则集（`AdbInstallActivity`「继续安装」
   10s 倒计时竞速 / LBE ReviewPermissions 单页 fire-once
-  「确定」/ NotificationShade 收起）。
+  「确定」/ NotificationShade 收起）。动作走 host-side inject
+  +settle/retry——FLAG_SECURE 弹窗会吞 device-armed a11y
+  ACTION_CLICK（真机实证，非推测）。
 - **`spike/e2e/u2suite/fixture-doctor.sh`**：fixture 一键恢复——
   `pm path` 幂等检测 → ApiDemos 缓存下载/push → `adb install
   --bypass-low-target-sdk-block` 期间 agent a11y 自动点
@@ -47,6 +49,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **registry 重发流程文档化**（docs/mcp/SUBMIT.md）：
   draft→published 状态、republish-per-release 步骤、`login github
   -token` fallback（registry JWT 过期 401→re-login 实证）。
+- **doc-drift 扩展 + install-smoke shim 断言**（M24）：
+  `spike/e2e/doc-drift.py` 新增 `pyreadme-xpath` 检查——wheel
+  长描述口径与 SUPPORTED.md 交叉验证；`install-smoke.sh`
+  新增 `Device.xpath`/`_xp_eval` 罐头 eval 断言，`VER≥0.6.3`
+  门槛化（0.6.2 wheel 无 xpath-lite 不误红，≥0.6.3 拦打包
+  回归）。
+- **registry `0.6.1.post1` 已标记 deprecated**（回读实证）；
+  `0.6.2` 保持 active 至本版发布。
 
 ### Docs
 
