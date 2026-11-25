@@ -557,6 +557,18 @@ try:
 except Exception as e:
     rep("pinch_smoke", False, e)
 
+# agent>=0.7.4: a freshly attached media conn replays the unexpired
+# ui_event backlog first — frames must be filtered for the expected
+# watch_id, not matched on the very first read.
+def read_until(msock, pred, tries=8):
+    for _ in range(tries):
+        fr = ac.read_frame(msock)
+        if fr is None:
+            return None
+        if fr[1] == 0x0002 and pred(fr[4]):
+            return fr[4]
+    return None
+
 # C3 async WATCH round-trip: arm -> trigger -> WATCH_HIT on media socket
 ms = None
 try:
@@ -569,12 +581,11 @@ try:
     wid = r.get("watch_id")
     assert r.get("armed") and wid, r
     sh("am", "start", "com.android.settings")
-    fr = ac.read_frame(ms)
-    assert fr is not None, "media EOF"
-    hit = (fr[0] == 1 and fr[1] == 0x0002
-           and fr[4].get("watch_id") == wid and fr[4].get("matched"))
+    p = read_until(ms, lambda p: p.get("watch_id") == wid
+                   and p.get("matched"))
+    hit = p is not None
     rep("watch_arm_hit", hit,
-        f"frame ch={fr[0]} type={fr[1]:#06x} p={json.dumps(fr[4])[:150]}")
+        f"hit p={json.dumps(p)[:150] if p else 'none'}")
 except Exception as e:
     rep("watch_arm_hit", False, e)
 
@@ -600,9 +611,8 @@ try:
     if ms is None:
         raise Exception("no media conn")
     ms.settimeout(10)
-    fr = ac.read_frame(ms)
-    hit2 = (fr is not None and fr[1] == 0x0002
-            and fr[4].get("watch_id") == wid2 and fr[4].get("matched"))
+    hit2 = read_until(ms, lambda p: p.get("watch_id") == wid2
+                      and p.get("matched")) is not None
     rep("watch_parallel", hit2 and par_ms < 2000,
         f"10ping+query={par_ms:.0f}ms home_found={n_found} hit={hit2}")
 except Exception as e:
@@ -630,11 +640,10 @@ try:
     for _ in range(2):
         rst_ghost(); time.sleep(0.12)
     sh("am", "start", "com.android.settings")
-    fr = ac.read_frame(wa)
-    hit8 = (fr is not None and fr[1] == 0x0002
-            and fr[4].get("watch_id") == wid8 and fr[4].get("matched"))
-    rep("watch_ghost_live", hit8,
-        f"live conn survived stray ghosts: frame={fr is not None}")
+    hit8 = read_until(wa, lambda p: p.get("watch_id") == wid8
+                      and p.get("matched"))
+    rep("watch_ghost_live", hit8 is not None,
+        f"live conn survived stray ghosts: hit={hit8 is not None}")
     # (b) kill the live conn dirty (RST) -> corpse stays in the set;
     # a fresh conn + more ghosts -> the next hit must reach the fresh
     # conn (broadcast self-heal, no silent drop).
@@ -652,11 +661,10 @@ try:
     wid9 = r2.get("watch_id")
     assert wid9, r2
     sh("am", "start", "com.android.settings")
-    fr2 = ac.read_frame(wb)
-    hit9 = (fr2 is not None and fr2[1] == 0x0002
-            and fr2[4].get("watch_id") == wid9 and fr2[4].get("matched"))
-    rep("watch_corpse_heal", hit9,
-        f"fresh conn behind corpse+ghosts got hit: frame={fr2 is not None}")
+    hit9 = read_until(wb, lambda p: p.get("watch_id") == wid9
+                      and p.get("matched"))
+    rep("watch_corpse_heal", hit9 is not None,
+        f"fresh conn behind corpse+ghosts got hit: hit={hit9 is not None}")
     wb.close()
 except Exception as e:
     rep("watch_ghost_live", False, e)
@@ -667,22 +675,15 @@ except Exception as e:
 # {type:"watch_dead"} ui_event instead of vanishing silently; and the
 # always-stash replay ring delivers an event to a conn that attaches
 # after the broadcast window (ghost-absorbed write = fake delivery).
-def read_until(msock, pred, tries=8):
-    for _ in range(tries):
-        fr = ac.read_frame(msock)
-        if fr is None:
-            return None
-        if fr[1] == 0x0002 and pred(fr[4]):
-            return fr[4]
-    return None
-
 try:
     # (a) control-conn replace kills the session -> armed watcher aborts
-    # -> watch_dead reaches the still-attached media conn.
+    # -> watch_dead reaches the still-attached media conn. Selector is
+    # deliberately unmatchable: a satisfiable one fires first and leaves
+    # nothing armed to abort.
     wd = ac.media_connect(MPORT); wd.settimeout(10)
     time.sleep(0.3)
-    r = a.watch_arm({"pkg": "com.android.settings"}, "none",
-                    poll_ms=50)["payload"]
+    r = a.watch_arm({"pkg": "__nonexistent__.pkg"},
+                    "none", poll_ms=50)["payload"]
     widD = r.get("watch_id")
     assert widD, r
     a2 = ac.Agent(PORT).connect()     # replaces a's session -> abort

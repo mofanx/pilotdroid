@@ -848,3 +848,28 @@ CI+CodeQL 于 `b34e1a5`/`917e3e5`（lock 修复后）持续 success。
 | python/tests | 92 passed |
 
 插曲：复核期间 /home 100% 满致 lld Bus error——`cargo clean` 释放 3G 后全绿（环境故障非代码）。
+
+## 附20 t1 —— watcher 死讯通道 + ui_event always-stash replay 环（2026-11-27，ba0d072d，agent 0.7.4，274db5d+）
+
+### A. 机制
+
+- **`watch_dead` 死讯**：`Watcher.run` 重构终态语义——正常终结（hit/timeout）置 `reported`；非 `userDisarm` 的异常终结（poll Throwable / `abort(reason)`）记日志并临终推 `{"watch_id":…,"matched":false,"type":"watch_dead","waited_ms":…,"error":…}`（ch=1、frame type 0x0002 同槽，新增 payload `type` 值，协议格式未动）。显式 `watch_disarm` 静默正常。session close 的 `disarm()`→`abort("session closed")`——控制 conn 替换/断开确定触发。旧 host 不识 `type` → 按 `matched:false` hit 解码降级。
+- **always-stash replay 环**：修 §18 归因修正的真残洞——adb forward 半死管道可**假性吸收写**（ghost conn 写成功、真 reader 缺席），`delivered>0` 不再等于送达；mid-attach 真 conn 错过广播即永久丢。现每个 ui_event 入 ≤8 条/15s TTL 环，media attach 时补发未过期 backlog，flush 后不摘除（flusher 自身可能是 ghost）——重复交付幂等、由 host 去重。
+- `watchConns` cap=4 语义、replay 环界与 TTL 入 docs/02-protocol.md §4.8/§4.9 + compat/SUPPORTED.md 限制档。
+
+### B. 确定性致死路径裁决
+
+外因注入三条全部证伪（`accessibility_enabled 0` 下 bridge 存活；`uiautomator dump` 被 SIGKILL 且 agent uia 存活；息屏不杀 poll）——poll Throwable 保留为防御性兜底，**可复现致死路径定为 session close 强杀**（host 脏杀/conn 替换，正是 r5 场景）。
+
+### C. 验证链
+
+| 检查 | 结果 |
+|---|---|
+| `ghost_repro.py --watch-dead 3` | **3/3**——session 替换→`watch_dead` 到 media conn+迟到 conn replay 补达 |
+| `ghost_repro.py --watch 5` | **5/5**——replay 环零回归（stray ghost+corpse-heal 守护不破） |
+| verify-agent.sh 全量 | **44 pass / 0 fail**——含 A9 `watch_dead_event`/`watch_hit_stash_replay`，A8 双断言经 read_until 回放过滤 |
+| agent.jar | 0.7.4 重建部署，设备 `pilotdroid-agent 0.7.4` 实证 |
+| verify-agent.sh 断言修正 | A8/A9 初版假失败归因：单帧读撞 replay backlog（新 conn 先收旧事件）+A9 selector 命中当前前台致 armed 提前消费——改 read_until 按 watch_id 过滤+不可命中 selector 保持 armed |
+| CI/CodeQL | 274db5d 双绿 |
+
+文档随行：docs/02-protocol.md §4.8 watch conn/replay 语义、§4.9 `watch_dead` 事件档；SUPPORTED.md cap=4/TTL/replay 限制档；CHANGELOG Unreleased。
