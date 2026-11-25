@@ -624,6 +624,22 @@ pub mod payload {
         pub text: Vec<String>,
     }
 
+    /// `watch_dead` ui_event payload — same ch=1 0x0002 slot as
+    /// `WATCH_HIT`/toast (agent ≥0.7.4, §4.9): a watcher died
+    /// abnormally (poll fault/session teardown — NOT a hit, NOT a
+    /// user disarm) so `armed` stopped producing events silently.
+    /// Discriminated by `type == "watch_dead"`.
+    #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+    pub struct WatchDeadEvent {
+        #[serde(default)]
+        pub r#type: String,
+        pub watch_id: u32,
+        #[serde(default)]
+        pub waited_ms: u64,
+        #[serde(default)]
+        pub error: String,
+    }
+
     /// `APP_INFO` (CAP_APP_INFO): foreground-app lookup inside UiAutomation
     /// — focused window's root pkg (~ms), no host `dumpsys` spawn.
     #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

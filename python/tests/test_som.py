@@ -177,6 +177,26 @@ class TestScreenshotAnnotated(unittest.TestCase):
         ids_b = [e["id"] for e in som._enumerate(XML)]
         self.assertEqual(ids_a, ids_b)
 
+    def test_states_non_default_and_simple_class(self):
+        xml = (
+            '<hierarchy><node text="cb" resource-id="" '
+            'class="android.widget.CheckBox" clickable="true" '
+            'checked="true" focused="true" enabled="true" '
+            'content-desc="" bounds="[0,0][10,10]"/>'
+            '<node text="off" resource-id="" class="w" '
+            'clickable="true" enabled="false" content-desc="" '
+            'bounds="[0,20][10,30]"/></hierarchy>'
+        )
+        dev = FakeDev(xml=xml)
+        els = som.describe_screen(dev)["elements"]
+        self.assertEqual(els[0]["checked"], True)
+        self.assertEqual(els[0]["focused"], True)
+        self.assertNotIn("enabled", els[0])      # default → omitted
+        self.assertNotIn("selected", els[0])
+        self.assertEqual(els[1]["enabled"], False)
+        # class 口径统一为简单名（与 list_elements 一致）
+        self.assertEqual(els[0]["class"], "CheckBox")
+
 
 if __name__ == "__main__":
     unittest.main()

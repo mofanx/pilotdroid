@@ -163,6 +163,7 @@ pub fn run<T: AdbTransport, R: std::io::BufRead + Send + 'static, W: Write>(
                             // (double-fault corner), and the id belongs
                             // to the newest agent.
                             rule.gen = s.generation();
+                            rule.dead_rearms = 0; // fresh agent, fresh budget
                             armed.insert(ack.watch_id, rule);
                             rearmed += 1;
                         }
@@ -199,7 +200,7 @@ pub fn run<T: AdbTransport, R: std::io::BufRead + Send + 'static, W: Write>(
                 let Some(ev) = s.pop_stashed() else {
                     break Ok(());
                 };
-                if let Err(e) = route_event(out, &mut pending, &mut armed, ev) {
+                if let Err(e) = route_event(out, &mut pending, &mut armed, ev, s) {
                     break Err(e);
                 }
             };
@@ -219,7 +220,7 @@ pub fn run<T: AdbTransport, R: std::io::BufRead + Send + 'static, W: Write>(
                     match s.watch_recv(Some(PUSH_POLL_MS)) {
                         Ok(ev) => {
                             demux_dead = false;
-                            if let Err(e) = route_event(out, &mut pending, &mut armed, ev) {
+                            if let Err(e) = route_event(out, &mut pending, &mut armed, ev, s) {
                                 break Err(e);
                             }
                         }
@@ -428,17 +429,57 @@ struct ArmedRule {
     action: String,
     timeout_ms: Option<u64>,
     gen: u64,
+    /// Bounded abnormal-death re-arms within one epoch (watch_dead
+    /// path) — reset when the epoch re-arm gives the rule a fresh agent.
+    dead_rearms: u8,
+}
+
+/// Re-arm a watcher that died abnormally (watch_dead ui_event) —
+/// bounded per rule (`dead_rearms` cap) so a crash-looping selector
+/// can't storm ARM calls between recovery epochs. Mutates `params`
+/// with the outcome; caller re-inserts nothing — this fn owns the map.
+fn rearm_dead<T: AdbTransport>(
+    s: &mut Session<T>,
+    armed: &mut HashMap<u32, ArmedRule>,
+    dead_id: u32,
+    params: &mut serde_json::Map<String, Value>,
+) {
+    params.insert("armed".into(), json!(true));
+    let Some(mut rule) = armed.remove(&dead_id) else {
+        return;
+    };
+    if rule.dead_rearms >= 2 {
+        params.insert("rearm_capped".into(), json!(true));
+        armed.insert(dead_id, rule); // keep for the next epoch heal
+        return;
+    }
+    match s.watch_arm(rule.sel.clone(), &rule.action, rule.timeout_ms) {
+        Ok(ack) => {
+            rule.gen = s.generation();
+            rule.dead_rearms += 1;
+            armed.insert(ack.watch_id, rule);
+            params.insert("rearmed".into(), json!(true));
+            params.insert("new_watch_id".into(), json!(ack.watch_id));
+        }
+        Err(e) => {
+            params.insert("rearm_failed".into(), json!(e.to_string()));
+            armed.insert(dead_id, rule); // keep for the next epoch heal
+        }
+    }
 }
 
 /// Route a demuxed/stashed media event: a WatchHit on a push-armed
 /// watcher and ambient Toast events become MCP notifications; anything
 /// else buffers into the watch_events pull path. A fired watcher is
-/// one-shot agent-side — removed from `armed` either way.
-fn route_event<W: Write>(
+/// one-shot agent-side — removed from `armed` either way. A WatchDead
+/// is always notified (armed→dead must never be silent) and triggers
+/// a bounded auto re-arm of the still-armed rule.
+fn route_event<W: Write, T: AdbTransport>(
     out: &mut W,
     pending: &mut VecDeque<MediaEvent>,
     armed: &mut HashMap<u32, ArmedRule>,
     ev: MediaEvent,
+    s: &mut Session<T>,
 ) -> Result<()> {
     match ev {
         MediaEvent::WatchHit(h) => {
@@ -470,6 +511,25 @@ fn route_event<W: Write>(
                 return Err(e);
             }
         }
+        MediaEvent::WatchDead(d) => {
+            let mut params = serde_json::Map::from_iter([
+                ("watch_id".into(), json!(d.watch_id)),
+                ("waited_ms".into(), json!(d.waited_ms)),
+                ("error".into(), json!(d.error)),
+            ]);
+            if armed.contains_key(&d.watch_id) {
+                rearm_dead(s, armed, d.watch_id, &mut params);
+            }
+            let note = json!({
+                "jsonrpc": "2.0",
+                "method": "notifications/pilotdroid/watch_dead",
+                "params": Value::Object(params),
+            });
+            if let Err(e) = write_resp(out, &note) {
+                push_pending(pending, MediaEvent::WatchDead(d));
+                return Err(e);
+            }
+        }
         ev => push_pending(pending, ev),
     }
     Ok(())
@@ -496,6 +556,75 @@ fn str_arg(args: &Value, k: &str) -> Option<String> {
 
 fn num_arg(args: &Value, k: &str) -> Option<f64> {
     args.get(k).and_then(Value::as_f64)
+}
+
+/// `describe_screen ocr:true` — tesseract presence is probed once per
+/// process (a missing binary can't appear mid-session).
+fn tesseract_available() -> bool {
+    static OK: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *OK.get_or_init(|| {
+        std::process::Command::new("tesseract")
+            .arg("--version")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false)
+    })
+}
+
+/// tesseract TSV (`--psm 11`) → merged line blocks, mirroring
+/// `ocr_spike.py`: level-5 word rows with conf ≥ 40 and at least one
+/// alphanumeric char, grouped by (block, par, line).
+fn ocr_blocks(img: &std::path::Path) -> Result<Vec<som::OcrBlock>> {
+    let out = std::process::Command::new("tesseract")
+        .arg(img)
+        .args(["stdout", "--psm", "11", "tsv"])
+        .output()
+        .context("spawn tesseract")?;
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    type Words = Vec<(i32, i32, i32, i32, f32, String)>;
+    let mut words: std::collections::BTreeMap<(String, String, String), Words> = Default::default();
+    for ln in stdout.lines().skip(1) {
+        let c: Vec<&str> = ln.split('\t').collect();
+        if c.len() < 12 || c[0] != "5" {
+            continue;
+        }
+        let Ok(conf) = c[10].parse::<f32>() else {
+            continue;
+        };
+        let txt = c[11].trim();
+        if conf < 40.0 || !txt.chars().any(|ch| ch.is_alphanumeric()) {
+            continue;
+        }
+        let (Ok(x), Ok(y), Ok(w), Ok(h)) = (
+            c[6].parse::<i32>(),
+            c[7].parse::<i32>(),
+            c[8].parse::<i32>(),
+            c[9].parse::<i32>(),
+        ) else {
+            continue;
+        };
+        words
+            .entry((c[2].into(), c[3].into(), c[4].into()))
+            .or_default()
+            .push((x, y, w, h, conf, txt.to_string()));
+    }
+    Ok(words
+        .into_values()
+        .map(|mut ws| {
+            ws.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
+            let l = ws.iter().map(|w| w.0).min().unwrap();
+            let t = ws.iter().map(|w| w.1).min().unwrap();
+            let r = ws.iter().map(|w| w.0 + w.2).max().unwrap();
+            let b = ws.iter().map(|w| w.1 + w.3).max().unwrap();
+            som::OcrBlock {
+                text: ws.iter().map(|w| w.5.clone()).collect::<Vec<_>>().join(" "),
+                bounds: [l, t, r, b],
+                conf: ws.iter().map(|w| w.4).sum::<f32>() / ws.len() as f32,
+            }
+        })
+        .collect())
 }
 
 /// Snapshot staleness guard for index ops: the focused package and the
@@ -761,6 +890,7 @@ fn call_tool<T: AdbTransport>(
                             action,
                             timeout_ms,
                             gen: s.generation(),
+                            dead_rearms: 0,
                         },
                     );
                     Ok(json!(ack))
@@ -792,6 +922,18 @@ fn call_tool<T: AdbTransport>(
                                 "dropped": f.dropped,
                             })),
                             MediaEvent::Toast(t) => Ok(json!({"type": "toast", "toast": t})),
+                            MediaEvent::WatchDead(d) => {
+                                let mut p = serde_json::Map::from_iter([
+                                    ("watch_id".into(), json!(d.watch_id)),
+                                    ("waited_ms".into(), json!(d.waited_ms)),
+                                    ("error".into(), json!(d.error)),
+                                ]);
+                                if armed.contains_key(&d.watch_id) {
+                                    rearm_dead(s, armed, d.watch_id, &mut p);
+                                }
+                                Ok(json!({"type": "watch_dead",
+                                          "dead": Value::Object(p)}))
+                            }
                         }
                     } else {
                         match s
@@ -806,6 +948,18 @@ fn call_tool<T: AdbTransport>(
                                 "dropped": f.dropped,
                             })),
                             Ok(MediaEvent::Toast(t)) => Ok(json!({"type": "toast", "toast": t})),
+                            Ok(MediaEvent::WatchDead(d)) => {
+                                let mut p = serde_json::Map::from_iter([
+                                    ("watch_id".into(), json!(d.watch_id)),
+                                    ("waited_ms".into(), json!(d.waited_ms)),
+                                    ("error".into(), json!(d.error)),
+                                ]);
+                                if armed.contains_key(&d.watch_id) {
+                                    rearm_dead(s, armed, d.watch_id, &mut p);
+                                }
+                                Ok(json!({"type": "watch_dead",
+                                          "dead": Value::Object(p)}))
+                            }
                             // No event yet is data, not failure — report it in the
                             // union so an armed-but-quiet watcher doesn't surface
                             // isError to the MCP client (real errors still do).
@@ -818,10 +972,30 @@ fn call_tool<T: AdbTransport>(
                 }
                 "describe_screen" => {
                     let xml = s.dump()?;
-                    Ok(som::describe(
-                        &xml,
-                        num_arg(&args, "max_label").map(|v| v as usize),
-                    ))
+                    let ml = num_arg(&args, "max_label").map(|v| v as usize);
+                    if args.get("ocr").and_then(Value::as_bool).unwrap_or(false) {
+                        // OCR tier (host-side, optional): screenshot →
+                        // local tesseract TSV → geometric fusion into
+                        // the same element space. Degrades gracefully —
+                        // no tesseract = normal describe + a hint,
+                        // never an error.
+                        if !tesseract_available() {
+                            let mut v = som::describe(&xml, ml);
+                            v["ocr"] = json!({
+                                "available": false,
+                                "hint": "tesseract not on PATH — install \
+                                         tesseract-ocr to enable ocr:true",
+                            });
+                            return Ok(v);
+                        }
+                        let tmp = std::env::temp_dir()
+                            .join(format!("pilotdroid-ocr-{}.jpg", std::process::id()));
+                        let (_f, _b) = s.screenshot(Some(&tmp), 95, Some(1.0))?;
+                        let blocks = ocr_blocks(&tmp)?;
+                        Ok(som::describe_ocr(&xml, ml, &blocks))
+                    } else {
+                        Ok(som::describe(&xml, ml))
+                    }
                 }
                 "screenshot_annotated" => {
                     let quality = num_arg(&args, "quality").unwrap_or(80.0) as u8;
@@ -898,6 +1072,58 @@ fn call_tool<T: AdbTransport>(
                         };
                         checks.push(json!({"kind":"layout_changed","pass":pass,"want":want}));
                     }
+                    // Widget-state predicate ("tap ok≠effect" layer): a
+                    // state check needs the widget AFTER the action —
+                    // match fields select the element in a fresh
+                    // list_elements, the remaining keys are asserted
+                    // booleans. `expect.state` =
+                    //   {"match":{"text"|"desc"|"class"|"i":…},
+                    //    "checked":bool,"selected":bool,
+                    //    "enabled":bool,"focused":bool}
+                    // text/desc match is substring; class is the simple
+                    // name. Any state key may be true or false — a
+                    // checkbox toggle verifies both ways (B4 gap).
+                    if let Some(st) = expect.get("state") {
+                        let els = s.list_elements(false)?.elements;
+                        let m = st.get("match").cloned().unwrap_or_else(|| json!({}));
+                        let mi = m.get("i").and_then(Value::as_u64).map(|v| v as usize);
+                        let found = els.iter().find(|e| {
+                            if let Some(i) = mi {
+                                return e.i == i;
+                            }
+                            let t = str_arg(&m, "text");
+                            let d = str_arg(&m, "desc");
+                            let c = str_arg(&m, "class");
+                            (t.is_some() || d.is_some() || c.is_some())
+                                && t.map_or(true, |v| e.text.contains(&v))
+                                && d.map_or(true, |v| e.desc.contains(&v))
+                                && c.map_or(true, |v| e.class == v)
+                        });
+                        let mut mismatched = serde_json::Map::new();
+                        let mut pass = found.is_some();
+                        if let Some(e) = found {
+                            for k in ["checked", "selected", "enabled", "focused"] {
+                                let Some(want) = st.get(k).and_then(Value::as_bool) else {
+                                    continue;
+                                };
+                                let got = match k {
+                                    "checked" => e.checked,
+                                    "selected" => e.selected,
+                                    "enabled" => e.enabled,
+                                    _ => e.focused,
+                                };
+                                if got != want {
+                                    mismatched.insert(k.into(), json!({"want":want,"got":got}));
+                                    pass = false;
+                                }
+                            }
+                        }
+                        checks.push(json!({
+                            "kind": "state", "pass": pass,
+                            "found": found.is_some(),
+                            "mismatched": Value::Object(mismatched),
+                        }));
+                    }
                     anyhow::ensure!(!checks.is_empty(), "expect had no recognized check");
                     let pass = a_ok && checks.iter().all(|c| c["pass"] == true);
                     Ok(json!({
@@ -972,15 +1198,15 @@ fn tools() -> Value {
         {"name":"query","description":"selector → {found,node{text,id,desc,bounds,class,...}}","inputSchema":sel.clone()},
         {"name":"watch","description":"device-side selector→action watch loop (CAP_WATCH, docs/02 §4.9) — blocks this session until the selector is matched+acted or timeout_ms","inputSchema":json!({
             "type":"object","allOf":[sel.clone()],"properties":{"action":prop("string","default click"),"timeout_ms":prop("integer","default 5000")}})},
-        {"name":"watch_arm","description":"async watcher (CAP_WATCH_ASYNC, §4.9): returns {armed,watch_id} immediately; hits arrive on the media channel — read via watch_events, or push=true to get a notifications/pilotdroid/watch_hit notification between responses (hits interleaved into an active frame stream are still pushed via the session stash; client disconnect auto-disarms; session recovery re-arms rules automatically — see notifications/pilotdroid/session_recovered). Control ops stay unblocked while armed","inputSchema":json!({
+        {"name":"watch_arm","description":"async watcher (CAP_WATCH_ASYNC, §4.9): returns {armed,watch_id} immediately; hits arrive on the media channel — read via watch_events, or push=true to get a notifications/pilotdroid/watch_hit notification between responses (hits interleaved into an active frame stream are still pushed via the session stash; client disconnect auto-disarms; session recovery re-arms rules automatically — see notifications/pilotdroid/session_recovered; an abnormal watcher death surfaces as notifications/pilotdroid/watch_dead and is re-armed bounded). Control ops stay unblocked while armed","inputSchema":json!({
             "type":"object","allOf":[sel.clone()],"properties":{"action":prop("string","default click"),"timeout_ms":prop("integer","auto-disarm deadline, optional"),"push":prop("boolean","emit MCP notification on hit instead of pull-only, default false")}})},
         {"name":"watch_disarm","description":"cancel an armed watcher by watch_id → {disarmed}; a fired (one-shot) watcher is already removed, so disarming it returns {disarmed:false} — not an error","inputSchema":schema(
             &[("watch_id",prop("integer","from watch_arm"))],&["watch_id"])},
-        {"name":"watch_events","description":"read next media-channel event → {type:'watch_hit',hit:{watch_id,matched,waited_ms,action_ok,node}} or {type:'frame',...} when a stream is also active; no event within the deadline → {type:'timeout'} (normal result, not an error)","inputSchema":schema(&[("timeout_ms",prop("integer","default 5000, min 500"))],&[])},
+        {"name":"watch_events","description":"read next media-channel event → {type:'watch_hit',hit:{watch_id,matched,waited_ms,action_ok,node}} or {type:'toast',...} or {type:'watch_dead',dead:{watch_id,error,...}} (agent ≥0.7.4 abnormal watcher death — serve auto re-arms bounded) or {type:'frame',...} when a stream is also active; no event within the deadline → {type:'timeout'} (normal result, not an error)","inputSchema":schema(&[("timeout_ms",prop("integer","default 5000, min 500"))],&[])},
         {"name":"wait_for","description":"selector + timeout_ms → device-side poll (BATCH wait_until)","inputSchema":json!({
             "type":"object","allOf":[sel.clone()],"properties":{"timeout_ms":prop("integer","default 5000")}})},
         {"name":"dump","description":"UI hierarchy XML","inputSchema":schema(&[],&[])},
-        {"name":"list_elements","description":"flattened indexed element list [{i,text,desc,class,bounds,clickable,editable,scrollable}] — agent observation surface; interactive_only (default true) keeps clickable/editable/scrollable nodes","inputSchema":schema(
+        {"name":"list_elements","description":"flattened indexed element list [{i,text,desc,class,bounds,clickable,editable,scrollable}] + widget state flags emitted non-default only (checked/selected/focused:true, enabled:false) — agent observation surface; interactive_only (default true) keeps clickable/editable/scrollable nodes","inputSchema":schema(
             &[("interactive_only",prop("boolean","filter to interactive nodes, default true"))],&[])},
         {"name":"tap_index","description":"tap element i from the last list_elements snapshot (bounds center); fails with 'snapshot stale' if layout/pkg drifted — re-list","inputSchema":schema(
             &[("i",prop("integer","element index"))],&["i"])},
@@ -1000,12 +1226,12 @@ fn tools() -> Value {
         {"name":"stream_read","description":"read n frames (default 1); to_dir = file bypass","inputSchema":schema(
             &[("n",prop("integer","default 1")),("to_dir",prop("string","write frame_{seq}.jpg here"))],&[])},
         {"name":"stream_stop","description":"stop stream; returns {frames_sent,dropped}","inputSchema":schema(&[],&[])},
-        {"name":"describe_screen","description":"SoM-lite perception: a11y tree → token-budget map — dense element ids (document order) ↔ bounds center ↔ label/rid/class/C flag. Same numbering space as screenshot_annotated and compat/som.py","inputSchema":schema(
-            &[("max_label",prop("integer","label char cap, default 28"))],&[])},
+        {"name":"describe_screen","description":"SoM-lite perception: a11y tree → token-budget map — dense element ids (document order) ↔ bounds center ↔ label/rid/simple-class/flags C=clickable K=checked S=selected F=focused D=disabled. ocr:true adds host-side tesseract fusion (optional dep — degrades to normal output + hint when absent): canvas/image text becomes ocr_only elements tappable by center. Same numbering space as screenshot_annotated and compat/som.py","inputSchema":schema(
+            &[("max_label",prop("integer","label char cap, default 28")),("ocr",prop("boolean","OCR text fusion tier, needs local tesseract, default false"))],&[])},
         {"name":"screenshot_annotated","description":"SoM-lite perception: screenshot JPEG with the describe_screen element ids drawn as numbered boxes at their bounds (scale fixed 1.0; path = file bypass preferred, else base64)","inputSchema":schema(
             &[("path",prop("string","output file")),("quality",prop("integer","1-100, default 80"))],&[])},
-        {"name":"verify_after","description":"closed-loop verify (no u2 equivalent): run one action op → settle_ms → assert on fresh dump. action={tool,args} (side-effect/read ops only); expect={exists:<sel>} and/or {absent:<sel>} and/or {text:<s>} and/or {layout_changed:<bool>}; returns {action,checks,pass}","inputSchema":schema(
-            &[("action",prop("object","{tool,args} — e.g. {tool:'tap',args:{x,y}}")),("settle_ms",prop("integer","default 500")),("expect",prop("object","{exists|absent|text|layout_changed}"))],
+        {"name":"verify_after","description":"closed-loop verify (no u2 equivalent): run one action op → settle_ms → assert on fresh dump. action={tool,args} (side-effect/read ops only); expect={exists:<sel>} and/or {absent:<sel>} and/or {text:<s>} and/or {layout_changed:<bool>} and/or {state:{match:{text|desc|class|i},checked|selected|enabled|focused:bool}} — the state kind asserts widget flags after the action (tap ok≠effect); returns {action,checks,pass}","inputSchema":schema(
+            &[("action",prop("object","{tool,args} — e.g. {tool:'tap',args:{x,y}}")),("settle_ms",prop("integer","default 500")),("expect",prop("object","{exists|absent|text|layout_changed|state}"))],
             &["action","expect"])},
         {"name":"batch","description":"BATCH op array — {ops:[{inject|wait_until|query|dump|screenshot|text}]}","inputSchema":schema(
             &[("ops",prop("array","ordered ops"))],&["ops"])},
@@ -1131,13 +1357,15 @@ mod tests {
                                     r#"<?xml version='1.0' encoding='UTF-8' standalone='yes' ?>"#,
                                     r#"<hierarchy><node index="0" text="设置" resource-id="com.x:id/t" "#,
                                     r#"class="android.widget.TextView" package="com.x" content-desc="" "#,
-                                    r#"clickable="true" bounds="[10,20][110,60]"/>"#,
+                                    r#"clickable="true" checked="true" focused="true" "#,
+                                    r#"bounds="[10,20][110,60]"/>"#,
                                     r#"<node index="1" text="" resource-id="com.x:id/e" "#,
                                     r#"class="android.widget.EditText" package="com.x" content-desc="输入框" "#,
                                     r#"clickable="true" bounds="[10,80][300,140]"/>"#,
                                     r#"<node index="2" text="标题" resource-id="" "#,
                                     r#"class="android.widget.TextView" package="com.x" content-desc="" "#,
-                                    r#"clickable="false" bounds="[10,150][200,190]"/></hierarchy>"#,
+                                    r#"clickable="false" enabled="false" "#,
+                                    r#"bounds="[10,150][200,190]"/></hierarchy>"#,
                                 )
                                 .into(),
                             })
@@ -1560,6 +1788,33 @@ mod tests {
         (addr, disarms)
     }
 
+    /// Watch fake whose media channel pushes a `watch_dead` ui_event
+    /// (agent ≥0.7.4 abnormal watcher death) — same 0x0002 slot,
+    /// discriminated by `type:"watch_dead"`. The control side re-arms
+    /// (watch_ctrl hands out the next watch_id).
+    fn spawn_fake_watch_dead() -> SocketAddr {
+        let (ctrl, media, addr) = watch_pair();
+        watch_ctrl(
+            ctrl,
+            std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+        );
+        spawn_media(
+            media,
+            vec![(
+                120,
+                0,
+                encode(&WatchDeadEvent {
+                    r#type: "watch_dead".into(),
+                    watch_id: 1,
+                    waited_ms: 500,
+                    error: "poll fault".into(),
+                })
+                .unwrap(),
+            )],
+        );
+        addr
+    }
+
     /// Watch fake whose media channel pushes a toast ui_event (agent
     /// ≥0.7.1 a11y listener) instead of a WATCH_HIT — same ch=1
     /// msg_type 0x0002 slot, discriminated by `type:"toast"`.
@@ -1800,6 +2055,72 @@ mod tests {
             serde_json::from_str(resps[0]["result"]["content"][0]["text"].as_str().unwrap())
                 .unwrap();
         assert_eq!(body["checks"][0]["kind"], "exists");
+    }
+
+    #[test]
+    fn verify_after_state_predicate() {
+        // The fake dump: node0 设置 checked+focused, node2 标题
+        // enabled=false. State checks must read post-action widget
+        // flags — both true and false assertions, plus a mismatch.
+        let resps = serve_once(
+            &[
+                json!({"jsonrpc":"2.0","id":1,"method":"tools/call",
+                       "params":{"name":"verify_after","arguments":{
+                           "action":{"tool":"tap","args":{"x":1,"y":2}},
+                           "settle_ms":10,
+                           "expect":{"state":{"match":{"text":"设置"},
+                                              "checked":true}}}}})
+                .to_string(),
+                json!({"jsonrpc":"2.0","id":2,"method":"tools/call",
+                       "params":{"name":"verify_after","arguments":{
+                           "action":{"tool":"tap","args":{"x":1,"y":2}},
+                           "settle_ms":10,
+                           "expect":{"state":{"match":{"text":"标题"},
+                                              "enabled":false}}}}})
+                .to_string(),
+                json!({"jsonrpc":"2.0","id":3,"method":"tools/call",
+                       "params":{"name":"verify_after","arguments":{
+                           "action":{"tool":"tap","args":{"x":1,"y":2}},
+                           "settle_ms":10,
+                           "expect":{"state":{"match":{"text":"设置"},
+                                              "checked":false}}}}})
+                .to_string(),
+            ]
+            .join("\n"),
+        );
+        let bodies: Vec<Value> = resps
+            .iter()
+            .map(|r| {
+                serde_json::from_str(r["result"]["content"][0]["text"].as_str().unwrap()).unwrap()
+            })
+            .collect();
+        assert_eq!(bodies[0]["pass"], true, "checked:true hit: {bodies:?}");
+        assert_eq!(bodies[0]["checks"][0]["kind"], "state");
+        assert_eq!(bodies[1]["pass"], true, "enabled:false hit: {bodies:?}");
+        assert_eq!(bodies[2]["pass"], false, "mismatch must fail");
+        assert_eq!(bodies[2]["checks"][0]["mismatched"]["checked"]["got"], true);
+    }
+
+    #[test]
+    fn watch_dead_event_notifies_and_rearms() {
+        // armed push watcher dies abnormally agent-side → watch_dead
+        // ui_event → notification (never silent) + bounded auto re-arm.
+        let resps = serve_once_at(
+            &json!({"jsonrpc":"2.0","id":1,"method":"tools/call",
+                    "params":{"name":"watch_arm",
+                              "arguments":{"text":"OK","push":true}}})
+            .to_string(),
+            spawn_fake_watch_dead(),
+        );
+        let notes: Vec<_> = resps
+            .iter()
+            .filter(|v| v["method"].as_str() == Some("notifications/pilotdroid/watch_dead"))
+            .collect();
+        assert_eq!(notes.len(), 1, "watch_dead must notify: {resps:?}");
+        assert_eq!(notes[0]["params"]["error"], "poll fault");
+        assert_eq!(notes[0]["params"]["armed"], true);
+        assert_eq!(notes[0]["params"]["rearmed"], true);
+        assert_eq!(notes[0]["params"]["new_watch_id"], 2);
     }
 
     #[test]

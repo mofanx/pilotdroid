@@ -8,6 +8,31 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **元素状态面**：`list_elements`/`describe_screen`/`compat/som.py`
+  统一透出 widget 状态——`checked`/`selected`/`focused` 仅 true 时
+  输出、`enabled` 仅 false 时输出（dump attr 直通、省 token）；
+  `class` 口径全面对齐**简单类名**。`verify_after` 新增
+  `expect.state` 状态谓词（`{match:{text|desc|class|i},
+  checked|selected|enabled|focused:bool}`）——checkbox/switch/
+  radio 闭环可证，「tap ok≠效果」分层成 ACK vs 效果断言。
+- **`watch_dead` serve 映射**：agent ≥0.7.4 的
+  `{type:"watch_dead"}` ui_event 转
+  `notifications/pilotdroid/watch_dead`（armed→dead 不再静默），
+  并对仍 armed 的规则做**有界 auto re-arm**（每规则每 epoch ≤2
+  次防死亡风暴，params 带 `rearmed`/`new_watch_id`/`rearm_capped`
+  /`rearm_failed`）；`watch_events` pull 返回
+  `{type:"watch_dead"}` 同样带 re-arm 结果。
+- **`describe_screen ocr:true` 可选档**：host 侧 tesseract TSV→
+  行块→几何融合——块心落在 ≤4×块面积的无文本节点内回填
+  `ocr_text`，无认领块转 `ocr_only` 可编号元素（center 可点，
+  上限 40 块按置信度截断控 token）；tesseract 不在 PATH 时优雅
+  降级为正常输出+`ocr.available:false` 提示，永不报错。
+
+### Fixed
+
+- **`max_fires` 非整收口**：`watcher.when().click()/call()` 的
+  `max_fires` 现要求 int ≥1（此前 `1.5` 穿透校验）。
+
 - **恢复 UX 闭环**：session 恢复（`Session::generation` epoch 变更）
   时 serve 推 `notifications/pilotdroid/session_recovered`
   `{generation,stale_watchers,rearmed,rearm_failed}`——崩溃/顶替不

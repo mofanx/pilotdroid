@@ -48,6 +48,10 @@ pub enum MediaEvent {
     /// ui_event slot (msg_type 0x0002) with `WATCH_HIT`, told apart
     /// by `type == "toast"`.
     Toast(pilotdroid_proto::payload::ToastEvent),
+    /// Watcher abnormal-death notice — same 0x0002 slot (agent ≥0.7.4),
+    /// told apart by `type == "watch_dead"`: armed→dead is no longer
+    /// silent between recovery epochs.
+    WatchDead(pilotdroid_proto::payload::WatchDeadEvent),
 }
 
 impl MediaClient {
@@ -160,6 +164,10 @@ impl MediaClient {
                 let p: Probe = pilotdroid_proto::payload::decode(&frame.payload)?;
                 if p.r#type.as_deref() == Some("toast") {
                     Ok(MediaEvent::Toast(pilotdroid_proto::payload::decode(
+                        &frame.payload,
+                    )?))
+                } else if p.r#type.as_deref() == Some("watch_dead") {
+                    Ok(MediaEvent::WatchDead(pilotdroid_proto::payload::decode(
                         &frame.payload,
                     )?))
                 } else {

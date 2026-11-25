@@ -44,6 +44,19 @@ pub struct El {
     pub clickable: bool,
     pub bounds: Option<[i32; 4]>,
     pub center: Option<[i32; 2]>,
+    /// Widget state flags (dump attrs直通) — checkbox/switch/radio
+    /// loops are provable through these (blind-drive B4 gap).
+    pub checked: bool,
+    pub selected: bool,
+    pub enabled: bool,
+    pub focused: bool,
+    /// OCR fusion markers (`describe_screen ocr:true`): `ocr_text`
+    /// fills a textless tree node that geometrically hosts a text
+    /// block; `ocr_only` marks a synthetic element with no tree node
+    /// (canvas/image text) — tap by `center`.
+    pub ocr_text: Option<String>,
+    pub ocr_only: bool,
+    pub conf: Option<f32>,
 }
 
 /// XML entity decode for attribute values (`&amp;`/`&lt;`/`&gt;`/
@@ -187,9 +200,17 @@ pub fn enumerate(xml: &str) -> Vec<El> {
             rid: a.get("resource-id").cloned().unwrap_or_default(),
             class: a.get("class").cloned().unwrap_or_default(),
             clickable: a.get("clickable").is_some_and(|v| v == "true"),
+            checked: a.get("checked").is_some_and(|v| v == "true"),
+            selected: a.get("selected").is_some_and(|v| v == "true"),
+            // absent `enabled` is the common fixture shorthand — true.
+            enabled: a.get("enabled").map_or(true, |v| v != "false"),
+            focused: a.get("focused").is_some_and(|v| v == "true"),
             bounds,
             // div_euclid = Python // (floor) — matches on negative sums.
             center: bounds.map(|b| [(b[0] + b[2]).div_euclid(2), (b[1] + b[3]).div_euclid(2)]),
+            ocr_text: None,
+            ocr_only: false,
+            conf: None,
         });
     }
     out
@@ -198,14 +219,108 @@ pub fn enumerate(xml: &str) -> Vec<El> {
 /// `describe_screen` payload — `{elements, text}` identical to the
 /// Python sibling's contract.
 pub fn describe(xml: &str, max_label: Option<usize>) -> Value {
-    let els = enumerate(xml);
+    emit(&enumerate(xml), max_label)
+}
+
+/// One merged OCR line block — host-side tesseract output already
+/// merged word→line (same shape as `ocr_spike.py`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct OcrBlock {
+    pub text: String,
+    pub bounds: [i32; 4],
+    pub conf: f32,
+}
+
+/// Token-budget guard for the OCR tier: cap appended elements at the
+/// highest-confidence blocks (status-bar noise is low-conf in practice).
+const MAX_OCR_BLOCKS: usize = 40;
+
+/// `describe_screen ocr:true` — same payload with canvas/image text
+/// fused in: a block whose centre lands inside a textless,
+/// label-sized tree node back-fills `ocr_text`; an unclaimed block
+/// becomes a synthetic `ocr_only` element (tap by `center`).
+pub fn describe_ocr(xml: &str, max_label: Option<usize>, blocks: &[OcrBlock]) -> Value {
+    let mut els = enumerate(xml);
+    let mut blks: Vec<&OcrBlock> = blocks.iter().collect();
+    blks.sort_by(|a, b| b.conf.total_cmp(&a.conf));
+    blks.truncate(MAX_OCR_BLOCKS);
+    for blk in blks {
+        let cx = (blk.bounds[0] + blk.bounds[2]).div_euclid(2);
+        let cy = (blk.bounds[1] + blk.bounds[3]).div_euclid(2);
+        let blk_area = i64::from((blk.bounds[2] - blk.bounds[0]).max(1))
+            * i64::from((blk.bounds[3] - blk.bounds[1]).max(1));
+        // Candidate host: smallest-area textless node containing the
+        // block centre whose area is ≤4x the block (a real label-sized
+        // widget, not a screen-sized container).
+        let mut host: Option<usize> = None;
+        for (i, e) in els.iter().enumerate() {
+            let Some(b) = e.bounds else { continue };
+            if !e.text.is_empty() || !contains(e.bounds, cx, cy) {
+                continue;
+            }
+            let area = i64::from((b[2] - b[0]).max(1)) * i64::from((b[3] - b[1]).max(1));
+            if area > blk_area * 4 {
+                continue;
+            }
+            if host.map_or(true, |h| {
+                let hb = els[h].bounds.unwrap();
+                i64::from((hb[2] - hb[0]).max(1)) * i64::from((hb[3] - hb[1]).max(1)) > area
+            }) {
+                host = Some(i);
+            }
+        }
+        if let Some(i) = host {
+            els[i].ocr_text = Some(blk.text.clone());
+            els[i].conf = Some(blk.conf);
+            continue;
+        }
+        // skip when a text-bearing node already claims this point
+        let claimed = els
+            .iter()
+            .any(|e| !e.text.is_empty() && contains(e.bounds, cx, cy));
+        if !claimed {
+            let bounds = blk.bounds;
+            els.push(El {
+                id: els.len() + 1,
+                text: blk.text.clone(),
+                desc: String::new(),
+                rid: String::new(),
+                class: String::new(),
+                clickable: false,
+                checked: false,
+                selected: false,
+                enabled: true,
+                focused: false,
+                bounds: Some(bounds),
+                center: Some([cx, cy]),
+                ocr_text: None,
+                ocr_only: true,
+                conf: Some(blk.conf),
+            });
+        }
+    }
+    emit(&els, max_label)
+}
+
+fn contains(bounds: Option<[i32; 4]>, x: i32, y: i32) -> bool {
+    let Some(b) = bounds else { return false };
+    b[0] <= x && x <= b[2] && b[1] <= y && y <= b[3]
+}
+
+fn emit(els: &[El], max_label: Option<usize>) -> Value {
     let ml = max_label.unwrap_or(MAX_LABEL);
     let mut lines = vec![format!(
-        "# screen: {} elements (id [cx,cy] label rid class C=clickable)",
+        "# screen: {} elements (id [cx,cy] label rid class C=clickable \
+         K=checked S=selected F=focused D=disabled OCR=ocr-only)",
         els.len()
     )];
-    for e in &els {
+    for e in els {
         let mut label = if e.text.is_empty() { &e.desc } else { &e.text }.clone();
+        if label.is_empty() {
+            if let Some(t) = &e.ocr_text {
+                label = t.clone();
+            }
+        }
         if label.chars().count() > ml {
             label = label.chars().take(ml - 1).collect::<String>() + "…";
         }
@@ -221,18 +336,55 @@ pub fn describe(xml: &str, max_label: Option<usize>) -> Value {
         if !e.rid.is_empty() {
             parts.push(e.rid.clone());
         }
-        parts.push(e.class.rsplit('.').next().unwrap_or("").to_string());
+        let cls = e.class.rsplit('.').next().unwrap_or("");
+        if !cls.is_empty() {
+            parts.push(cls.to_string());
+        }
         if e.clickable {
             parts.push("C".into());
         }
+        if e.checked {
+            parts.push("K".into());
+        }
+        if e.selected {
+            parts.push("S".into());
+        }
+        if e.focused {
+            parts.push("F".into());
+        }
+        if !e.enabled {
+            parts.push("D".into());
+        }
+        if e.ocr_only {
+            parts.push("OCR".into());
+        }
         lines.push(parts.join(" "));
     }
+    // Same field convention as list_elements: simple class name;
+    // checked/selected/focused emitted only when true; `enabled` only
+    // when false (disabled). Keeps the token budget honest.
     json!({
-        "elements": els.iter().map(|e| json!({
-            "id": e.id, "text": e.text, "desc": e.desc, "rid": e.rid,
-            "class": e.class, "clickable": e.clickable,
-            "bounds": e.bounds, "center": e.center,
-        })).collect::<Vec<_>>(),
+        "elements": els.iter().map(|e| {
+            let mut j = json!({
+                "id": e.id, "text": e.text, "desc": e.desc, "rid": e.rid,
+                "class": e.class.rsplit('.').next().unwrap_or(&e.class),
+                "clickable": e.clickable,
+                "bounds": e.bounds, "center": e.center,
+            });
+            let o = j.as_object_mut().unwrap();
+            if e.checked { o.insert("checked".into(), json!(true)); }
+            if e.selected { o.insert("selected".into(), json!(true)); }
+            if e.focused { o.insert("focused".into(), json!(true)); }
+            if !e.enabled { o.insert("enabled".into(), json!(false)); }
+            if let Some(t) = &e.ocr_text {
+                o.insert("ocr_text".into(), json!(t));
+            }
+            if e.ocr_only { o.insert("ocr".into(), json!(true)); }
+            if let Some(c) = e.conf {
+                o.insert("ocr_conf".into(), json!(c));
+            }
+            j
+        }).collect::<Vec<_>>(),
         "text": lines.join("\n"),
     })
 }
@@ -414,6 +566,73 @@ mod tests {
         let xml = r#"<hierarchy><node text="abcdefghijklmnopqrstuvwxyzabcdef" resource-id="" class="w" clickable="true" content-desc="" bounds="[0,0][1,1]"/></hierarchy>"#;
         let v = describe(xml, Some(10));
         assert!(v["text"].as_str().unwrap().contains("abcdefghi…"));
+    }
+
+    #[test]
+    fn states_emit_non_default_only() {
+        let xml = concat!(
+            r#"<hierarchy>"#,
+            r#"<node text="cb" resource-id="" class="android.widget.CheckBox" "#,
+            r#"clickable="true" checked="true" focused="true" enabled="true" "#,
+            r#"content-desc="" bounds="[0,0][10,10]"/>"#,
+            r#"<node text="off" resource-id="" class="w" clickable="true" "#,
+            r#"enabled="false" content-desc="" bounds="[0,20][10,30]"/>"#,
+            r#"</hierarchy>"#
+        );
+        let v = describe(xml, None);
+        let els = v["elements"].as_array().unwrap();
+        assert_eq!(els[0]["checked"], true);
+        assert_eq!(els[0]["focused"], true);
+        // enabled-by-default must NOT appear (token budget)
+        assert!(els[0].get("enabled").is_none());
+        assert!(els[0].get("selected").is_none());
+        assert_eq!(els[1]["enabled"], false);
+        assert!(els[1].get("checked").is_none());
+        // compact-line flags
+        let text = v["text"].as_str().unwrap();
+        assert!(text.contains("#1 [5,5] \"cb\" CheckBox C K F"), "{text}");
+        assert!(text.contains("#2 [5,25] \"off\" w C D"), "{text}");
+    }
+
+    #[test]
+    fn describe_ocr_fuses_blocks() {
+        // canvas-text node: a textless label-sized View hosts a block
+        // centre → ocr_text back-fill; a free-floating block becomes an
+        // ocr_only element; a block inside a text node is deduped.
+        let xml = concat!(
+            r#"<hierarchy>"#,
+            r#"<node text="" resource-id="" class="android.view.View" "#,
+            r#"clickable="true" content-desc="" bounds="[50,50][200,100]"/>"#,
+            r#"<node text="title" resource-id="" class="w" "#,
+            r#"clickable="false" content-desc="" bounds="[0,0][400,40]"/>"#,
+            r#"</hierarchy>"#
+        );
+        let blocks = vec![
+            OcrBlock {
+                text: "canvas label".into(),
+                bounds: [60, 55, 190, 90],
+                conf: 88.0,
+            },
+            OcrBlock {
+                text: "float text".into(),
+                bounds: [500, 500, 700, 560],
+                conf: 90.0,
+            },
+            OcrBlock {
+                text: "inside titled".into(),
+                bounds: [10, 5, 60, 35],
+                conf: 92.0,
+            },
+        ];
+        let v = describe_ocr(xml, None, &blocks);
+        let els = v["elements"].as_array().unwrap();
+        assert_eq!(els.len(), 3, "host back-fill + 1 ocr_only + dedup");
+        assert_eq!(els[0]["ocr_text"], "canvas label");
+        let ocr = &els[2];
+        assert_eq!(ocr["ocr"], true);
+        assert_eq!(ocr["text"], "float text");
+        assert_eq!(ocr["center"], json!([600, 530]));
+        assert!(v["text"].as_str().unwrap().contains("OCR"));
     }
 
     #[test]

@@ -603,8 +603,9 @@ class _WhenCtx:
                 _Selector(self._w.dev, **self.kw).click()
             action._pd_click = True  # armed device-side: don't re-click
         if max_fires is not None:
-            if max_fires < 1:
-                raise ValueError("max_fires must be >= 1")
+            if not isinstance(max_fires, int) or isinstance(max_fires, bool) \
+                    or max_fires < 1:
+                raise ValueError("max_fires must be an integer >= 1")
             action._pd_max_fires = max_fires
         self._w._rules.append((self.kw, action))
         return self._w
@@ -614,8 +615,9 @@ class _WhenCtx:
         match (test_xpath::test_watcher uses this). `max_fires=N` makes
         the rule re-arm up to N hits (default fire-once)."""
         if max_fires is not None:
-            if max_fires < 1:
-                raise ValueError("max_fires must be >= 1")
+            if not isinstance(max_fires, int) or isinstance(max_fires, bool) \
+                    or max_fires < 1:
+                raise ValueError("max_fires must be an integer >= 1")
             func._pd_max_fires = max_fires
         self._w._rules.append((self.kw, func))
         return self._w

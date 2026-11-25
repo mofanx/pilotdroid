@@ -61,6 +61,10 @@ def _enumerate(xml):
             "desc": a.get("content-desc", ""),
             "rid": a.get("resource-id", ""),
             "class": a.get("class", ""),
+            "checked": a.get("checked") == "true",
+            "selected": a.get("selected") == "true",
+            "enabled": a.get("enabled", "true") != "false",
+            "focused": a.get("focused") == "true",
             "clickable": a.get("clickable") == "true",
             "bounds": b,
             "center": [(b[0] + b[2]) // 2, (b[1] + b[3]) // 2] if b else None,
@@ -91,9 +95,28 @@ def describe_screen(dev, max_label=_MAX_LABEL):
         parts.append(e["class"].rsplit(".", 1)[-1])
         if e["clickable"]:
             parts.append("C")
+        if e.get("checked"):
+            parts.append("K")
+        if e.get("selected"):
+            parts.append("S")
+        if e.get("focused"):
+            parts.append("F")
+        if not e.get("enabled", True):
+            parts.append("D")
         lines.append(" ".join(parts))
+    # Same convention as the Rust sibling + list_elements: simple
+    # class name; state flags emitted non-default only (true flags, or
+    # enabled:false when disabled) — keeps the payload compact.
+    for e in elements:
+        e["class"] = e["class"].rsplit(".", 1)[-1]
+        for k in ("checked", "selected", "focused"):
+            if not e.get(k):
+                e.pop(k, None)
+        if e.get("enabled", True):
+            e.pop("enabled", None)
     header = f"# screen: {len(elements)} elements (id [cx,cy] " \
-             f"label rid class C=clickable)"
+             f"label rid class C=clickable K=checked S=selected " \
+             f"F=focused D=disabled)"
     return {"elements": elements,
             "text": "\n".join([header] + lines)}
 

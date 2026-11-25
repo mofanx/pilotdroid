@@ -656,7 +656,10 @@ impl<T: AdbTransport> Session<T> {
                         break;
                     }
                 }
-                Ok(ev @ (MediaEvent::WatchHit(_) | MediaEvent::Toast(_))) => {
+                Ok(
+                    ev
+                    @ (MediaEvent::WatchHit(_) | MediaEvent::Toast(_) | MediaEvent::WatchDead(_)),
+                ) => {
                     self.stashed_events.push_back(ev);
                 }
                 // Socket close or a stall ends the read — return what we
@@ -685,7 +688,11 @@ impl<T: AdbTransport> Session<T> {
             let _ = m.set_read_timeout(Duration::from_millis(150));
             loop {
                 match m.recv_event() {
-                    Ok(ev @ (MediaEvent::WatchHit(_) | MediaEvent::Toast(_))) => {
+                    Ok(
+                        ev @ (MediaEvent::WatchHit(_)
+                        | MediaEvent::Toast(_)
+                        | MediaEvent::WatchDead(_)),
+                    ) => {
                         self.stashed_events.push_back(ev);
                     }
                     Ok(MediaEvent::Frame(_)) => continue,
@@ -846,6 +853,25 @@ pub struct ElemInfo {
     /// Node can scroll — interactive for the `scroll` tool too.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub scrollable: bool,
+    /// Widget state flags straight from the dump attrs — emitted only
+    /// when set (`checked`/`selected`/`focused`) so the response stays
+    /// compact; `enabled` is emitted only when the node is DISABLED
+    /// (`"enabled":false`) since enabled is the overwhelmingly common
+    /// case. Together they make checkbox/switch/radio loops
+    /// provable (blind-drive B4 gap) — `verify_after` state predicates
+    /// read the same fields.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub checked: bool,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub selected: bool,
+    #[serde(skip_serializing_if = "is_enabled")]
+    pub enabled: bool,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub focused: bool,
+}
+
+fn is_enabled(b: &bool) -> bool {
+    *b
 }
 
 /// Parse uiautomator dump XML into a flat element list. Attribute
@@ -880,6 +906,12 @@ fn parse_nodes(xml: &str) -> Vec<ElemInfo> {
             clickable: g("clickable") == "true",
             editable: simple == "EditText",
             scrollable: g("scrollable") == "true",
+            checked: g("checked") == "true",
+            selected: g("selected") == "true",
+            // dump omits `enabled` never — but treat absent as true so
+            // hand-written test fixtures don't look disabled.
+            enabled: g("enabled") != "false",
+            focused: g("focused") == "true",
         });
         pos = tag_end;
     }

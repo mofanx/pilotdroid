@@ -157,16 +157,28 @@ benchmark/suite 跑旧 targetSdk app 前需先放行（openatx u2 官方
   返回 `{disarmed:false}`）。
 - **watcher 死讯（agent 0.7.4）**：armed watcher 非正常终结
   （poll 内部故障/会话终结强杀）→ 设备端临终推
-  `{type:"watch_dead"}` ui_event（ch=1 同槽按 type 判别，宿主据此
-  可转 notification）——armed→dead 在两次 recovery epoch 之间
+  `{type:"watch_dead"}` ui_event（ch=1 同槽按 type 判别，serve 转
+  `notifications/pilotdroid/watch_dead` 并对仍 armed 的规则做
+  **有界 auto re-arm**（每规则每 epoch ≤2 次，rearm 结果随
+  notification params 上报；pull 面 `watch_events` 返回
+  `{type:"watch_dead"}`）——armed→dead 在两次 recovery epoch 之间
   不再静默；显式 `watch_disarm` 属正常撤除不发事件。agent 侧
   watch conn 集合 **cap=4**（最旧出列），ui_event 另进 ≤8 条/15s
   TTL replay 环——迟到 attach 的 conn 可补收近期事件（重复交付
   幂等）。
 - **超出 u2 面的 MCP 工具**（shim 不覆盖，记此防口径漂移）：
   `describe_screen`/`screenshot_annotated`（SoM-lite 感知，编号空间
-  与 `compat/som.py` 一致）、`verify_after`（操作后 dump 断言闭环，
-  u2 无此能力）、`watch_arm{push}`（上条）。
+  与 `compat/som.py` 一致；`describe_screen ocr:true` 为可选
+  host-tesseract 档——缺失时优雅降级正常输出+`ocr.available:false`
+  提示，canvas/图片文本转 `ocr_only` 元素按 center 可点）、
+  `verify_after`（操作后 dump 断言闭环，`expect.state` 支持
+  checked/selected/enabled/focused 状态谓词——「tap ok≠效果」
+  分层成 ACK vs 效果断言，u2 无此能力）、`watch_arm{push}`（上条）。
+- **元素状态面（M32）**：`list_elements`/`describe_screen`/compat
+  `som.py` 元素统一透出 widget 状态——`checked`/`selected`/`focused`
+  仅 true 时输出、`enabled` 仅 false 时输出（省 token）；`class`
+  口径全面统一为**简单类名**（此前 describe 给全类名、
+  list_elements 给简名，盲驾混淆源）。
 - **Session 看护（M30，atx-agent 语义）**：Rust `Session` 控制通道
   op 遇死 socket 自动恢复并重放——崩溃在下一次 op 内透明治愈，
   非惰性抛错（serve/MCP 全工具面受益）。边界：`Timeout` 不恢复
