@@ -123,12 +123,36 @@ weditor/u2inspector 在 AI 时代的等效物不是 GUI 查看器，而是一段
   单选/复选/文本输入/弹窗/toast/返回/stream+watch 并存）跑同一
   policy loop，输出逐题 PASS/FAIL+耗时与总成功率。真机 ba0d072d
   （MIUI/API34）基线 **10/10**（`spike/e2e/RESULTS-M17-u2suite.md` §附11）。
+- `loop_v2.py` —— eval v2 难度爬升（跨 app 导航/SoM 编号消费/stale
+  快照重验/滚动查找/时序 toast/脏杀注入/后台恢复），35/35 基线。
+- `loop_v3.py` —— eval v3：在 v2 全集上加**随机化区分度**任务
+  （`random_index_pick` 随机列表项 tap_index、`random_checkbox_state`
+  随机 checkbox 索引+`verify_after` state 谓词断言翻转），失败记录带
+  前台包名归因（`fg=` 字段，外部 app 抢前台不再静默）；`--portable`
+  跑无 ApiDemos 依赖的 Settings 子集（多设备行）。
 
 ```bash
 python3 spike/e2e/agent-loop/inspector.py            # 列元素
 python3 spike/e2e/agent-loop/inspector.py --tap 6 --expect-text "Add"
 PILOTDROID_SERIAL=<serial> python3 spike/e2e/agent-loop/loop.py
 ```
+
+inspector-loop 配方（模型视角最小四拍）：
+
+```
+describe_screen → 选元素 i（class/text/desc + checked/selected 等非默认状态位）
+  → tap_index {i}            # 或 tap {x,y} 中心点
+  → verify_after {
+      action:{tool:"exists",args:{}},          # 只读动作=零副作用复验
+      expect:{state:{match:{text:"Checkbox 1"},checked:true}}
+    }                        # state 谓词把「tap ok≠效果」变成可断言
+```
+
+元素状态（`checked/selected/focused:true`、`enabled:false`）仅在非默认
+值时透出（token 预算）；`describe_screen`/`list_elements`/`screenshot_
+annotated` 共享同一编号空间。多设备：`PILOTDROID_SERIAL` 决定目标
+机，`loop_v3.py --portable` 的无 ApiDemos 子集可在任意 ROM 上跑通
+SoM 契约（som_shape/settings_random_pick/verify_exists_pred）。
 
 ## 实测数据（真机，同口径）
 

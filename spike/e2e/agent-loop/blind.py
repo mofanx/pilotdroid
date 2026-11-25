@@ -28,8 +28,12 @@ def main():
             for i, e in enumerate(els):
                 lab = e.get("text") or e.get("desc") or ""
                 c = e.get("center", "?")
+                st = " ".join(k for k in
+                              ("checked", "selected", "focused")
+                              if e.get(k)) \
+                    + (" disabled" if e.get("enabled") is False else "")
                 print(f"[{i}] {e.get('class', '?'):20} {str(c):>13} "
-                      f"{lab[:60]}")
+                      f"{lab[:48]:48} {st}")
         elif cmd == "tap":
             print(srv.tool("tap", {"x": int(sys.argv[2]),
                                    "y": int(sys.argv[3])}))

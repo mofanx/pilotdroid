@@ -90,6 +90,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   tesseract→行块与树几何融合→`ocr_only` 可编号元素——canvas
   文本场景（ApiDemos TextAlign）8 树节点外产出 13 个 OCR 元素，
   文本场景零重复污染（ledger §附17）。
+- **eval v3**（`spike/e2e/agent-loop/loop_v3.py`）：v2 全集+2 个
+  **随机化区分度**任务（`random_index_pick` 随机主表项 tap_index、
+  `random_checkbox_state` 随机 CheckBox 索引+`verify_after` state
+  谓词断言翻转）；失败记录带**前台包名归因**（`fg=`，外部 app
+  抢前台不再静默）；`stale_i` 缺省 0 修正为显式报错；eval 期
+  `default_input_method` 置空防 IME 抢触（finally 恢复）；v2
+  继承任务全面加 scroll-aware 导航（a11y 只吐已渲染节点）。
+  真机 ba0d072d **27/27**；`--portable` Settings 子集无 ApiDemos
+  依赖用于多设备矩阵行（ledger §附21）。
 
 ## [0.7.1] — 2026-11-25
 

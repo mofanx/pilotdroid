@@ -98,6 +98,31 @@ def tap_el(srv, e):
     return srv.tool("tap", {"x": x, "y": y})
 
 
+def find_scrolled(srv, text, contains=False, tries=10):
+    """describe→find with bounded forward scroll. a11y exposes rendered
+    nodes only; the ApiDemos main list hides items below the fold."""
+    for _ in range(tries):
+        e = find(describe(srv), text=text, contains=contains)
+        if e:
+            return e
+        try:
+            srv.tool("scroll", {"dir": "forward"})
+        except RuntimeError:
+            pass
+        time.sleep(0.4)
+    return None
+
+
+def tap_scrolled(srv, label, tries=10):
+    """find_scrolled + tap. Raises if still off-screen."""
+    e = find_scrolled(srv, label, tries=tries)
+    if not e:
+        raise RuntimeError(f"element not on screen: {label!r}")
+    tap_el(srv, e)
+    time.sleep(0.9)
+    return e
+
+
 def tap_text(srv, label, settle=0.9):
     """describe → find text → tap center. Fails if absent."""
     e = find(describe(srv), text=label)
@@ -126,7 +151,7 @@ def fresh_start(srv, activity=None):
 
 def open_views(srv):
     fresh_start(srv)
-    tap_text(srv, "Views")
+    tap_scrolled(srv, "Views")
 
 
 def open_controls_light(srv):

@@ -23,7 +23,7 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from loop import Serve, describe, find, tap_el, tap_text, fresh_start, \
-    open_controls_light, APIDEMOS
+    open_controls_light, find_scrolled, APIDEMOS
 
 SETTINGS = "com.android.settings"
 
@@ -58,7 +58,7 @@ def t_cross_app_settings(srv):
         return False
     srv.tool("app_start", {"pkg": APIDEMOS})
     time.sleep(1.2)
-    return find(describe(srv), text="Views") is not None
+    return find_scrolled(srv, "Views") is not None
 
 
 def t_som_index_tap(srv):
@@ -66,6 +66,7 @@ def t_som_index_tap(srv):
     srv.tool("app_stop", {"pkg": APIDEMOS})
     srv.tool("app_start", {"pkg": APIDEMOS})
     time.sleep(1.5)
+    find_scrolled(srv, "Views")          # render the row first — a11y
     els = srv.tool("list_elements")["elements"]
     target = next((e for e in els if e.get("text") == "Views"), None)
     if not target:
@@ -81,8 +82,11 @@ def t_stale_snapshot_reverify(srv):
     srv.tool("app_stop", {"pkg": APIDEMOS})
     srv.tool("app_start", {"pkg": APIDEMOS})
     time.sleep(1.5)
+    find_scrolled(srv, "Views")          # render the row first
     els = srv.tool("list_elements")["elements"]
-    stale_i = next((e["i"] for e in els if e.get("text") == "Views"), 0)
+    stale_i = next((e["i"] for e in els if e.get("text") == "Views"), None)
+    if stale_i is None:
+        raise RuntimeError("Views absent from snapshot — stale_i undefined")
     tap_text(srv, "Views")                       # snapshot now stale
     # poll until the nav actually landed — tapping a still-fresh
     # snapshot is a harness race, not a stale-rejection failure.

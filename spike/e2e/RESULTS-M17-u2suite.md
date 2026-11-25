@@ -873,3 +873,52 @@ CI+CodeQL 于 `b34e1a5`/`917e3e5`（lock 修复后）持续 success。
 | CI/CodeQL | 274db5d 双绿 |
 
 文档随行：docs/02-protocol.md §4.8 watch conn/replay 语义、§4.9 `watch_dead` 事件档；SUPPORTED.md cap=4/TTL/replay 限制档；CHANGELOG Unreleased。
+
+## 附21 t3 —— eval v3 随机化 + B4 盲驾复测 + 多设备首行（2026-11-27，ba0d072d，agent 0.7.4，t2 状态面落地后）
+
+### A. eval v3（`loop_v3.py`，9 任务 ×3 轮）：**27/27 (100%)**
+
+| task | pass | p50s | 备注 |
+|---|---|---|---|
+| cross_app_settings | 3/3 | 6.8 | v2 继承（scroll-aware 修复后） |
+| som_index_tap | 3/3 | 3.8 | 同上 |
+| stale_snapshot_reverify | 3/3 | 5.3 | `stale_i` 缺省 0→显式报错（nit 修复） |
+| scroll_find | 3/3 | 3.5 | |
+| double_toast_order | 3/3 | 5.8 | |
+| dirty_kill_recovery | 3/3 | 5.5 | |
+| background_resume | 3/3 | 7.9 | |
+| **random_index_pick** | 3/3 | 4.4 | 随机主表项→tap_index→导航证实→BACK 集合还原 |
+| **random_checkbox_state** | 3/3 | 7.9 | 随机 CheckBox→state 谓词断言 checked 翻转 |
+
+- **失败记录带 fg 归因**：FAIL 行挂 `fg=<pkg>`——实测抓到 `li.mofanx.sctrl`（遥控 app）与 `com.xiaomi.misubscreenui`（副屏 UI）抢前台各两次，环境噪声与产品失败不再混淆。
+- **v2 继承任务修复**（本批连带发现）：`describe`/`list_elements` 只吐**已渲染**节点——ApiDemos 主表「Views」在折下，v2 三任务硬编码假设可见而必挂。全部改 `find_scrolled`/`tap_scrolled` 有界滚动（loop.py 新增 helper，`open_views` 同享）。
+- **eval 环境钉**：`default_input_method` 置空 `pilotdroid.eval/.NoIme`（finally 恢复原值）——MIUI 全屏 extract IME 无视 BACK、盖住全部 app bounds、吞噬注入 tap（观测到 tap 变字符输入）。这是该零售机的真实环境杀器。
+- **底部手势排除区**：元素 tap 中心落 ~94%H 手势区被静默吃掉（★Star 行）——随机抽取按中心 y<0.88·content-max 过滤。
+
+### B. B4 盲驾复测：**PASS**（eval-driven 验收标尺）
+
+states 面落地后重跑 B4 场景（describe→tap→verify_after）：describe 现透出 `CheckBox` 无 checked=未勾，tap_index 后经 `{"state":{"match":{"text":"Checkbox 1"},"checked":true}}` 谓词断言**翻转为真**。上轮双归因之一（状态谓词缺失）关闭；另一归因（外部抢占）由 fg 归因字段显性化。blind.py describe 同步透出状态位。
+
+**a11y `checked` 传播延迟实测 0.5–4s 可变**——verify_after 单次 settle 读可竞争；任务实现为「verify 一次→poll 证实翻转→再以 exists 零副作用 action 过谓词」，幂等且诚实。
+
+### C. 交叉复核产出：serve.rs `match.i` 索引空间不一致（**报 t2 nit**）
+
+`expect.state.match.i` 在 serve.rs:1087 用 `list_elements(false)`（全树索引）解析，而 host 可见 `i` 是 `list_elements(true)`（interactive 子集）空间——**同一 `i` 指不同元素**，match.i 命中错节点（实测 i=5 在 full-tree 落到非目标节点，checked 永 false）。任务侧改 match.text 规避；**应修 serve.rs 对齐为 interactive 空间或文档明示**（归 t2 文件域，移交）。
+
+### D. 多设备矩阵第一行（V816=11.0.0.2:5555，dash 2602BRT18C，**API37/Android17**）
+
+| 项 | 结果 |
+|---|---|
+| `setup` 八项 | **全 PASS**（含 u2_conflict 无包） |
+| agent 版本 | 预装 0.5.0→`agent install`+deploy 升 **0.7.4**（设备日志实证） |
+| describe | 22 元素（systemui 树） |
+| ApiDemos 安装 | **USER_RESTRICTED**——V816 未开「USB 安装」，pm install 同拒；无物理确认通道 |
+| `--portable` 核心子集 | **阻塞**——设备陷 MIUI AOD doze↔防误触页循环（proximity 读 covered 唤醒即弹 `ScreenOnProximitySensorGuide`，system_server 宿主窗不可强杀；`enable_screen_on_proximity_sensor=0` 后仍复发；远端手段已尽） |
+| serial 切换 | `PILOTDROID_SERIAL` 环境变量即切换（Serve() 消费），双机各自 hello/tree 实证 |
+
+**serial 切换正确性注记**：harness 全程只用 `adb -s $SERIAL` + CLI `-s $SERIAL`，无隐式单设备假设；V816 为 net-adb（5555），forward 建链与 USB 设备同路径、各自 abstract socket 不串。
+
+### E. 其他 nit 收编
+
+- `stale_i` 缺省 0 → `Views absent from snapshot` 显式报错（不再把 0 号位当拒测目标）。
+- harness `rpc` 通知队列、`_nav_tap` 前向+回扫双程、NO_NODE scroll 容错、thin-list 重试。
