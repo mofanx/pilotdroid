@@ -36,9 +36,12 @@ Bump both `version` fields in `server.json` to the new release, wait
 until that version is visible on PyPI, then:
 
 ```bash
-pipx install mcp-publisher
-mcp-publisher login github
-cd docs/mcp && mcp-publisher publish   # reads server.json
+# mcp-publisher is a Go binary from modelcontextprotocol/registry
+# releases (NOT on PyPI — `pipx install` will not find it):
+REL=$(gh release view -R modelcontextprotocol/registry --json tagName -q .tagName)
+curl -sL "https://github.com/modelcontextprotocol/registry/releases/download/${REL}/mcp-publisher_linux_amd64.tar.gz" | tar xz
+./mcp-publisher login github -token "$(gh auth token)"
+cd docs/mcp && /path/to/mcp-publisher publish   # reads server.json
 ```
 
 Note: `mcp-publisher login github` uses the device-code flow; if it

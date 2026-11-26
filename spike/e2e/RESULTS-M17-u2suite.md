@@ -1194,3 +1194,61 @@ cargo workspace **101/0**（serve 34 含新测）+ fmt 净；pytest **93/0**。
 - 分流定案：**中间态**——「MIUI 墙」属实（已测最劣 5.6fps）但非唯一墙；uia 路径封顶随 ROM 抓帧延迟在 **5.6–10.3fps** 浮动，已测两台零售机**均不达 15fps**。
 - 新数据点：**HarmonyOS 上 capture→encode 流水线化理论顶 ≈1000/63≈15.9fps**——流水线化在该 ROM 首次具备跨 15fps 潜力（MIUI 上仅 ~8.9）。是否实装流水线化另行裁决（当前 4-6fps 对 AI-agent loop 已够用，投入产出需新证据）。
 - ADR-008 已修订：增「跨 ROM 复测」表+分流结论，「MIUI 特性」注记改为「MIUI 最劣但非唯一墙，已测两机均不达 15fps」。
+
+## 附29 t4 —— v0.8.1 patch 发版列车（2026-11-26）
+
+### A. 版本与提交
+
+- bump 0.8.1 四处：`Cargo.toml` workspace / `python/pyproject.toml` /
+  `docs/mcp/server.json`（server+package 双字段）/ `install-smoke.sh` VER。
+- `CHANGELOG.md` fold `[0.8.1]`；勘正 `[0.8.0]` 日期 11-27→11-26（`gh
+  release view` publishedAt=2026-11-26T00:04Z 实证）。
+- `docs/release-notes-v0.8.1.md`：版本错落明示（CLI 0.8.1 随行 agent
+  0.7.4 不变）、三编号空间对照、match.i 缺陷语义、跨 OEM 数字、ADR-008
+  中间态、registry 复核路径。
+- 提交 `3cf31f8` → tag `v0.8.1`（annotated）。
+
+### B. 预检绿
+
+- `cargo test --workspace` 102/0 fail（期间 `/home` 磁盘 100% 写满致链接
+  SIGBUS——清 worktree `target/`+共享 `~/.cargo-target` 后重建通过；
+  AGENTS.md 预警过的同一坑，第三次踩）。
+- `cargo fmt --all --check` 净；`clippy -D warnings` 净；
+  pytest `python/tests` 94/0；doc-drift 5/5 PASS。
+- u2 vendored 套件两轮同面板 **18 pass/5 fail/7 skip**：5 fail 全部命中
+  已挂账档（`.scroll.to` NIE 环境翻牌 / Menu·Search 屏外 a11y 不可见 /
+  watcher 回调 a11y-lag），与本窗口 diff 域（som/serve i 字段+bump）
+  零交集——无回归，面板摆动档 19-22 内偏下仍诚实记档。
+- `verify-agent.sh ba0d072d` **43/1**：唯一 fail `shot_quality`
+  （q30=101664B>q80=85959B）——内容为环境敏感断言：两次 live 截帧间屏幕
+  换帧即翻牌；同屏稳定态复测 q30=111297B<q80=190736B 3/3 成立。
+  agent.jar 0.7.4 未变，非回归；建议挂账「shot_quality 对同帧取样」。
+
+### C. 四面发布实证
+
+| 面 | 证据 |
+|---|---|
+| GitHub Release | `v0.8.1` 公开（非 draft），7 assets：agent.jar+whl+tar.gz+三平台 CLI+SHA256SUMS；notes 取自 `release-notes-v0.8.1.md`；release.yml run 45791023058 全绿（verify-tag 6s+三 OS build+python-dist+draft 2m30s） |
+| PyPI | `pypa/gh-action-pypi-publish` OIDC run 45791505143 成功 31s；`pypi.org/pypi/pilotdroid/json` latest=0.8.1（simple index 传播约 1-2min，首轮 smoke 曾吃透传延迟 fail，复跑全绿） |
+| MCP Registry | `mcp-publisher`（v1.8.16 GitHub 二进制——SUBMIT.md 的 `pipx install` 已过时，PyPI 无此包）`publish` 成功；Step 6b curl 复核：`0.8.1 active isLatest:true`，0.6.1.post1→0.8.1 全链在册 |
+| Homebrew tap | `mofanx/homebrew-pilotdroid` `2f6648c`：version/url/sha256×2 取自 v0.8.1 SHA256SUMS（linux f65ab688…/macos 04fe9ba2…）。注意：远端已有 0.8.0 bump（50cf4ab，并行 agent 推），rebase 解冲突后落位 |
+
+### D. install-smoke 真机（ba0d072d）
+
+`spike/e2e/install-smoke.sh ba0d072d` **9/0**：PyPI 可见→pip install
+0.8.1→u2shim+xpath 符号→错误提示可行动→**bootstrap 下载→SHA256 校验
+→execv→`pilotdroid-cli 0.8.1`**（真用户懒装链端到端首次 0.8.1 实证）→
+release 二进制对照→setup 8 检查（hello ver=0.7.4）→serve MCP 握手+
+tools/list。首轮曾因 PyPI simple-index 传播延迟 2/5，非缺陷。
+
+### E. CI/CodeQL
+
+`3cf31f8`：ci success 42s、codeql success 1m10s、release success 2m30s、
+pypi success 31s——四 run 全绿。
+
+### F. 残留挂账（非阻塞）
+
+1. `shot_quality` 断言环境敏感（见 B 节）——可对同帧双质量取样或失败重试一对。
+2. u2 套件面板 18/5/7 摆动档内偏下；`.scroll.to` 实装或 SUPPORTED 明示仍挂账。
+3. `mcp-publisher` 分发方式（GitHub Go 二进制）与 SUBMIT.md `pipx install` 记述不符——**已勘正**：SUBMIT.md 改记 releases tarball 安装命令（本提交随行）。
+4. install-smoke 首轮 PyPI 传播延迟（≈1-2min）——脚本 step0 轮询已覆盖 index，但 install 用 simple 页面仍可能更慢；可加 install 重试。
