@@ -1318,3 +1318,59 @@ old_ime 毒化基线、flush-clear ghost 窗、滚动 TTL、`_Scroll.to` NIE 四
 3. `AppCompatEditText` 等 EditText 子类两边都判非 editable——口径一致（不算 bug）但与 Android 继承真相有差，若 u2 parity 场景需要另记。
 
 **结论：partial**——编号空间本体修复经真机全链实证成立；但验收项「README 配方按新口径可复跑」**不成立**（C 节 tap_index snapshot 前置缺口），需配方补拍或 describe 填快照二选一收口。
+
+## 附32 t4 —— v0.8.2 patch 发版列车（2026-11-26）
+
+### A. 列车密度判定与内容
+
+「发件缺陷→patch 窗口」制度化注记（PUBLISH.md §6b 随行）首次适用——0.8.1
+发件后复核链挖出 t1 批缺陷（describe→tap TOCTOU 残窗 + match:{} 静默）修复
+密度已足，不等 feature 批即发车。t1 批次 `9af723f`（facade
+`list_elements_from(xml,io)`+`is_interactive` 单源+serve `fill_snap`+Snap
+溯源+match:{} 显式报错+配方四拍回退）由本列车代提交（p2 完成于工作区未
+提交，测试自跑 105/0 复核）。
+
+### B. 版本与提交
+
+- bump 0.8.2 四处（Cargo/pyproject/server.json 双字段/install-smoke VER）；
+  `Cargo.lock` 内 0.8.1 残留为外部依赖版本号非本项目（moxcms/oid-registry/
+  quick-protobuf）已核。
+- `CHANGELOG.md` fold `[0.8.2]`；`release-notes-v0.8.2.md` 诚实写 TOCTOU
+  机理（0.8.1 五拍配方的 A/B dump 残窗→同 dump 原子绑定）+版本错落
+  （CLI 0.8.2 随行 agent 0.7.4 不变）。
+- 提交：`9af723f`（t1 批）→ `HEAD`（release 提交）。
+
+### C. 预检绿
+
+- `cargo test --workspace` **105/0**（CLI suite 38 = t1 +3 新测）；fmt/clippy
+  净；pytest 94；doc-drift 5/5。
+- `verify-agent.sh ba0d072d`：首轮 43/1（断言名未捕获，输出 tail 截断）→
+  复跑两轮 **44/0**——与 §附29 `shot_quality` 环境敏感 flake 同型（内容敏感
+  字节比对，换帧即翻牌）；同帧对采样修挂账升至建议位。
+- agent.jar sha256 `94bf8e9b…` 与 v0.8.0/v0.8.1 逐字节一致（0.7.4 未变）。
+
+### D. 四面发布实证
+
+| 面 | 证据 |
+|---|---|
+| GitHub Release | `v0.8.2` 公开，7 assets；release.yml run 45822472067 全绿（2m57s），notes 取自 `release-notes-v0.8.2.md` |
+| PyPI | pypi.yml run 45823070033 success 29s；simple index 传播 ~10s（smoke try2 通过） |
+| MCP Registry | `mcp-publisher publish` 成功（首试 401 JWT 过期→`login github -token` 重登→发布——SUBMIT.md 预警路径实证）；Step 6b curl：`0.8.2 active isLatest:true`，0.6.1.post1→0.8.2 全链 |
+| Homebrew tap | `homebrew-pilotdroid` `ea004b6`：0.8.2 url+sha256×2（linux `5cfa66ac…`/macos `4582fd36…`）取自发布 SHA256SUMS |
+
+### E. install-smoke 真机（ba0d072d）
+
+`install-smoke.sh ba0d072d` **9/0**：PyPI 0.8.2→pip install→u2shim+xpath→
+错误提示→bootstrap 下载→SHA256→execv `pilotdroid-cli 0.8.2`→setup 8 检查
+（hello 0.7.4）→MCP 握手+tools/list。
+
+### F. CI/CodeQL
+
+release 提交：ci 1m0s、codeql 1m22s、release 2m57s、pypi 29s 四 run 全绿。
+
+### G. 残留（含 t2/t3 在途说明）
+
+- t2 盲驾基准建制化、t3 挂账微批（shot_quality 同帧对/.scroll.to/old_ime）
+  未随本版——在途或待启动，落库后按窗口另行发件；本次不发不完整批次。
+- `mcp-publisher` JWT 短期过期已是第二次遇——SUBMIT.md 已记重登路径，
+  可考虑把 `login -token` 并入 publish 前置步。
