@@ -97,30 +97,55 @@ def fg_pkg():
 
 # ---------------- v3 randomized tasks ----------------
 
+def _ensure_fg(srv, pkg, tries=3):
+    """Foreground-package gate: external takeovers (com.miui.home,
+    sctrl, misubscreenui) must be recovered BEFORE the task body — a
+    hijacked foreground is environmental, not a task result. Raises
+    with the offending pkg for fg attribution when unrecoverable."""
+    for _ in range(tries):
+        fg = fg_pkg()
+        if fg == pkg:
+            return
+        srv.tool("app_start", {"pkg": pkg})
+        time.sleep(1.0)
+    raise RuntimeError(f"foreground held by {fg_pkg()}")
+
+
 def t_random_index_pick(srv):
-    """Random main-list entry via tap_index — nav away, BACK restores."""
-    srv.tool("app_stop", {"pkg": APIDEMOS})
-    srv.tool("app_start", {"pkg": APIDEMOS})
-    time.sleep(1.5)
-    els = srv.tool("list_elements")["elements"]
-    cands = [e for e in els if e.get("text") and e.get("clickable")]
-    if len(cands) < 3:
-        time.sleep(0.8)                        # mid-transition a11y gap
+    """Random main-list entry via tap_index — nav away, BACK restores.
+    Mid-task fg takeover (com.miui.home etc.) is environmental: if the
+    result fails while fg is NOT ApiDemos, restore foreground and
+    retry once rather than counting a harness-influenced FAIL."""
+    for attempt in range(2):
+        srv.tool("app_stop", {"pkg": APIDEMOS})
+        srv.tool("app_start", {"pkg": APIDEMOS})
+        _ensure_fg(srv, APIDEMOS)
+        time.sleep(1.5)
         els = srv.tool("list_elements")["elements"]
-        cands = [e for e in els if e.get("text") and e.get("clickable")]
-    if len(cands) < 3:
-        raise RuntimeError("main list too thin")
-    before = {e.get("text") for e in els}
-    pick = random.choice(cands)
-    srv.tool("tap_index", {"i": pick["i"]})
-    time.sleep(1.0)
-    after = srv.tool("list_elements")["elements"]
-    gone = not any(e.get("text") == pick["text"] for e in after)
-    srv.tool("press", {"keycode": 4})
-    time.sleep(0.9)
-    restored = {e.get("text") for e in
-                srv.tool("list_elements")["elements"]} == before
-    return gone and restored
+        cands = [e for e in els
+                 if e.get("text") and e.get("clickable")]
+        if len(cands) < 3:
+            time.sleep(0.8)                    # mid-transition a11y gap
+            els = srv.tool("list_elements")["elements"]
+            cands = [e for e in els
+                     if e.get("text") and e.get("clickable")]
+        if len(cands) < 3:
+            raise RuntimeError("main list too thin")
+        before = {e.get("text") for e in els}
+        pick = random.choice(cands)
+        srv.tool("tap_index", {"i": pick["i"]})
+        time.sleep(1.0)
+        after = srv.tool("list_elements")["elements"]
+        gone = not any(e.get("text") == pick["text"] for e in after)
+        srv.tool("press", {"keycode": 4})
+        time.sleep(0.9)
+        restored = {e.get("text") for e in
+                    srv.tool("list_elements")["elements"]} == before
+        if gone and restored:
+            return True
+        if attempt == 0 and fg_pkg() != APIDEMOS:
+            continue                           # fg takeover — retry
+        return False
 
 
 def t_random_checkbox_state(srv):
@@ -173,6 +198,7 @@ def t_random_checkbox_state(srv):
 def _settings_list(srv):
     srv.tool("app_stop", {"pkg": SETTINGS})
     srv.tool("app_start", {"pkg": SETTINGS})
+    _ensure_fg(srv, SETTINGS)
     time.sleep(2.0)
     return srv.tool("list_elements")["elements"]
 
@@ -253,21 +279,27 @@ def main():
     tasks = PORTABLE if portable else TASKS_V3
     # Eval env: null out the default IME so auto-focused EditTexts never
     # raise a keyboard (ACTION_SET_TEXT bypasses the IME anyway — v1
-    # set_text task unaffected). Restored in finally; saves the original
-    # value first. Kills the entire class of "IME ate my tap" failures.
+    # set_text task unaffected). Only applied for ApiDemos tasks — the
+    # --portable Settings subset types nothing, and on non-test devices
+    # a settings write is unjustified interference. BASELINE RESTORE:
+    # `old_ime` is captured BEFORE the pin and written back in finally;
+    # the restored value is printed for audit. Caveat: a SIGKILL of the
+    # harness skips the restore — re-run `settings put secure
+    # default_input_method <value>` manually in that case.
     old_ime = None
-    try:
-        old_ime = subprocess.check_output(
-            ["adb", "-s", SERIAL, "shell",
-             "settings get secure default_input_method"],
-            timeout=6, text=True).strip()
-        subprocess.run(
-            ["adb", "-s", SERIAL, "shell",
-             "settings put secure default_input_method "
-             "pilotdroid.eval/.NoIme"],
-            timeout=6, check=False)
-    except Exception:
-        old_ime = None
+    if not portable:
+        try:
+            old_ime = subprocess.check_output(
+                ["adb", "-s", SERIAL, "shell",
+                 "settings get secure default_input_method"],
+                timeout=6, text=True).strip()
+            subprocess.run(
+                ["adb", "-s", SERIAL, "shell",
+                 "settings put secure default_input_method "
+                 "pilotdroid.eval/.NoIme"],
+                timeout=6, check=False)
+        except Exception:
+            old_ime = None
     srv = Serve()
     res = {}          # name -> [(ok, dt)]
     fails = []        # (task, round, err, fg)
@@ -297,6 +329,7 @@ def main():
                 ["adb", "-s", SERIAL, "shell",
                  f"settings put secure default_input_method {old_ime}"],
                 timeout=6, check=False)
+            print(f"eval env: default_input_method restored to {old_ime}")
 
     print("\ntask                      pass      p50s   p95s   mean")
     for name, runs in res.items():

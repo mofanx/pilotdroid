@@ -16,6 +16,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   纯 `text`/`desc`/`class` match 仍搜全树（disabled/非交互节点
   是合法断言目标）。
 
+### Internal
+
+- **eval v3 nit 两件**（`spike/e2e/agent-loop/loop_v3.py`）：
+  `random_index_pick`/`_settings_list` 加**前台包名门**——启动后
+  `fg_pkg()` 校验目标 app 持前台，被 `com.miui.home` 类外部
+  抢占先 `app_start` 恢复（≤3 次）再进入任务体；任务中遭遇
+  抢占且结果失败时归因 fg≠目标再重试一次，环境性抢占不再记
+  FAIL。`default_input_method` 置空钉**收敛为非 portable 档**
+  （`--portable` Settings 子集不输入文本，非测试机不应被写
+  secure 设置）；恢复路径打印还原后的 IME 基线值供审计。
+
 ## [0.8.0] — 2026-11-27
 
 ### Added

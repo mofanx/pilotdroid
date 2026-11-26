@@ -1034,3 +1034,27 @@ facade `ElemInfo.class` 存简单名、som.rs emit `rsplit`、compat/som.py 镜�
 1. `expect.state.match.i` 全树/interactive 索引空间不一致（serve.rs:1087，**仍 live**）+ i 短路其他 match 键。
 2. streaming 路径 ui_event 绕开 replay 环（ghost 吸收残窗，小）。
 3. `_Scroll.to` NIE 缺口持续被环境翻牌（suite 面板在 19-22 间摆动，建议 or 修 or SUPPORTED 明示已有档）。
+
+## 附24 t8 —— eval nit 两件修复 + 多设备第二行尝试（2026-11-28，ba0d072d / V816）
+
+### A. nit-eval1：random_index_pick 前台包名门——**已修**
+
+- `_ensure_fg(srv, pkg, tries=3)`：启动后 `fg_pkg()` 校验目标 app 持前台，被外部 app（com.miui.home/sctrl/misubscreenui 类）抢占时 `app_start` 恢复 ≤3 次再进入任务体；不可恢复则 `RuntimeError("foreground held by <pkg>")`（fg 归因照常记录）。挂到 `t_random_index_pick` 与 `_settings_list`（portable 三任务共用）。
+- **任务中抢占重试**：任务体期间发生 fg 抢占导致结果失败时，fg≠目标即重试一次——环境性抢占不再计 FAIL。
+- **实证**：修复前一轮全量跑出本 nit 的目标病型——`r1 FAIL random_index_pick fg=com.miui.home`（任务中 launcher 抢占）；修后单任务重跑 **4/4 PASS**。
+
+### B. nit-eval2：IME 钉收敛 + 恢复基线注记——**已修**
+
+- `default_input_method` 置空钉收敛为**仅非 portable 档**：`--portable`（Settings 子集）不输入文本，钉无必要；且对非测试机的 secure 设置写属不当干扰——多设备跑日常用机时该路径现在零设置改动。
+- **恢复基线可审计**：finally 恢复后打印 `eval env: default_input_method restored to <原值>`；代码注释明示 SIGKILL 跳过 finally 时需手工 `settings put` 恢复。
+- 实证：`default_input_method restored to com.sohu.inputmethod.sogou.xiaomi/.SogouIME`（ba0d072d 原值）。
+
+### C. eval v3 全量复核（ba0d072d，9 任务 ×3 轮）：**26/27（修前快照）→ 修后 random_index_pick 4/4**
+
+修前全量：26/27，唯一 FAIL 即 fg=com.miui.home 抢占（正是本 nit 目标，见 A）。其余 8 任务全 3/3（p50 3.5–7.9s）。IME 恢复基线打印实证。
+
+### D. 多设备第二行（V816 192.168.123.125:5555）：**blocked——设备不可达**
+
+- `adb connect 192.168.123.125:5555` → `No route to host`（多次）；`ping` 100% 丢包；`nmap -p 5555 192.168.123.0/24` 无开放设备——**该机当前不在网/无线 adb 已关**，远端不可恢复。
+- `adb devices` 现 11.0.0.2:5555 为 `device` 态（adb 自动重连的旧址，疑同机换网段回连）——**遵用户禁令未触碰**，未做任何 shell 探测。
+- 已就绪待跑命令（设备恢复后）：`pilotdroid-cli -s 192.168.123.125:5555 setup` + describe + `PILOTDROID_SERIAL=192.168.123.125:5555 python3 loop_v3.py --portable`（portable 档零安装零设置写——IME 钉已对 portable 关闭，见 B）。
