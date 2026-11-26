@@ -137,10 +137,11 @@ python3 spike/e2e/agent-loop/inspector.py --tap 6 --expect-text "Add"
 PILOTDROID_SERIAL=<serial> python3 spike/e2e/agent-loop/loop.py
 ```
 
-inspector-loop 配方（模型视角最小四拍）：
+inspector-loop 配方（模型视角最小五拍）：
 
 ```
 describe_screen → 选元素：取元素 JSON 的 `i` 字段（= list_elements 编号）
+  → list_elements            # 首次 tap_index 前必备：填快照（stale-guard 的比对基线）
   → tap_index {i}            # stale-guard 防错点；无 `i` 的元素才走 tap {x,y} 中心点
   → verify_after {
       action:{tool:"exists",args:{}},          # 只读动作=零副作用复验

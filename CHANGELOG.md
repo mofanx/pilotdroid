@@ -6,6 +6,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **inspector-loop 配方勘正**（t6 复核）：README「四拍」改**五拍**——
+  `tap_index` 消费的快照仅由 `list_elements` 填充，`describe_screen`
+  不填快照；字面按旧配方 `describe→tap_index` 在新鲜会话必踩
+  `no element snapshot`。配方补 `list_elements` 拍，`SUPPORTED`
+  三空间表与 `describe_screen` 工具描述同步补快照前置注记
+  （ledger §附31-C）。
+
 ## [0.8.1] — 2026-11-26
 
 ### Added

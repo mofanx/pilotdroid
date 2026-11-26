@@ -1252,3 +1252,69 @@ pypi success 31s——四 run 全绿。
 2. u2 套件面板 18/5/7 摆动档内偏下；`.scroll.to` 实装或 SUPPORTED 明示仍挂账。
 3. `mcp-publisher` 分发方式（GitHub Go 二进制）与 SUBMIT.md `pipx install` 记述不符——**已勘正**：SUBMIT.md 改记 releases tarball 安装命令（本提交随行）。
 4. install-smoke 首轮 PyPI 传播延迟（≈1-2min）——脚本 step0 轮询已覆盖 index，但 install 用 simple 页面仍可能更慢；可加 install 重试。
+
+## 附30 t5 —— t1+t3+t4 独立复核（2026-11-26，复核员自跑，非转述）
+
+### A. MCP Registry（t1 复核）：**PASS**
+
+`curl /v0/servers?search=pilotdroid`（不带 limit）确实只回首条——本复核独立复现「查询姿势截断」误判机制；带全量返回后：0.6.1.post1 `deprecated` + 0.6.2→0.8.1 全链 `active`，**0.8.0 active 非 deprecated、0.8.1 active+isLatest**。根因定案「非缺陷——分页截断」与 t1 一致，三候选（publish 失败/命名漂移/被覆盖）均不成立。PUBLISH.md Step 6b 正确 curl 姿势已固化。
+
+### B. ADR-008 修订措辞 vs spike 数字（t3 复核）：**PASS**
+
+ADR 新增「跨 ROM 复测」表数字与 §附28-B 逐项吻合（req5→5.03/req10→9.03/req15→10.28 顶；cap63+enc31=94ms→理论 10.6 实测 10.28；流水线化 HarmonyOS ≈15.9 潜力注记）。分流定案「**中间态**——MIUI 墙属实非唯一墙，5.6–10.3fps 随 cap_ms 浮动、两机均不达 15fps」表述与数据自洽，「MIUI 特性」旧措辞已修订。措辞/数字/结论三面一致。
+
+### C. v0.8.1 四面（t4 复核）：**PASS**
+
+| 面 | 实证 | 结果 |
+|---|---|---|
+| GitHub Release | `gh release view v0.8.1`：7 assets（agent.jar/whl/sdist/三平台二进制/SHA256SUMS） | ✔ |
+| SHA256 | 下载 linux 二进制+agent.jar+SHA256SUMS `sha256sum -c`：两 OK（其余未下载项 expected-FAILED）；发布二进制 `--version`=`pilotdroid-cli 0.8.1` | ✔ |
+| PyPI | `pypi.org/pypi/pilotdroid/json` version=`0.8.1`；`pip download pilotdroid==0.8.1` 得 whl | ✔ |
+| Registry | 见 A：0.8.1 `active`+`isLatest:true` | ✔ |
+| Homebrew tap | `pilotdroid.rb` version=`0.8.1`，linux/macos sha256 与发布 SHA256SUMS **逐字一致**（f65ab688…/04fe9ba2…） | ✔ |
+
+### D. 回归面（本复核自跑）
+
+| 项 | 结果 |
+|---|---|
+| doc-drift | **PASS** 0 fail（tools-claims 30/30、shim-methods 无缺失、smoke-ver 0.8.1 对齐、changelog fold 闸过） |
+| pytest | **94 pass** / 3 warnings（Pillow deprecation，环境性） |
+| cargo 三件套 | test workspace 全绿；fmt clean；clippy `-D warnings` 净 |
+| verify-agent ba0d072d | **44 pass / 0 fail**（t4 报的 43/1 shot_quality 环境敏感断言本轮通过——挂账项实证为 flake 非回归，agent.jar 未变一致） |
+| u2suite verbatim | **18 pass / 5 fail / 7 skip**——落在记档 19–22 摆动窗内，逐条归因全为已知 flake/挂账类，无新回归病型：①`test_scroll` `_Scroll.to` NIE（挂账待裁决项）；②`test_send_keys` xpath 'Search' 屏态依赖；③`test_watch_context` 'Menu' 屏态依赖；④`test_xpath_watcher` 5s 回调时序 flake；⑤`test_xpath_scroll_to` 'Pictures' 滚动未达（同屏态窗） |
+
+### 残留挂账确认
+
+old_ime 毒化基线、flush-clear ghost 窗、滚动 TTL、`_Scroll.to` NIE 四件继续挂账（本复核未扩大面）。
+
+## 附31 t6 —— t2 编号空间修复独立复核（2026-11-26，复核员自跑）
+
+### A. 实现同构：**PASS**
+
+逐行比对三处谓词定义——`som.rs::enumerate`（`clickable‖editable‖scrollable`，`editable = rsplit('.').next() == "EditText"`，**先于 useful continue 计数**）与 `facade::list_elements`（retain 同谓词后 `e.i = enumerate()`）及 `compat/som.py::_enumerate` 三者同构；`rsplit('.')` 归一化两边逐字相同（内部类 `Outer$X`/无点类名行为一致）。som.py 用 `ET.iter("node")` 真解析 vs Rust `<node` 文本扫描——a11y dump 只产 `<node>` 元素且无 CDATA/注释/未转义 `<`，实际无分叉窗口（洁癖级 nit：som.rs 用 `find("<node")` 会容忍 `<nodexyz`，facade 用 `find("<node ")` 更严；真 dump 不可能出现）。
+
+### B. 真机实证（ba0d072d，MIUI Settings 活屏 99 节点）
+
+1. **i↔list_elements 对齐**：describe 99 元素中带 `i` 者 **19 个**↔ `list_elements` 19 个，逐 `i` bounds 比对 **0 mismatch**（80 个非交互节点夹缝中编号无漂移）——t2 的 19/19 宣称独立复现。
+2. **闭环**：`list_elements` → `verify_after{action:tap_index i:0}`（搜索栏 FrameLayout [0,548,1440,753]）→ tap ok + `layout_changed:true` **PASS**。
+
+### C. ⚠️ 挖出缺陷：README 四拍配方**字面不可跑**（partial）
+
+- **实证**：新鲜 serve 会话按 README 配方 `describe_screen → tap_index {i}` → `isError: "no element snapshot — call list_elements first"`——`tap_index` 消费的 `snap` **仅由 `list_elements` 填**（serve.rs:728），`describe_screen` handler 不写 snap（973 段无 `*snap=` 赋值）。
+- **性质**：`i` 字段把**编号空间**对齐了（B 节实证），但**快照填充链**仍缺一拍——t2 修好了"取哪个 i"，没修好"i 从哪来"。该缺口 t2 前就存在（旧配方同样跳拍），t2 未引入亦未消除；`compat/SUPPORTED.md` L188「盲驾四拍配方取 i 喂 tap_index」同病。
+- **修法候选**（裁决留给后续工单）：
+  a. 文档拍：配方改 5 拍 `describe→list_elements→tap_index`（list 建快照+describe 供 SoM 视图）——零代码但弱化"一拍即得"卖点；
+  b. 代码拍：`describe_screen` handler 顺手填 snap——需 facade 暴露 `list_elements_from(xml)` 避免二次 dump（M 级改动）；
+  c. 双轨：`describe_screen` 返回 `snapshot_armed:true` 字段+实装 b。
+
+### D. 单测语义：**PASS**
+
+`som.rs::i_maps_to_list_elements_space` + `test_som.py` 镜像钉住关键分叉：label-only 节点 `i=None`、**裸 EditText 占号不透出**（i=0 消耗但 useful=False 出局）、Button `id=2/i=1` 双空间共存——正是该字段存在的全部理由。`cargo test -p pilotdroid-cli som::` 8/8、pytest test_som.py 11/11 复核员自跑通过。
+
+### E. Nit（非阻塞挂账）
+
+1. interactive 谓词两 crate 各抄一份（som.rs/facade.rs），无共享 helper——将来加 `checkable` 类即漂移；t2 原清单的「filter 抽共享谓词」未做。
+2. som.rs `find("<node")` 比 facade `find("<node ")` 宽松（理论容忍 `<nodexyz>` 元素名），真 dump 无触发面。
+3. `AppCompatEditText` 等 EditText 子类两边都判非 editable——口径一致（不算 bug）但与 Android 继承真相有差，若 u2 parity 场景需要另记。
+
+**结论：partial**——编号空间本体修复经真机全链实证成立；但验收项「README 配方按新口径可复跑」**不成立**（C 节 tap_index snapshot 前置缺口），需配方补拍或 describe 填快照二选一收口。
