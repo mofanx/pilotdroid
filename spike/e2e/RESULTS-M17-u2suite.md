@@ -923,3 +923,27 @@ states 面落地后重跑 B4 场景（describe→tap→verify_after）：describ
 
 - `stale_i` 缺省 0 → `Views absent from snapshot` 显式报错（不再把 0 号位当拒测目标）。
 - harness `rpc` 通知队列、`_nav_tap` 前向+回扫双程、NO_NODE scroll 容错、thin-list 重试。
+
+## 附22 t4 —— v0.8.0 minor 发版列车全链证据（2026-11-27，tag `v0.8.0@3be8f15`）
+
+### 版本对齐判定
+
+CLI/Python **0.8.0** 随件 agent.jar **0.7.4**——feature 级增量
+（3 新 notification + agent 0.7.2→0.7.4 两级 + SoM states +
+watch_dead + OCR 可选档），走 minor 非 patch；错落关系已在
+release notes「Version skew」段明示。
+
+### 四面发布链
+
+| 面 | 证据 |
+|---|---|
+| bump×5 | Cargo workspace/pyproject/server.json×2/install-smoke VER →0.8.0；Cargo.lock 随行；CHANGELOG Unreleased→[0.8.0] fold（12 commits）；doc-drift 6/6 |
+| tag+assets | `v0.8.0@3be8f15`（CI+CodeQL 双绿后打）→ release workflow success → draft 7 assets 齐全（linux/macos/windows+whl+sdist+agent.jar+SHA256SUMS）→ notes-file 应用 → publish |
+| PyPI | `pypi.yml` OIDC **success**；`pip index versions` 见 0.8.0（首轮 smoke 撞 index/文件传播竞态 5 fail，传播完成后重跑全绿——传播延迟如实记） |
+| install-smoke | `ba0d072d` **9/9 PASS**：`pilotdroid-cli 0.8.0`（venv bootstrap+release binary 对照）+setup `hello ver=Some("0.7.4")` agent 版本实证+serve MCP 握手 |
+| Registry | `mcp-publisher publish` → `io.github.mofanx/pilotdroid@0.8.0`（JWT 过期经 `login github -token "$(gh auth token)"` 重登后发成） |
+| tap | `mofanx/homebrew-pilotdroid` Formula `50cf4ab`：version+双 url+双 sha256（SHA256SUMS 对照：linux 96cc9340…/macos e7c47fe7…） |
+
+### notes 诚实档覆盖
+
+状态面（非默认输出策略+state 谓词）、watch_dead（cap4+replay ≤8/15s）、OCR 可选档（~1.5–2s/帧+English 级+缺依赖优雅降级）、恢复三件套、agent 0.7.2→0.7.4 错落、MIUI checked 传播 0.5–4s 延迟注记、V816 多设备行 partial 口径（日常用机 eval 有意未跑）。
