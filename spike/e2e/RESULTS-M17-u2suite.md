@@ -1128,3 +1128,41 @@ cargo workspace **101/0**（serve 34 含新测）+ fmt 净；pytest **93/0**。
 |---|---|---|---|
 | Xiaomi 测试机 | ba0d072d (USB) | 34 | eval v3 全量 **26/27→修后 nit 病型 4/4**（§附24）；verify-agent 44/0 |
 | V816 dash 2602BRT18C | 192.168.123.125:5555 | 37 | **BLOCKED**——setup/describe 历史上已过（§附21-D），portable 数字待设备可达 |
+
+## 附27 t11 —— 多设备第二行落地：华为平板 CFE6R21525008201（用户提供，授权测试）
+
+### A. 设备与接入
+
+| 项 | 值 |
+|---|---|
+| 型号 | HUAWEI **MRR-W29**（HWMRR-Q / MatePad），HarmonyOS 系 Android 12 / **API 31**，1600×2560@400dpi，USB adb |
+| `agent install`+`start` | 0.7.4 部署成功（首跑 stale jar HELLO 失败→重装即通） |
+| `setup` 八项 | **全 PASS**（hello ver=0.7.4 caps=0x7ff；u2/atx 三包装在但 idle，无冲突） |
+
+### B. portable 子集执行：**15/15 (100%)**（3 任务×5 轮，最终码）
+
+| task | pass | p50s | 备注 |
+|---|---|---|---|
+| som_shape | 5/5 | 4.2 | 修后诚实契约（见 C-1） |
+| settings_random_pick | 5/5 | 5.6 | WiFi 活页面随机行 tap→导航证实→恢复 |
+| verify_exists_pred | 5/5 | 4.8 | 全树 text 锚点 |
+
+对照 ba0d072d 同码回归 **14/15**（settings_random_pick r2：行 tap 产生同 act/同 count 的原位展开/弹窗，三路导航证据均不满足——诚实 FAIL，非产品缺陷）。
+
+### C. 执行中挖出并修掉的 portable 任务 latent 缺陷（此前从未跑过）
+
+1. **som_shape 过度承诺 schema**：断言 `text`/`center` 键必在——ElemInfo 无 center 字段（center 是 som.py/som.rs 派生物），空 text/desc 被 serde 跳过。该任务在任何设备都跑不过。修为诚实契约：i/class/bounds 必有 + ≥1 交互标志 + class 简单名。
+2. **label=only-text MIUI 假设**：HarmonyOS 行标签在 `desc` 非 `text`（WiFi 页 desc 富标签；主页行零标签、标签在未渲染子节点）——`text`-only 过滤全空。引入 `_label(e)=text or desc`；Settings 落地页 OEM 分化（MIUI→主列表、HarmonyOS 直接进 `Settings$WifiSettingsActivity`），改为「任一 Settings 面」契约不强制主页。
+3. **导航证据三路**：fg activity 变化（新增 `fg_act()`）∨ 签名+数量齐变 ∨ 选中行 label[:12] 前缀离场（HarmonyOS desc 尾部随信号强度漂移，全串比较必 flake）。
+4. **两个安全收敛**：Switch/EditText/CheckBox/RadioButton 类从随机候选排除（用户日常机上翻转开关=用户可见状态改动）；labeled 候选优先（零标签行可能是非导航装饰）。
+5. **活页面竞态两补丁**：`snapshot stale`（WiFi 扫描重渲染触发 tap_index 守卫——产品正确行为）→重列表重选一次；exists 谓词单 miss 为环境性→连续两 miss 才记 FAIL；BACK 弹穿新栈底落到底层 app→恢复段重拉 Settings 不算 FAIL。
+
+### D. 矩阵现状（两行）
+
+| 设备 | serial | API/OEM | 结果 |
+|---|---|---|---|
+| Xiaomi 测试机 | ba0d072d (USB) | 34 / MIUI | eval v3 全量 26/27→nit 修后 4/4；verify-agent 44/0；**portable 14/15** |
+| HUAWEI MRR-W29 | CFE6R21525008201 (USB) | 31 / HarmonyOS | setup 8/8；**portable 15/15** |
+| V816 dash | 192.168.123.125:5555 | 37 / MIUI | BLOCKED（§附26，设备离网） |
+
+**首份跨 OEM SoM 契约数字**：同一 portable 面在 MIUI(API34)/HarmonyOS(API31) 各 93%/100%——label 归属（text vs desc）、落地页形状、活列表重渲染三项 OEM 分歧已收编为任务级诚实契约。

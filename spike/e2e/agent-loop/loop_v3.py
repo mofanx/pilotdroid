@@ -195,7 +195,17 @@ def t_random_checkbox_state(srv):
 
 # ---------------- PORTABLE subset (no ApiDemos) ----------------
 
+def _label(e):
+    """Cross-OEM element label: MIUI rows carry `text`, HarmonyOS/EMUI
+    rows carry `desc` — either is a label."""
+    return e.get("text") or e.get("desc") or ""
+
+
 def _settings_list(srv):
+    """Whatever Settings screen app_start lands on (fg-gated) — OEMs
+    disagree on the landing page (MIUI→category list, HarmonyOS→
+    WifiSettingsActivity); the portable contract is 'a Settings
+    surface', not a specific page."""
     srv.tool("app_stop", {"pkg": SETTINGS})
     srv.tool("app_start", {"pkg": SETTINGS})
     _ensure_fg(srv, SETTINGS)
@@ -203,49 +213,127 @@ def _settings_list(srv):
     return srv.tool("list_elements")["elements"]
 
 
+def fg_act():
+    """Full foreground component 'pkg/Activity' — activity-level nav
+    detection (fg_pkg alone can't see intra-app navigation)."""
+    try:
+        out = subprocess.check_output(
+            ["adb", "-s", SERIAL, "shell", "dumpsys", "window"],
+            timeout=8, text=True, stderr=subprocess.DEVNULL)
+        m = re.search(r"mCurrentFocus=Window\{[^}]* u0 ([\w./$]+)", out)
+        return m.group(1) if m else "?"
+    except Exception:
+        return "?"
+
+
 def t_som_shape(srv):
-    """SoM contract a blind model consumes: i/class/center/text present,
-    class is the simple name (t2 normalization), on ANY device."""
+    """Honest SoM contract a blind model consumes on ANY device:
+    every element carries i/class/bounds + at least one interactive
+    flag (clickable/editable/scrollable — emitted only when true),
+    class is the simple name. text/desc are OPTIONAL labels (OEM
+    variance) and `center` is a som.py/som.rs derive, NOT an
+    ElemInfo field — earlier asserts over-promised the schema."""
     els = _settings_list(srv)
     if not els:
         raise RuntimeError("Settings list_elements empty")
     for e in els:
-        for k in ("i", "class", "center", "text"):
+        for k in ("i", "class", "bounds"):
             if k not in e:
                 return False
+        if not (e.get("clickable") or e.get("editable")
+                or e.get("scrollable")):
+            return False                       # interactive-set contract
         if "." in (e.get("class") or ""):
             return False                       # simple-name contract
     return True
 
 
 def t_settings_random_pick(srv):
-    """Random clickable in Settings -> tap_index -> screen changed."""
+    """Random clickable in Settings -> tap_index -> navigation proven.
+    Label-free: HarmonyOS rows are unlabeled containers, and live desc
+    (AP signal strength) drifts — nav is proven by activity change or
+    signature+count shift, not text-set diff. Input/toggle widgets
+    (Switch/EditText/IME field) excluded: flipping them is a
+    user-visible state change on non-test devices."""
     els = _settings_list(srv)
-    cands = [e for e in els if e.get("text") and e.get("clickable")]
+    skip_cls = {"Switch", "EditText", "AutoCompleteTextView",
+                "CheckBox", "RadioButton", "ToggleButton"}
+    cands = [e for e in els
+             if e.get("clickable") and e.get("class") not in skip_cls]
     if len(cands) < 3:
         raise RuntimeError("Settings list too thin")
-    before = {e.get("text") for e in els}
-    pick = random.choice(cands)
-    srv.tool("tap_index", {"i": pick["i"]})
+    # Prefer LABELED candidates — unlabeled rows may be non-nav
+    # decorations and their nav can't be proven by label-gone.
+    labeled = [e for e in cands if len(_label(e)) >= 4]
+    act0 = fg_act()
+    sig = lambda xs: {(e.get("class"), _label(e)) for e in xs}
+    before_sig = sig(els)
+    # Live lists (WiFi scan) re-render between list and tap — the
+    # staleness guard rightly rejects; re-list and re-pick once.
+    for _ in range(2):
+        pick = random.choice(labeled if len(labeled) >= 3 else cands)
+        try:
+            srv.tool("tap_index", {"i": pick["i"]})
+            break
+        except RuntimeError as e:
+            if "snapshot stale" not in str(e):
+                raise
+            time.sleep(0.8)
+            els = srv.tool("list_elements")["elements"]
+            cands = [x for x in els
+                     if x.get("clickable")
+                     and x.get("class") not in skip_cls]
+            labeled = [x for x in cands if len(_label(x)) >= 4]
+            if not cands:
+                raise
+    else:
+        raise RuntimeError("list churns — tap never landed")
     time.sleep(1.2)
     after = srv.tool("list_elements")["elements"]
+    # Nav evidence (any): activity component changed; signature AND
+    # count shifted; the picked row's own label left the screen
+    # (prefix match — HarmonyOS desc tails drift on live lists).
+    plabel = _label(pick)[:12]
+    gone = (len(plabel) >= 4
+            and not any(_label(e).startswith(plabel) for e in after))
+    nav = (fg_act() != act0
+           or (sig(after) != before_sig and len(after) != len(els))
+           or gone)
     srv.tool("press", {"keycode": 4})
     time.sleep(0.9)
-    return {e.get("text") for e in after} != before
+    # BACK can legitimately exit the whole Settings task (fresh
+    # single-activity stack) to whatever app was underneath — that's
+    # a recovery step, not a failure: re-land Settings if so.
+    if fg_pkg() != SETTINGS:
+        srv.tool("app_start", {"pkg": SETTINGS})
+        time.sleep(1.0)
+    restored = fg_pkg() == SETTINGS
+    return nav and restored
 
 
 def t_verify_exists_pred(srv):
-    """verify_after exists-predicate on a stable Settings anchor."""
-    els = _settings_list(srv)
-    anchor = next((e for e in els
-                   if e.get("text") and e.get("clickable")), None)
+    """verify_after exists-predicate on a stable anchor — text anchor
+    preferred (full tree), desc anchor accepted (HarmonyOS rows)."""
+    _settings_list(srv)                        # land on a Settings page
+    els = srv.tool("list_elements",
+                   {"interactive_only": False})["elements"]
+    anchor = next((("text", e["text"][:20]) for e in els
+                   if e.get("text") and len(e["text"]) >= 3), None)
+    if not anchor:
+        anchor = next((("desc", e["desc"][:20]) for e in els
+                       if e.get("desc") and len(e["desc"]) >= 3), None)
     if not anchor:
         raise RuntimeError("no Settings anchor")
-    ok, _ = verify(srv, {"tool": "exists",
-                         "args": {"text": anchor["text"][:20]}},
-                   {"exists": {"text": anchor["text"][:20]}},
-                   settle_ms=500)
-    return ok
+    kind, sel = anchor
+    # Live lists re-render (WiFi scan) — a single exists miss mid-
+    # refresh is environmental; require two consecutive misses to fail.
+    for _ in range(2):
+        ok, _ = verify(srv, {"tool": "exists", "args": {kind: sel}},
+                       {"exists": {kind: sel}}, settle_ms=500)
+        if ok:
+            return True
+        time.sleep(0.6)
+    return False
 
 
 TASKS_V3 = TASKS_V2 + [

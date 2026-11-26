@@ -26,6 +26,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   FAIL。`default_input_method` 置空钉**收敛为非 portable 档**
   （`--portable` Settings 子集不输入文本，非测试机不应被写
   secure 设置）；恢复路径打印还原后的 IME 基线值供审计。
+- **eval portable 子集跨 OEM 修正**（`loop_v3.py`，华为
+  MRR-W29/HarmonyOS-API31 实测驱动）：`som_shape` 断言对齐
+  ElemInfo 真实 schema（i/class/bounds+≥1 交互标志，去掉从未
+  存在的 `center`/`text` 强制）；元素标签收敛 `_label=text or
+  desc`（HarmonyOS 行标签在 desc）；Settings 落地页不再假设
+  MIUI 主列表；`settings_random_pick` 导航证据三路化（fg
+  activity 变化/签名+数量齐变/选中行 label 前缀离场），开关与
+  输入控件类移出随机候选（非测试机不翻转用户可见状态）；
+  活页面（WiFi 扫描）`snapshot stale` 重选一次、exists 谓词
+  连续两 miss 才记 FAIL。首个跨 OEM 数字：HUAWEI API31
+  **15/15**、MIUI API34 **14/15**（ledger §附27）。
 
 ## [0.8.0] — 2026-11-27
 
