@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.8.2] — 2026-11-26
+
 ### Changed
 
 - **观测面填同构快照——describe→tap_index 原子化**：`describe_screen`/
