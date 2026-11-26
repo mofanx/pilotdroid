@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.8.1] — 2026-11-26
+
 ### Added
 
 - **`describe_screen` 元素透出 interactive 空间 `i`**：每个元素
@@ -49,8 +51,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   活页面（WiFi 扫描）`snapshot stale` 重选一次、exists 谓词
   连续两 miss 才记 FAIL。首个跨 OEM 数字：HUAWEI API31
   **15/15**、MIUI API34 **14/15**（ledger §附27）。
+- **发布面与 ADR 注记**：`docs/PUBLISH.md` 增 Step 6b registry
+  curl 复核路径（`limit` 截断曾致 deprecated 旧条被误判为
+  最新；正确命令校验 `isLatest`+`active`）+「发件缺陷→patch
+  窗口」流程注记；`docs/adr/008` 增 HarmonyOS API31 跨 ROM
+  复测——uia 路径实测顶 **10.28fps**（cap 63ms+enc 31ms，
+  理论 10.6 吻合），分流定案「中间态」：MIUI 最劣但非唯一墙，
+  已测两机均不达 15fps，HarmonyOS 流水线化理论可跨 15fps。
 
-## [0.8.0] — 2026-11-27
+## [0.8.0] — 2026-11-26
 
 ### Added
 
