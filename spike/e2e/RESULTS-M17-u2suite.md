@@ -1683,3 +1683,99 @@ doc-drift **0 fail**（补段后）、pytest **95**、cargo **107/0**+fmt/clippy
 | 图编号→tap_index 可直读 | ✔ i=0 命中 id=8 bounds；误消费路径实体钉死 |
 | 单测语义 | ✔ 正消费 bounds 等式+误消费 out-of-range 双钉 |
 | Serve close forward 卫生 | ✔ 差集摘除实证；kill -9 边界如实 |
+
+## 附41 t1 —— 尾巴清零批：流程闸根治 + forward kill -9 摘 + 挂账全销（2026-11-26）
+
+### A. 流程闸根治（v0.8.3 复核挖出的真回归固化）
+
+| 件 | 修 | 实证 |
+|---|---|---|
+| doc-drift 闸 5 | 缺 `## [Unreleased]` 头 → **FAIL**（原 `split` IndexError 崩） | 补段后 `0 fail` |
+| PUBLISH.md | fold 步明示「保留空 Unreleased 段头」+v0.8.3 案例 | — |
+
+### B. Serve forward kill -9 摘（启动摘+close 摘双保险）
+
+`_fwd_tag(port)`=tmp 所有权 tag（serve pid）；`Serve.__init__` 先 `_sweep_orphan_forwards()`：tag 存在且 pid 非活 serve → 摘规则+销 tag；**无 tag 规则保守保留**（17932/17933 verify 固定口/手动 forward）。initialize 后 `own_fwd` 打 tag；close 摘规则+销 tag。**并发安全**：两 Serve 互认对方活 pid tag 不互摘；`dirty_kill` victim kill -9 后规则留至下次 Serve 启动被摘。
+
+- **实证**（ba0d072d）：栽 dead-pid tag 18997 + 无 tag 18998 → 起 Serve → `18997 摘/18998 留/own 44125` → close → `{17932,17933,18998}`；**真 kill -9**：victim 45435 遗留 → 下次 Serve 摘 → final `{17932,17933}` 零残留。
+
+### C. 方法学注记（AGENTS.md）
+
+`cargo test` 不产 cli bin——复核 serve/setup/benchmark 前须 `cargo build -p pilotdroid-cli`（t6 nit 收编）。
+
+### D. 挂账全销盘点（本轮后『未解决』仅条件存档+显式 defer）
+
+| 账 | 定性 | 处置 |
+|---|---|---|
+| flush-clear ghost 窗（§18-C nit②） | **§20 已修**：replay 环 keep-on-flush + 逐条 TTL（`now-ts>15s` 逐条过期，`lastHitDropTs` 滚动窗已不存在）；残留=死窗>15s 丢命中=设计界（cap 8/15s 已在 SUPPORTED:176+protocol §4.8 记档） | 销账 |
+| 滚动 TTL nit（§18-C nit①） | 同上——现实现即逐条 TTL，nit 随 §20 设计换代自然消 | 销账 |
+| `uiEvent` pendOut==null 静默丢（§旧 nit） | §20 always-stash 广播+replay 覆盖该路径 | 销账 |
+| §附27-C 五件 portable 缺陷 | **全任务级**：som_shape schema 过诺/label text-only MIUI 假设/导航证据三路/开关排除/活页竞态——就地修复+钉测，无代码级洞 | 销账（分类落此档） |
+| §附27 后华为新增三假设 | 任务级：miui.calculator 硬编码→settings 靶；scrollable 假设→nav 回落；SDK 警告模态→消框钩（双干净退出） | 销账 |
+| HarmonyOS 过渡窗（§附38-D3） | **代码级候选**：`app_current={}`+a11y 滞后→guard 失明期宽容放行；`cur_pkg=None` fail-closed 涉已发件语义 | **显式 defer 留组裁决** |
+| kill -9 forward 边界 | B 节已修（tag 摘） | 销账 |
+| verify-agent 固定口残留（17932/17933） | 无 tag 保守保留——固定口幂等重转无害；setup step 6 列单人工兜底 | 记档 keep |
+| 流水线化/MediaProjection/Track B Unicode | 条件存档（触发条件已录） | 保留 |
+
+### E. 遗留『未解决』清单（收敛态）
+
+1. HarmonyOS `app_current={}` 过渡窗 fail-closed——组裁决项。
+2. 流水线化（15fps）/MediaProjection——条件存档，触发条件=帧率依赖真需求。
+3. Track B Unicode/IME 真输入 spike——路线图排期项。
+
+## 附42 t3 —— 挂账清零独立复核（2026-11-26，复核员自跑）
+
+### A. ★复核挖出真洞并修复：doc-drift 闸 5 子串绕过
+
+t1 的缺头检查用 `"## [Unreleased]" in changelog` 子串匹配——CHANGELOG bullet 内引用 `` `## [Unreleased]` `` 字面量（恰由本轮 CHANGELOG 条目自带）即绕过闸。**实证**：删段头后 gate 仍 PASS（bullets=0 走 else 分支）。修为行首锚定 `^## \[Unreleased\]$`+按 hdr.end() 截段：再删头→clean FAIL「missing header」、恢复→PASS。原 `split` 同源隐患一并消（原来也会先切到 bullet 内字面量）。
+
+### B. Serve tag 摘 kill-9 独立复跑：**PASS**
+
+victim 39421 kill -9 遗留 → 下次 `Serve()` 摘 → close 后 `{17932,17933}` 基线归零；无 tag 规则保守保留（上轮 18998 实证一致）。并发语义：互认活 pid tag 不互摘——`dirty_kill` victim 场景成立。
+
+### C. §附41-D 转档/销账逐条核验：**PASS**
+
+| 账 | 核验 | 结论 |
+|---|---|---|
+| flush-clear ghost 窗 | Java `pendingHits` 逐条 `now-ts>15s` 过期+flush 不摘除（注释明示 flusher 可能即 ghost）——**设计已修**，残留=死窗>15s 丢命中=已记档设计界（SUPPORTED:176「≤8 条/15s TTL replay 环」+protocol §4.8 逐字核对） | 销账成立 |
+| 滚动 TTL nit | 现实现即逐条 TTL，`lastHitDropTs` 已不存在——nit 随 §20 换代自然消 | 销账成立 |
+| `uiEvent` pendOut==null 静默丢 | Agent.java:1296「stash every event first」always-stash 覆盖该路径 | 销账成立 |
+| §附27-C 五件+华为三件 | 抽查归类：som_shape schema/label desc/导航三路/开关排除/活页竞态/settings 靶/scrollable 回落/SDK 模态——全落在任务契约/benchmark harness 层，无 serve.rs/agent 代码级洞；过渡窗 fail-closed 为唯一代码级候选且显式 defer | 分类合理 |
+| verify 固定口 17932/17933 | 无 tag 保守保留+setup step 6 列单兜底——keep 语义正确 | 记档成立 |
+
+### D. 未解决收敛核验：**PASS** ——仅剩过渡窗 fail-closed（组裁决）+流水线化/MP（条件存档）+Track B（排期），无隐形挂账。
+
+### E. 回归面（自跑）
+
+doc-drift **0 fail**（含缺头→FAIL 实证）、pytest **95**、cargo **107/0**+fmt/clippy 净、verify-agent **44/0**。
+
+## 附42 t4 —— t1 卫生批独立复核（2026-11-26，复核员自跑非转述）
+
+### A. PUBLISH.md fold 注记核对
+
+注记措辞准确且可执行：「fold 时保留空 `## [Unreleased]` 段头——v0.8.3 曾整段删头致闸 crash，现缺头显式 FAIL」。案例属实（v0.8.3 fold 确系删头触发，§附39 列车者自述印证）。配套 doc-drift 核对：缺头路径 `rep FAIL` 非崩；匹配锚定**段头行** `^## \[Unreleased\]\s*$`（prose 提及不满足——防注释里写 Unreleased 字样绕过）；`sec` 切片逻辑等效旧 split。live 跑 5 PASS（changelog 闸含 folded-exemption 双路径均活）。
+
+### B. Serve 启动清扫 forward——kill -9 注入实证
+
+| 时点 | ba0d072d forwards |
+|---|---|
+| 基线 | 17932/17933 |
+| s1=Serve() | +35815（tag 文件记 pid=4138130） |
+| s1 kill -9 | 35815 留（孤儿成立） |
+| s2=Serve() 启动 | **35815 被摘**、tag 删除、s2 自建 33247 |
+| s2.close() | 回基线 |
+
+机制语义核对：tag 写 `tempfile.gettempdir()/pilotdroid-serve-{SERIAL}-{port}.fwd` 存 serve pid；扫时仅摘「有 tag 且 pid 非 serve 活」的口——无 tag 口（setup 固定口/人工口）按「remove listed only」纪律保留；`_pid_is_serve` 读 /proc cmdline 防 pid 复用误摘（边界：复用给另一 serve 进程时保守保留=fail safe）。时序正确：先扫后采 `_fwd0` 基线（死孤儿不计入 pre-existing）。
+
+### C. AGENTS.md 注记准确性
+
+「cargo test 只产 test binaries，serve/setup/benchmark exec `target/debug/pilotdroid-cli`，改 serve.rs 后须 `cargo build -p pilotdroid-cli` 再复核」——与 §附40-D 复核插曲逐字相符（t6 实测：test 后 binary 仍旧版 annotated 无 elements，build 后正常）。
+
+### 判定
+
+| 项 | 判定 |
+|---|---|
+| PUBLISH.md fold 注记 | ✔ 措辞准确+可执行+案例属实 |
+| doc-drift 段头断言 | ✔ 缺头 FAIL 非崩+行锚定防 prose 绕过；live 5 PASS |
+| kill -9 孤儿清扫 | ✔ 注入实证全链（tag→kill→sweep→摘），保护边界语义对 |
+| AGENTS.md rebuild 注记 | ✔ 与 t6 实证逐字相符 |
