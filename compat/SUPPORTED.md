@@ -175,11 +175,19 @@ benchmark/suite 跑旧 targetSdk app 前需先放行（openatx u2 官方
   checked/selected/enabled/focused 状态谓词——「tap ok≠效果」
   分层成 ACK vs 效果断言，u2 无此能力；`match.i` 归
   `list_elements` 同一 interactive 编号空间（即 `tap_index`/
-  `set_text_index` 消费的空间；注意 `describe_screen` 的 SoM
-  编号是 document-order 宽集、与 `match.i` **不同**——SoM id
-  需经 `list_elements` 取 i 后才能用于 `match.i`）、
+  `set_text_index` 消费的空间）、
   与其余 match 键 AND 组合，纯 text/desc/class match 搜全树）、
   `watch_arm{push}`（上条）。
+- **编号空间对照（三空间，勿混用）**：
+  | 空间 | 产出面 | 过滤规则 | 消费面 |
+  |---|---|---|---|
+  | SoM `id`/`#n`（document order 宽集） | `describe_screen`、`screenshot_annotated`、`compat/som.py` | 有 text/desc/rid 或任一 interactive flag | 仅 `[cx,cy]` 中心点 → `tap{x,y}` |
+  | interactive `i`（0-based） | `list_elements`（默认 `interactive_only`）、`describe_screen` 元素 `i` 字段 | `clickable‖editable‖scrollable` 全树计数（含非 useful 交互节点，如裸 EditText） | `tap_index`、`set_text_index`、`verify_after.match.i` |
+  | 全树 index（`node index=` attr） | `list_elements{interactive_only:false}`、agent 端 XML dump | 无过滤 | 无直接消费面——勿与 `i` 混用 |
+  `describe_screen` 自 0.8.1 起每元素同时携带 `id` 与 `i`——盲驾
+  四拍配方取 `i` 喂 `tap_index`（带 stale-guard），`id` 仅供中心点
+  坐标路径与截图标注对照；`ocr_only` 合成元素无 `i`（无 a11y
+  节点，仅 center 可点、先天无 stale-guard）。
 - **元素状态面（M32）**：`list_elements`/`describe_screen`/compat
   `som.py` 元素统一透出 widget 状态——`checked`/`selected`/`focused`
   仅 true 时输出、`enabled` 仅 false 时输出（省 token）；`class`

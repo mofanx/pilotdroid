@@ -140,8 +140,8 @@ PILOTDROID_SERIAL=<serial> python3 spike/e2e/agent-loop/loop.py
 inspector-loop 配方（模型视角最小四拍）：
 
 ```
-describe_screen → 选元素 i（class/text/desc + checked/selected 等非默认状态位）
-  → tap_index {i}            # 或 tap {x,y} 中心点
+describe_screen → 选元素：取元素 JSON 的 `i` 字段（= list_elements 编号）
+  → tap_index {i}            # stale-guard 防错点；无 `i` 的元素才走 tap {x,y} 中心点
   → verify_after {
       action:{tool:"exists",args:{}},          # 只读动作=零副作用复验
       expect:{state:{match:{text:"Checkbox 1"},checked:true}}
@@ -149,8 +149,11 @@ describe_screen → 选元素 i（class/text/desc + checked/selected 等非默�
 ```
 
 元素状态（`checked/selected/focused:true`、`enabled:false`）仅在非默认
-值时透出（token 预算）；`describe_screen`/`list_elements`/`screenshot_
-annotated` 共享同一编号空间。多设备：`PILOTDROID_SERIAL` 决定目标
+值时透出（token 预算）。编号空间：`describe_screen` 的 `id`/`#n` 与
+`screenshot_annotated`、`compat/som.py` 同空间（document order，
+仅可经 `[cx,cy]` 中心点消费）；元素的 `i` 字段与 `list_elements`/
+`tap_index`/`set_text_index`/`verify_after.match.i` 同空间——两套
+编号不可混用，`describe_screen` 输出已同时携带两者。多设备：`PILOTDROID_SERIAL` 决定目标
 机，`loop_v3.py --portable` 的无 ApiDemos 子集可在任意 ROM 上跑通
 SoM 契约（som_shape/settings_random_pick/verify_exists_pred）。
 

@@ -6,15 +6,27 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- **`describe_screen` 元素透出 interactive 空间 `i`**：每个元素
+  在 SoM `id`（document-order，截图标注/中心点坐标空间）之外
+  新增 `i` 字段——与 `list_elements`/`tap_index`/
+  `set_text_index`/`verify_after.match.i` 同一编号空间
+  （`clickable‖editable‖scrollable` 全树计数，含非 `useful` 的
+  交互节点如裸 EditText）；非交互元素与 `ocr_only` 合成元素
+  `i` 缺省（仅 `center` 可点）。compat `som.py` 镜像随行。
+  根治盲驾 `describe→tap_index` 跨空间错配：README 四拍配方
+  勘正为消费 `i` 字段，`SUPPORTED` 新增三编号空间对照表。
+
 ### Fixed
 
 - **`expect.state.match.i` 索引空间修正**：此前 `i` 按全树
   （`interactive_only=false`）索引解析且短路其余 match 键——与
   host 可见的 interactive 编号空间不一致（`i` 错位/盲区）。
-  现 `match.i` 与 `list_elements`/`describe_screen` 同一
-  interactive 编号空间，且与其余 match 键做 AND 组合（不再短路）；
-  纯 `text`/`desc`/`class` match 仍搜全树（disabled/非交互节点
-  是合法断言目标）。
+  现 `match.i` 与 `list_elements`（及 `describe_screen` 元素
+  `i` 字段）同一 interactive 编号空间，且与其余 match 键做
+  AND 组合（不再短路）；纯 `text`/`desc`/`class` match 仍搜
+  全树（disabled/非交互节点是合法断言目标）。
 
 ### Internal
 

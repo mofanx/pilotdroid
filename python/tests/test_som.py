@@ -71,6 +71,20 @@ class TestEnumerate(unittest.TestCase):
         els = som._enumerate("<hierarchy/>")
         self.assertEqual(els, [])
 
+    def test_i_maps_to_list_elements_space(self):
+        # Interactive `i` counts ALL nodes (pre-_useful), so a bare
+        # EditText consumes an index without appearing in output —
+        # same divergence rule as the Rust som::enumerate sibling.
+        xml = ('<hierarchy>'
+               '<node text="标题" class="w.TextView" bounds="[0,0][10,10]"/>'
+               '<node class="android.widget.EditText" bounds="[0,10][10,20]"/>'
+               '<node text="OK" class="w.Button" clickable="true" '
+               'bounds="[0,20][10,30]"/>'
+               '</hierarchy>')
+        els = som._enumerate(xml)
+        self.assertEqual([(e["id"], e["i"]) for e in els],
+                         [(1, None), (2, 1)])
+
 
 class TestDescribeScreen(unittest.TestCase):
     def test_text_map_shape(self):

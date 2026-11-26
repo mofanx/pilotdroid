@@ -37,6 +37,13 @@ const MAX_LABEL: usize = 28;
 #[derive(Debug, Clone, PartialEq)]
 pub struct El {
     pub id: usize,
+    /// Interactive-space index — the `list_elements`/`tap_index`/
+    /// `set_text_index`/`verify_after.match.i` numbering
+    /// (clickable‖editable‖scrollable over ALL tree nodes, counted
+    /// even when the node fails the `useful` filter). `None` for
+    /// non-interactive and `ocr_only` elements — those are tappable
+    /// only by `center` (no stale-snapshot guard).
+    pub i: Option<usize>,
     pub text: String,
     pub desc: String,
     pub rid: String,
@@ -169,6 +176,7 @@ fn parse_bounds(s: &str) -> Option<[i32; 4]> {
 /// when it carries text/desc/rid or any interactive flag.
 pub fn enumerate(xml: &str) -> Vec<El> {
     let mut out = Vec::new();
+    let mut next_i = 0;
     let mut off = 0;
     while let Some(rel) = xml[off..].find("<node") {
         let st = off + rel;
@@ -185,6 +193,20 @@ pub fn enumerate(xml: &str) -> Vec<El> {
             break;
         };
         off = end + 1;
+        let cls = a.get("class").map(String::as_str).unwrap_or("");
+        let clickable = a.get("clickable").is_some_and(|v| v == "true");
+        let scrollable = a.get("scrollable").is_some_and(|v| v == "true");
+        // Same interactive predicate as facade's list_elements filter
+        // (editable = simple class EditText) — counted over ALL nodes,
+        // before the `useful` early-continue: an interactive node with
+        // no label/rid/flag still consumes an `i` (e.g. a bare
+        // EditText), so describe `i` stays aligned with tap_index.
+        let editable = cls.rsplit('.').next().unwrap_or(cls) == "EditText";
+        let i = (clickable || editable || scrollable).then(|| {
+            let n = next_i;
+            next_i += 1;
+            n
+        });
         let useful = ATTRS
             .iter()
             .any(|k| a.get(*k).is_some_and(|v| !v.is_empty()))
@@ -195,11 +217,12 @@ pub fn enumerate(xml: &str) -> Vec<El> {
         let bounds = a.get("bounds").and_then(|v| parse_bounds(v));
         out.push(El {
             id: out.len() + 1,
+            i,
             text: a.get("text").cloned().unwrap_or_default(),
             desc: a.get("content-desc").cloned().unwrap_or_default(),
             rid: a.get("resource-id").cloned().unwrap_or_default(),
             class: a.get("class").cloned().unwrap_or_default(),
-            clickable: a.get("clickable").is_some_and(|v| v == "true"),
+            clickable,
             checked: a.get("checked").is_some_and(|v| v == "true"),
             selected: a.get("selected").is_some_and(|v| v == "true"),
             // absent `enabled` is the common fixture shorthand — true.
@@ -282,6 +305,7 @@ pub fn describe_ocr(xml: &str, max_label: Option<usize>, blocks: &[OcrBlock]) ->
             let bounds = blk.bounds;
             els.push(El {
                 id: els.len() + 1,
+                i: None, // ocr_only: no a11y node → tap by `center` only
                 text: blk.text.clone(),
                 desc: String::new(),
                 rid: String::new(),
@@ -311,7 +335,8 @@ fn emit(els: &[El], max_label: Option<usize>) -> Value {
     let ml = max_label.unwrap_or(MAX_LABEL);
     let mut lines = vec![format!(
         "# screen: {} elements (id [cx,cy] label rid class C=clickable \
-         K=checked S=selected F=focused D=disabled OCR=ocr-only)",
+         K=checked S=selected F=focused D=disabled OCR=ocr-only \
+         i<n>=list_elements/tap_index index)",
         els.len()
     )];
     for e in els {
@@ -358,6 +383,9 @@ fn emit(els: &[El], max_label: Option<usize>) -> Value {
         if e.ocr_only {
             parts.push("OCR".into());
         }
+        if let Some(i) = e.i {
+            parts.push(format!("i{i}"));
+        }
         lines.push(parts.join(" "));
     }
     // Same field convention as list_elements: simple class name;
@@ -372,6 +400,7 @@ fn emit(els: &[El], max_label: Option<usize>) -> Value {
                 "bounds": e.bounds, "center": e.center,
             });
             let o = j.as_object_mut().unwrap();
+            if let Some(i) = e.i { o.insert("i".into(), json!(i)); }
             if e.checked { o.insert("checked".into(), json!(true)); }
             if e.selected { o.insert("selected".into(), json!(true)); }
             if e.focused { o.insert("focused".into(), json!(true)); }
@@ -541,6 +570,42 @@ mod tests {
         assert_eq!(els[1].rid, "com.x:id/e");
         assert!(!els[2].clickable);
         assert_eq!(els[2].bounds, Some([92, 236, 217, 200]));
+        // i space: all three are interactive → dense 0,1,2 aligned
+        // with tap_index ordering (document order).
+        assert_eq!(
+            els.iter().map(|e| e.i).collect::<Vec<_>>(),
+            vec![Some(0), Some(1), Some(2)]
+        );
+    }
+
+    /// Interactive-space `i` must track the FULL node list, not the
+    /// `useful` subset: text-only/label nodes carry no `i`, and a
+    /// non-useful interactive node (bare EditText: editable but no
+    /// label/rid/flag) still consumes an index — that's exactly the
+    /// describe-id ≠ list-i divergence the field exists to bridge.
+    #[test]
+    fn i_maps_to_list_elements_space() {
+        let xml = concat!(
+            r#"<hierarchy>"#,
+            // #0: text-only label — useful, NOT interactive → id 1, i None
+            r#"<node text="标题" class="w.TextView" bounds="[0,0][10,10]"/>"#,
+            // #1: bare EditText — editable → interactive i=0, but NOT
+            //     useful (no label/rid/flag) → dropped from output
+            r#"<node class="android.widget.EditText" bounds="[0,10][10,20]"/>"#,
+            // #2: clickable — id 2, i=1 (bare EditText consumed i=0)
+            r#"<node text="OK" class="w.Button" clickable="true" bounds="[0,20][10,30]"/>"#,
+            r#"</hierarchy>"#
+        );
+        let els = enumerate(xml);
+        assert_eq!(els.len(), 2);
+        assert_eq!((els[0].id, els[0].i), (1, None));
+        // list_elements interactive space: [EditText(i0), Button(i1)]
+        // — the Button's describe id is 2 but its tap_index index is 1.
+        assert_eq!((els[1].id, els[1].i), (2, Some(1)));
+        let v = describe(xml, None);
+        assert!(v["text"].as_str().unwrap().contains("OK\" Button C i1"));
+        assert_eq!(v["elements"][1]["i"], json!(1));
+        assert!(v["elements"][0].get("i").is_none());
     }
 
     #[test]

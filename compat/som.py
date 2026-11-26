@@ -48,15 +48,33 @@ def _enumerate(xml):
 
     Same function backs describe_screen and screenshot_annotated —
     id stability between the two surfaces is by construction.
+
+    Each element also carries `i`: the interactive-space index
+    (list_elements/tap_index/set_text_index/match.i numbering —
+    clickable‖editable‖scrollable over ALL tree nodes, counted even
+    when a node fails `_useful`, e.g. a bare EditText with no label).
+    `None` for non-interactive elements — tap those by `center`.
     """
     out = []
+    next_i = 0
     for node in ET.fromstring(xml).iter("node"):
         a = node.attrib
+        clickable = a.get("clickable") == "true"
+        scrollable = a.get("scrollable") == "true"
+        # Same interactive predicate as facade/list_elements —
+        # counted BEFORE the `_useful` continue so `i` stays aligned
+        # with tap_index even for label-less interactive nodes.
+        editable = a.get("class", "").rsplit(".", 1)[-1] == "EditText"
+        i = None
+        if clickable or editable or scrollable:
+            i = next_i
+            next_i += 1
         if not _useful(a):
             continue
         b = _parse_bounds(a.get("bounds"))
         out.append({
             "id": len(out) + 1,
+            "i": i,
             "text": a.get("text", ""),
             "desc": a.get("content-desc", ""),
             "rid": a.get("resource-id", ""),
@@ -103,10 +121,13 @@ def describe_screen(dev, max_label=_MAX_LABEL):
             parts.append("F")
         if not e.get("enabled", True):
             parts.append("D")
+        if e["i"] is not None:
+            parts.append(f"i{e['i']}")
         lines.append(" ".join(parts))
     # Same convention as the Rust sibling + list_elements: simple
     # class name; state flags emitted non-default only (true flags, or
-    # enabled:false when disabled) — keeps the payload compact.
+    # enabled:false when disabled); `i` dropped when non-interactive —
+    # keeps the payload compact.
     for e in elements:
         e["class"] = e["class"].rsplit(".", 1)[-1]
         for k in ("checked", "selected", "focused"):
@@ -114,9 +135,11 @@ def describe_screen(dev, max_label=_MAX_LABEL):
                 e.pop(k, None)
         if e.get("enabled", True):
             e.pop("enabled", None)
+        if e["i"] is None:
+            e.pop("i")
     header = f"# screen: {len(elements)} elements (id [cx,cy] " \
              f"label rid class C=clickable K=checked S=selected " \
-             f"F=focused D=disabled)"
+             f"F=focused D=disabled i<n>=list_elements/tap_index index)"
     return {"elements": elements,
             "text": "\n".join([header] + lines)}
 
