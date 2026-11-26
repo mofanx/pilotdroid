@@ -947,3 +947,90 @@ release notes「Version skew」段明示。
 ### notes 诚实档覆盖
 
 状态面（非默认输出策略+state 谓词）、watch_dead（cap4+replay ≤8/15s）、OCR 可选档（~1.5–2s/帧+English 级+缺依赖优雅降级）、恢复三件套、agent 0.7.2→0.7.4 错落、MIUI checked 传播 0.5–4s 延迟注记、V816 多设备行 partial 口径（日常用机 eval 有意未跑）。
+
+## 附23 t5 —— t3+t4 独立复核证据（2026-11-27，复核员自跑，非转述）
+
+### A. eval v3 判定逻辑审（**pass**，附两真 nit）
+
+- **随机化为真**：`random.choice` 从 live `list_elements` 可点候选抽——`random_index_pick` 独立复跑 5/5 抽到 3 个不同条目（Media×2/Animation/App），非罐头路径；`random_checkbox_state` 用 `expect.state{match.text,checked=!was}` 真谓词断言翻转。
+- **fg 归因有效**：复跑中 `random_index_pick` 曾 0/2 FAIL，`fg=com.miui.home` 精确指认「采样时前台是桌面」——归因字段如实工作。根因：`app_stop+app_start` 后固定 1.5s 竞态，task **无 fg 门**直接采样（`nit-eval1`：候选集可采到 launcher 元素→BACK 留在桌面→假败）。无 fg 门时同一任务 16/18（89%）；独立 5 连+第二轮全套 18/18——**flake 非确定性缺陷**。
+- **IME 钉泄漏实锤**（`nit-eval2`）：run 后 `settings get secure default_input_method` 残留 `pilotdroid.eval/.NoIme`——`old_ime` 恢复机制把「上一轮被杀进程的钉」当原值回写，**毒化基线自保持**。已手工回写 `com.sohu.inputmethod.sogou.xiaomi/.SogouIME`。建议恢复时校验 `old_ime` 非自身钉值。
+- **B4 盲驾独立复跑 PASS**（ApiDemos Checkbox）：`verify_after{state:{match.text:"Checkbox 1",checked:true}}` → `checks[0].pass:true`，复跑中 checked=True——状态谓词闭环实证。
+- 期间发现 `verify_after` 的 **snapshot stale 守卫如实工作**：MIUI `SystemAppPermissionDialogActivity`（同意/不同意）抢占时 tap_index 报 `focused app changed`/`layout changed` 拒写——一致性保护非缺陷，弹窗清理后通过。
+
+### B. 多设备行核对（**partial**，与 t3「有意未跑」口径一致）
+
+| 机 | setup | describe/eval | 阻塞 |
+|---|---|---|---|
+| ba0d072d（基线） | 全 PASS，hello 0.7.4 | eval-v3 18/18 | — |
+| V816=11.0.0.2:5555（API37，原 192.168.123.125 已 no route） | 复验**全 PASS**，hello 0.7.4，inject_probe ok | portable 0/9——fg=NotificationShade 锁屏态 | **PIN+屏下指纹锁**——注入滑动到达指纹环即停，无 PIN 不可解；proximity 防误触（system+global 双命名空间）亦拦滑动，临时置 0 后**均已恢复 1**。随后 WiFi adb 掉线（device offline） |
+| CFE6R21525008201（新行：MRR-W29 平板 EMUI14.2/API31） | agent install 后**全 PASS**，hello 0.7.4 | portable 0/9——锁屏态 systemui-only dump 实证 | **PIN 锁**（deviceLocked=1），无法远端解锁 |
+
+两新设备行证明 setup/握手/inject 链路跨 ROM 通用；eval 行被「日常用机 PIN 锁」环境阻断——与 t3 记档「eval 有意未跑」相符，非产品失败。V816 仍是 API37 唯一 eval 候选，需物理解锁或备用机。
+
+### C. v0.8.0 四面独立复验（**pass**）
+
+- **GitHub Release**：`v0.8.0` 7 assets 齐（whl+sdist+3 平台 CLI+agent.jar+SHA256SUMS），`sha256sum -c` 对 agent.jar+linux-x86_64 **OK**。
+- **PyPI**：`pip index versions`/`pypi.org/json` 均见 **0.8.0**（whl+sdist 两文件）。
+- **Homebrew tap**：origin/main `50cf4ab bump pilotdroid 0.8.0`——version+url 双段+sha256 与 SHA256SUMS 一致（macos e7c47fe7…）。
+- **MCP Registry**：`io.github.mofanx/pilotdroid@0.8.0` **active+isLatest**（pub 2026-11-26T00:08:07Z），旧版 0.6.1.post1 deprecated 链完整。
+- **notes 错落措辞**：「CLI/Python 0.8.0 ships agent.jar 0.7.4」——与 install-smoke `hello ver=Some("0.7.4")` 实机吻合。
+- **install-smoke 复跑 ba0d072d：9/9 PASS**。
+- 复核 nit：hb-tap 本地副本停在 0.7.0（stale fetch），非发布缺口——远端已最新。
+
+### D. 套件/parity 抽样（**partial**）
+
+- `pytest python/tests`：**93 pass**；`cargo test --workspace`：**100 pass / 0 fail**。
+- u2suite verbatim：**20 pass / 3 fail / 7 skip**（基线 22/0/8）。三 fail 归因：
+  - `test_scroll`：`.scroll.to` NIE（SUPPORTED 仅列 4 方向档）——先前靠「大屏无需滚动」skip 分支未触达；本次 scrollable=True 命中即翻为 NIE。**预存缺口被环境翻牌，非新回归**。
+  - `test_send_keys`：`d.xpath("Search")` 无匹配——Search 在 App 子页**屏外第二页**，a11y 仅吐可视节点；屏外节点可见性为环境敏感窗态。
+  - `test_watch_context`：`dev(text='Menu')` 落空——Menu 同屏外；ledger §M22 已定档此测试为环境敏感。watcher arm/click 链路本身此前已有真机实证。
+- 结论：无代码回归证据，但 22/0/8 不复现——**屏外节点暴露窗态**是二值翻转变量，应作为套件 flake 面记档（跑前 `svc power stayon`+collapse 已做仍受子页滚动态影响）。
+
+### E. ledger nit 复核
+
+- TTL 滚动窗、attach-flush ghost 窗、双故障角例：代码与记档一致（replay ≤8/15s 已更正档成立）。
+- eval 断言弱点：stale_i 已改显式报错 ✔；另发现 `nit-eval1`（fg 门缺）与 `nit-eval2`（IME 钉毒化基线）——新记。
+- forward 清账：本轮测试清 ba0d072d×23 + CFE6R×1 孤儿 forward，清后 `--list` 空。
+
+## 附23 t6 —— t1+t2 独立复核（2026-11-27，ba0d072d，agent 0.7.4，v0.8.0 tag 后 main）
+
+逐项判定：**5/6 pass，1 partial**。
+
+### ① watch_dead agent 侧——**PASS**
+
+- 实现审：`abort(reason)`/poll `Throwable`/意外 interrupt 三路汇聚于 `!reported && !userDisarm` 临终分支——**先记日志再发事件**、发送自身 `catch(Throwable)` 包裹、事件进 always-stash ≤8/15s 环 + cap4 广播双通道。语义不过度承诺：只覆盖 **watcher 级死亡**（poll 故障/会话强杀），agent 进程死由恢复 epoch 兜底（docs/SUPPORTED 口径一致）；显式 disarm 静默正常、命中/超时 reported 后不发——语义边界自洽。
+- 独立复现：`ghost_repro.py --watch-dead 3` → **3/3**。
+- notification 真机 e2e（自写 MCP 驱动）：serve1 arm→serve2 会话替换→serve 收到 `{type:"watch_dead", error:"session closed"}` + **有界 auto re-arm 实证**（`rearmed:true, new_watch_id:24`）。serve.rs 单测 `watch_dead_event_notifies_and_rearms` 同向。
+- **nit（不阻塞）**：`uiEvent` 在 streaming（curOut 非空）走单 conn 直写路径、**绕开 replay 环**——stream conn 被 ghost 吸收窗口内（至 mediaDead 剔除前）hit/watch_dead 仍可丢。窗口小（流写持续探测剔除快），建议后续把 stash 提前到 curOut 分支之前。
+
+### ② SoM states——**PASS（match.i nit 未修，移交项仍 live）**
+
+- attr 直通完整：`checked/selected/focused =="true"`、`enabled !="false"`（缺省 true）+ 非默认输出策略（三态仅 true 输出、enabled 仅 false 输出）；`class` 存简单名（`rsplit`）三面一致。
+- 谓词语义审：match text/desc 子串、class 简单名精确；mismatched 诚实报 `{want,got}`；found=false 与谓词失配分层。**B4 独立双向实证**：pre-checked 时 tap→`got:false` 正确侦出（反向验证），随后 false→true 翻转 `match.text+checked` 断言 **PASS**。
+- **partial 项**：`expect.state.match.i`（serve.rs:1087）用 `list_elements(false)` **全树索引空间**解析，而 host 可见 `i` 是 `interactive_only=true` 子集空间——同一 i 命中不同元素；且 `i` 键存在时**短路忽略** text/desc/class 其他 match 键。t3 移交 nit 未修，main 仍 live（建议对齐 interactive 空间或文档明示）。
+
+### ③ OCR 可选档——**PASS**
+
+- 真路径：SpriteTextActivity（纯 canvas，a11y 仅 1 FrameLayout 节点）`describe_screen ocr:true` → **9 个 `ocr_only` 元素**（`ocr:true`+`ocr_conf` 57–96+bounds/center，同编号空间可 tap_index）。
+- 降级：PATH 摘除 tesseract → 正常输出 + `ocr:{available:false, hint:"tesseract not on PATH…"}`，零报错。
+- token 预算：`MAX_OCR_BLOCKS=40` + conf 降序截断（代码实证）。
+
+### ④ class 口径统一——**PASS**
+
+facade `ElemInfo.class` 存简单名、som.rs emit `rsplit`、compat/som.py 镜像同口径；list/describe/SoM 三面一致。
+
+### ⑤ 工程面——**PASS（套件 4 fail 全部归因非回归）**
+
+- `cargo test --workspace` **100/0**、fmt 净、clippy 净；`verify-agent.sh ba0d072d` **44/0**（含 watch_dead_event + watch_hit_stash_replay）；pytest 93/0。
+- u2 套件 **19 pass/4 fail/7 skip**（基线 22/0/8）逐条归因：
+  - `test_scroll`：`.scroll.to` **从未实装**（git -S 证，SUPPORTED 仅 4 方向档）——先前靠 `scrollable.exists=False` 走「大屏无需滚动」skip 分支计入 8 skip；本批 scrollable 命中翻牌为 AttributeError。预存缺口环境翻牌（§行 985 已记同类）。
+  - `test_watch_context`/`test_send_keys`：Menu/Search 在 App 页**折线以下不可渲染**（`d(text=).exists=False` 实测）——a11y 不可见性+设备几何，上游在真 u2 下同构失败；非 t1/t2 回归面。
+  - `test_xpath::test_click`：隔离重跑 **PASS**——顺序 flake。
+  - t1/t2 文件域（agent/serve/som/facade）与 u2shim/scroll/watch_context 零交集，回归面排除。
+
+### 移交 nit 汇总
+
+1. `expect.state.match.i` 全树/interactive 索引空间不一致（serve.rs:1087，**仍 live**）+ i 短路其他 match 键。
+2. streaming 路径 ui_event 绕开 replay 环（ghost 吸收残窗，小）。
+3. `_Scroll.to` NIE 缺口持续被环境翻牌（suite 面板在 19-22 间摆动，建议 or 修 or SUPPORTED 明示已有档）。
