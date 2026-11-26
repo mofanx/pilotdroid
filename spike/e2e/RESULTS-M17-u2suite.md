@@ -1166,3 +1166,31 @@ cargo workspace **101/0**（serve 34 含新测）+ fmt 净；pytest **93/0**。
 | V816 dash | 192.168.123.125:5555 | 37 / MIUI | BLOCKED（§附26，设备离网） |
 
 **首份跨 OEM SoM 契约数字**：同一 portable 面在 MIUI(API34)/HarmonyOS(API31) 各 93%/100%——label 归属（text vs desc）、落地页形状、活列表重渲染三项 OEM 分歧已收编为任务级诚实契约。
+
+## 附28 t1 —— MCP Registry 根因查清 + CFE6R stream spike（2026-11-26）
+
+### A. MCP Registry「缺失」根因：**非缺陷——查询姿势误判，0.8.0 实为 active/isLatest**
+
+- **证据**：`curl /v0/servers?search=pilotdroid&limit=10` 返回全链 0.6.1.post1→**0.8.0**，0.8.0 `status:active, isLatest:true`（publishedAt 2026-11-26T00:08Z，与发版窗口吻合——发版时已完成重发）。
+- **误判来源**：不带 limit 的 `?search=pilotdroid` 只返回首条 `0.6.1.post1 deprecated`，被误读为「发布面破损」。三候选根因（publish 失败/命名漂移/被覆盖）均不成立——真实情况是**查询姿势截断**。
+- **行动**：已在 PUBLISH.md Step 6b 固化正确 curl 复核命令（必须 `limit≥条目数` 并校验 `isLatest`+`active`），并增补「发件缺陷→patch 窗口」流程注记。
+
+### B. CFE6R stream spike（HUAWEI MRR-W29 / HarmonyOS 系 Android 12 / API31 / 2560×1600）
+
+**stream（uia takeScreenshot 路径，scale=0.5 q70，12s 采样窗）**：
+
+| req_fps | 实达 | 结论 |
+|---|---|---|
+| 5 | **5.03 fps** | 完全跟档 |
+| 10 | **9.03 fps** | 完全跟档 |
+| 15 | **10.28 fps** | 实测顶 |
+
+- `stream_stop` 分相：`{cap:"uia", cap_ms:63, enc_ms:31, frames:105, dropped:0}`——理论顶 1000/94≈**10.6fps**，实测 10.28 吻合。
+- 单发对照：`shot`（uia 截图）rtt 95–166ms；`adb shell screencap` shell rtt 1459ms。
+
+### C. 对 ADR-008 的分流结论：**中间态（推翻「纯 MIUI 墙」一元论）**
+
+- uia 路径吞吐 = `1000/(cap_ms+enc_ms)`：MIUI/API34 cap 113ms→顶 5.6fps；**HarmonyOS API31 cap 63ms→理论顶 10.6fps、实测 10.28**——cap_ms 是 ROM 级抓帧延迟，模型在两台机上精确吻合。
+- 分流定案：**中间态**——「MIUI 墙」属实（已测最劣 5.6fps）但非唯一墙；uia 路径封顶随 ROM 抓帧延迟在 **5.6–10.3fps** 浮动，已测两台零售机**均不达 15fps**。
+- 新数据点：**HarmonyOS 上 capture→encode 流水线化理论顶 ≈1000/63≈15.9fps**——流水线化在该 ROM 首次具备跨 15fps 潜力（MIUI 上仅 ~8.9）。是否实装流水线化另行裁决（当前 4-6fps 对 AI-agent loop 已够用，投入产出需新证据）。
+- ADR-008 已修订：增「跨 ROM 复测」表+分流结论，「MIUI 特性」注记改为「MIUI 最劣但非唯一墙，已测两机均不达 15fps」。

@@ -100,6 +100,22 @@ GitHub → Settings → Branches → protect `main`, required status checks:
   `mcp-publisher publish` on **every** release — skipping this leaves
   the registry pinned at the previous version (as it stayed on
   `0.6.1.post1` after that one-off post release).
+  **Step 6b (post-publish): registry curl 复核** — don't trust a
+  bare `?search=<name>` result: the default page size returns the
+  OLDEST entry only (a deprecated `0.6.1.post1` was mistaken for the
+  live entry once). Verify the newest version is `isLatest`+`active`:
+  ```bash
+  curl -s "https://registry.modelcontextprotocol.io/v0/servers?search=pilotdroid&limit=10" \
+    | python3 -c "import json,sys; d=json.load(sys.stdin); \
+      [print(s['server']['version'], s['_meta']['io.modelcontextprotocol.registry/official']['status'], s['_meta']['io.modelcontextprotocol.registry/official']['isLatest']) for s in d['servers']]"
+  ```
+  Expected tail: `<VER> active True`.
+- **Patch 窗口注记**: 发件缺陷（语义缺陷/错索引/会误导用户的
+  文档错误）修复 merge 进 main 后**默认触发 patch 窗口**——
+  密度够（≥1 个用户可见缺陷修复）即按本 runbook 开
+  `v<X.Y.(Z+1)>` 列车，不必等 feature 批；test-only/内部 nit
+  类修复可攒到下个窗口。已两次靠人工记忆触发（match.i→0.8.1、
+  ghost→0.7.1），此处制度化。
 - **Required: bump the install-smoke default** —
   `spike/e2e/install-smoke.sh` `VER="${PILOTDROID_SMOKE_VER:-<VER>}"`
   to the version just shipped (one line; also refresh the stale

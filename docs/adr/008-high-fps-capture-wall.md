@@ -23,6 +23,17 @@
 | 并行多 `UiAutomation` 连接 | **全局单注册**：第二连接 `registerUiTestAutomationService` 抛 `UiAutomationService already registered`（本机 agent 占用时实测） | IllegalStateException |
 | `ActivityThread.systemMain()` 系统 Context（补包归属建 DMS VD） | 进程 KillApplicationHandler 自杀 | app_process 实跑 |
 
+## 跨 ROM 复测（2026-11-26，HUAWEI MRR-W29 / HarmonyOS 系 Android 12 / API31 / 2560×1600）
+
+| 路径 | 实测 | 证据 |
+|---|---|---|
+| `UiAutomation.takeScreenshot`（同一 Streamer，uia 后端） | **实测顶 10.28fps**（req15；req5→5.03、req10→9.03 完全跟档） | `stream-stop{cap:"uia", cap_ms:63, enc_ms:31}` |
+| 分相模型验证 | cap63+enc31=94ms → 理论顶 ≈10.6fps，实测 10.28 吻合 | stream-stop 分相计时 |
+| `shot`（uia 截图单发往返） | rtt 95–166ms | 5 连发 |
+| `screencap` 二进制（PNG 全分辨率） | 1.46s/次（shell rtt，含 adb 开销） | 单发计时 |
+
+**分流结论（中间态，推翻"纯 MIUI 墙"一元论）**：uia 路径吞吐 = 1000/(cap_ms+enc_ms)，cap_ms 是 ROM 级抓帧延迟——MIUI/API34 cap 113ms（顶 5.6fps）、HarmonyOS API31 cap 63ms（顶 ≈10.6fps，实测 10.28）。即 **MIUI 墙属实但不是唯一墙**：uia 路径在不同 ROM 上顶 5.6–10.3fps 浮动，**已测两台零售机均不达 15fps**；另注意 HarmonyOS 上 cap+enc 流水线化理论顶 ≈1000/63≈15.9fps——流水线化在该 ROM 上首次具备跨 15fps 潜力（MIUI 上仅 ~8.9），是否实装另行裁决。
+
 ## 结论
 
 **MIUI API34 上 shell 可达的高帧抓帧面被系统性封死**：
@@ -48,9 +59,12 @@ surface/composition 路径（VD 镜像全变体，含 `screenrecord` 同构）
    b. capture→encode **流水线化**（capture 113ms 与 encode 67ms
       重叠）可抬 uia 档至 ~8.9fps 理论顶——仍不达 15，暂缓
       （复杂度换 60% 提速不值，若未来 MP 通路仍封可再议）。
-4. **跨 ROM 注记**：本封锁为 MIUI 特性。`surface` 后端接口预留
-   ——在 AOSP/Pixel 类 ROM 上 VD 镜像（scrcpy 同构）预计可达
-   30-60fps，届时以 `cap` 字段区分后端并补实测。
+4. **跨 ROM 注记**（2026-11-26 修订，获第二数据点）：MIUI
+   API34 的 5.6fps 顶是已测最劣；HarmonyOS API31 同路径实测
+   10.28fps——「MIUI 墙」属实但非唯一墙，uia 路径封顶随 ROM
+   抓帧延迟（cap_ms 63–113ms）在 5.6–10.3fps 间浮动，已测两台
+   零售机均不达 15fps。`surface` 后端接口仍预留——AOSP/Pixel
+   类 ROM 上 VD 镜像（scrcpy 同构）预计 30-60fps 仍未实测。
 
 ## 影响
 
@@ -58,5 +72,6 @@ surface/composition 路径（VD 镜像全变体，含 `screenrecord` 同构）
   通道/client/观测面）齐备可用，但本机抓帧源物理上限 5.6fps。
 - `fps` 参数语义不变（请求节奏，非可达承诺）；`effective_fps_hint`
   继续如实回显。
-- Track A SoM/Track B 帧流需求按 5.6fps 档设计，高帧场景待 MP
-  通路或非 MIUI 真机矩阵再开。
+- Track A SoM/Track B 帧流需求按 uia 档设计（实测 ROM 区间
+  5.6–10.3fps），高帧场景待 MP 通路或流水线化（HarmonyOS 上
+  理论可跨 15fps）再行裁决。
