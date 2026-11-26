@@ -202,7 +202,7 @@ pub fn enumerate(xml: &str) -> Vec<El> {
         // no label/rid/flag still consumes an `i` (e.g. a bare
         // EditText), so describe `i` stays aligned with tap_index.
         let editable = cls.rsplit('.').next().unwrap_or(cls) == "EditText";
-        let i = (clickable || editable || scrollable).then(|| {
+        let i = pilotdroid_agent::is_interactive(clickable, editable, scrollable).then(|| {
             let n = next_i;
             next_i += 1;
             n

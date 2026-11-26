@@ -400,19 +400,28 @@ impl<T: AdbTransport> Session<T> {
     /// for the raw full-tree dump order.
     pub fn list_elements(&mut self, interactive_only: bool) -> Result<ElemSnapshot> {
         let xml = self.dump()?;
-        let nodes = parse_nodes(&xml);
+        Ok(Self::list_elements_from(&xml, interactive_only))
+    }
+
+    /// Same element extraction against a caller-supplied dump —
+    /// `describe_screen`/`screenshot_annotated` use it to fill the
+    /// index snapshot from the SAME dump their output came from
+    /// (closes the describe→tap_index TOCTOU: no second dump can
+    /// diverge between observation and index consumption).
+    pub fn list_elements_from(xml: &str, interactive_only: bool) -> ElemSnapshot {
+        let nodes = parse_nodes(xml);
         let layout_sig = nodes_signature(&nodes);
         let mut elements = nodes;
         if interactive_only {
-            elements.retain(|e| e.clickable || e.editable || e.scrollable);
+            elements.retain(ElemInfo::is_interactive);
         }
         for (i, e) in elements.iter_mut().enumerate() {
             e.i = i;
         }
-        Ok(ElemSnapshot {
+        ElemSnapshot {
             elements,
             layout_sig,
-        })
+        }
     }
 
     /// Recompute the layout signature of the *current* screen — the
@@ -872,6 +881,23 @@ pub struct ElemInfo {
 
 fn is_enabled(b: &bool) -> bool {
     *b
+}
+
+/// Single-source interactive predicate — the `clickable‖editable‖
+/// scrollable` rule behind `list_elements` filtering, serve's
+/// `verify_after.match.i` index space and `describe_screen`'s `i`
+/// field. Three bools rather than `&ElemInfo` so attr-level parsers
+/// (som.rs) share it without constructing an element.
+pub fn is_interactive(clickable: bool, editable: bool, scrollable: bool) -> bool {
+    clickable || editable || scrollable
+}
+
+impl ElemInfo {
+    /// Same predicate as [`is_interactive`] — whether this node
+    /// belongs to the interactive index space.
+    pub fn is_interactive(&self) -> bool {
+        is_interactive(self.clickable, self.editable, self.scrollable)
+    }
 }
 
 /// Parse uiautomator dump XML into a flat element list. Attribute

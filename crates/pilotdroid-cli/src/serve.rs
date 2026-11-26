@@ -88,9 +88,12 @@ pub fn run<T: AdbTransport, R: std::io::BufRead + Send + 'static, W: Write>(
 ) -> Result<()> {
     let mut session: Option<Session<T>> = None;
     // Element snapshot backing tap_index/set_text_index — refreshed by
-    // every list_elements call; indexes are meaningless across snapshots.
-    // (elements, layout signature, focused pkg at snapshot time).
-    let mut snapshot: Option<(Vec<pilotdroid_agent::ElemInfo>, u64, Option<String>)> = None;
+    // list_elements AND the describe_screen/screenshot_annotated
+    // perception ops (they fill it from the SAME dump their output
+    // came from — describe→tap_index consumes one layout atomically).
+    // Indexes are meaningless across snapshots.
+    // (elements, layout signature, focused pkg at snapshot time, source).
+    let mut snapshot: Option<Snap> = None;
     // Armed async watchers: watch_id → the re-armable rule (selector,
     // action, push flag, epoch tag). `push=true` (watch_arm arg) routes
     // a hit to an MCP notification instead of only the watch_events
@@ -627,26 +630,52 @@ fn ocr_blocks(img: &std::path::Path) -> Result<Vec<som::OcrBlock>> {
         .collect())
 }
 
+/// Index-snapshot payload: interactive elements + layout signature +
+/// focused pkg at snapshot time + provenance (`list_elements`/
+/// `describe_screen`/`screenshot_annotated`) for error messages.
+type Snap = (
+    Vec<pilotdroid_agent::ElemInfo>,
+    u64,
+    Option<String>,
+    &'static str,
+);
+
 /// Snapshot staleness guard for index ops: the focused package and the
 /// layout signature must match the snapshot's — a changed screen means
 /// the cached indexes point at the wrong bounds. Fails closed: a wrong
 /// tap is more expensive than a re-list.
-fn check_snapshot<T: AdbTransport>(
-    s: &mut Session<T>,
-    snap: &(Vec<pilotdroid_agent::ElemInfo>, u64, Option<String>),
-) -> Result<()> {
+fn check_snapshot<T: AdbTransport>(s: &mut Session<T>, snap: &Snap) -> Result<()> {
+    let src = snap.3;
     let cur_pkg = s.app_current().ok().flatten().map(|(p, _)| p);
     anyhow::ensure!(
         cur_pkg == snap.2,
-        "snapshot stale — focused app changed ({:?} → {cur_pkg:?}); re-run list_elements",
+        "snapshot stale — focused app changed ({:?} → {cur_pkg:?}); re-observe \
+         (list_elements/describe_screen)",
         snap.2
     );
     let cur_sig = s.layout_signature()?;
     anyhow::ensure!(
         cur_sig == snap.1,
-        "snapshot stale — layout changed since list_elements; re-run list_elements"
+        "snapshot stale — layout changed since {src}; re-observe \
+         (list_elements/describe_screen)"
     );
     Ok(())
+}
+
+/// Fill the index snapshot from a dump a perception op just took —
+/// `describe_screen`/`screenshot_annotated` call this so `tap_index{i}`
+/// consumes the SAME layout their output described (closes the
+/// describe→tap TOCTOU: no second dump can diverge in between).
+/// `src` tags provenance for stale/out-of-range error messages.
+fn fill_snap<T: AdbTransport>(
+    s: &mut Session<T>,
+    xml: &str,
+    snap: &mut Option<Snap>,
+    src: &'static str,
+) {
+    let sn = Session::<T>::list_elements_from(xml, true);
+    let pkg = s.app_current().ok().flatten().map(|(p, _)| p);
+    *snap = Some((sn.elements, sn.layout_sig, pkg, src));
 }
 
 /// Returns the JSON-RPC response plus a "dead conn" flag — set when the
@@ -657,7 +686,7 @@ fn call_tool<T: AdbTransport>(
     id: Value,
     name: &str,
     args: Value,
-    snap: &mut Option<(Vec<pilotdroid_agent::ElemInfo>, u64, Option<String>)>,
+    snap: &mut Option<Snap>,
     armed: &mut HashMap<u32, ArmedRule>,
     pending: &mut VecDeque<MediaEvent>,
 ) -> (Value, bool) {
@@ -725,18 +754,18 @@ fn call_tool<T: AdbTransport>(
                         "interactive_only": interactive,
                         "elements": sn.elements,
                     });
-                    *snap = Some((sn.elements, sn.layout_sig, pkg));
+                    *snap = Some((sn.elements, sn.layout_sig, pkg, "list_elements"));
                     Ok(out)
                 }
                 "tap_index" => {
                     let i = num_arg(&args, "i").context("tap_index needs i")? as usize;
-                    let (els, _, _) = snap
-                        .as_ref()
-                        .context("no element snapshot — call list_elements first")?;
+                    let (els, _, _, src) = snap.as_ref().context(
+                        "no element snapshot — call list_elements or describe_screen first",
+                    )?;
                     check_snapshot(s, snap.as_ref().unwrap())?;
                     let e = els.get(i).with_context(|| {
                         format!(
-                            "index {i} out of range — call list_elements first ({} cached)",
+                            "index {i} out of range — re-observe ({} cached from {src})",
                             els.len()
                         )
                     })?;
@@ -746,13 +775,13 @@ fn call_tool<T: AdbTransport>(
                 }
                 "set_text_index" => {
                     let i = num_arg(&args, "i").context("set_text_index needs i")? as usize;
-                    let (els, _, _) = snap
-                        .as_ref()
-                        .context("no element snapshot — call list_elements first")?;
+                    let (els, _, _, src) = snap.as_ref().context(
+                        "no element snapshot — call list_elements or describe_screen first",
+                    )?;
                     check_snapshot(s, snap.as_ref().unwrap())?;
                     let e = els.get(i).with_context(|| {
                         format!(
-                            "index {i} out of range — call list_elements first ({} cached)",
+                            "index {i} out of range — re-observe ({} cached from {src})",
                             els.len()
                         )
                     })?;
@@ -972,6 +1001,10 @@ fn call_tool<T: AdbTransport>(
                 }
                 "describe_screen" => {
                     let xml = s.dump()?;
+                    // Same-dump snap fill: `i` in this output is directly
+                    // consumable by tap_index — the guard then covers
+                    // exactly describe→tap, not a second dump's drift.
+                    fill_snap(s, &xml, snap, "describe_screen");
                     let ml = num_arg(&args, "max_label").map(|v| v as usize);
                     if args.get("ocr").and_then(Value::as_bool).unwrap_or(false) {
                         // OCR tier (host-side, optional): screenshot →
@@ -1001,6 +1034,7 @@ fn call_tool<T: AdbTransport>(
                     let quality = num_arg(&args, "quality").unwrap_or(80.0) as u8;
                     let path = str_arg(&args, "path").map(PathBuf::from);
                     let xml = s.dump()?;
+                    fill_snap(s, &xml, snap, "screenshot_annotated");
                     // scale fixed at 1.0 — bounds are display px (same
                     // contract as compat/som.py).
                     let (_fmt, jpeg) = s.screenshot(None, quality, Some(1.0))?;
@@ -1102,6 +1136,11 @@ fn call_tool<T: AdbTransport>(
                         let t = str_arg(&m, "text");
                         let d = str_arg(&m, "desc");
                         let c = str_arg(&m, "class");
+                        anyhow::ensure!(
+                            mi.is_some() || t.is_some() || d.is_some() || c.is_some(),
+                            "expect.state.match has no selector keys — need one of \
+                             text|desc|class|i (empty match selects nothing)"
+                        );
                         let keys = |e: &ElemInfo| {
                             t.as_ref().map_or(true, |v| e.text.contains(v))
                                 && d.as_ref().map_or(true, |v| e.desc.contains(v))
@@ -1109,7 +1148,7 @@ fn call_tool<T: AdbTransport>(
                         };
                         let found = if let Some(i) = mi {
                             els.iter()
-                                .filter(|e| e.clickable || e.editable || e.scrollable)
+                                .filter(|e| e.is_interactive())
                                 .enumerate()
                                 .find(|(idx, e)| *idx == i && keys(e))
                                 .map(|(_, e)| e)
@@ -1226,7 +1265,7 @@ fn tools() -> Value {
         {"name":"dump","description":"UI hierarchy XML","inputSchema":schema(&[],&[])},
         {"name":"list_elements","description":"flattened indexed element list [{i,text,desc,class,bounds,clickable,editable,scrollable}] + widget state flags emitted non-default only (checked/selected/focused:true, enabled:false) — agent observation surface; interactive_only (default true) keeps clickable/editable/scrollable nodes","inputSchema":schema(
             &[("interactive_only",prop("boolean","filter to interactive nodes, default true"))],&[])},
-        {"name":"tap_index","description":"tap element i from the last list_elements snapshot (bounds center); fails with 'snapshot stale' if layout/pkg drifted — re-list","inputSchema":schema(
+        {"name":"tap_index","description":"tap element i from the latest element snapshot — refreshed by list_elements/describe_screen/screenshot_annotated (bounds center); fails with 'snapshot stale' if layout/pkg drifted — re-observe","inputSchema":schema(
             &[("i",prop("integer","element index"))],&["i"])},
         {"name":"set_text_index","description":"focus element i (tap) then ACTION_SET_TEXT; same snapshot-stale guard as tap_index","inputSchema":schema(
             &[("i",prop("integer","element index")),("text",prop("string","")),("clear",prop("boolean","default true"))],
@@ -1244,7 +1283,7 @@ fn tools() -> Value {
         {"name":"stream_read","description":"read n frames (default 1); to_dir = file bypass","inputSchema":schema(
             &[("n",prop("integer","default 1")),("to_dir",prop("string","write frame_{seq}.jpg here"))],&[])},
         {"name":"stream_stop","description":"stop stream; returns {frames_sent,dropped}","inputSchema":schema(&[],&[])},
-        {"name":"describe_screen","description":"SoM-lite perception: a11y tree → token-budget map — dense element ids (document order) ↔ bounds center ↔ label/rid/simple-class/flags C=clickable K=checked S=selected F=focused D=disabled. Each element also carries `i` = the list_elements/tap_index/set_text_index/verify_after.match.i interactive index — feed it to tap_index (stale-guarded) instead of guessing: element `id`/`#n` is SoM space (tap by center only), `i` is tap space. NOTE: tap_index needs a list_elements snapshot first — describe_screen does not arm one; call list_elements once before indexed actions. ocr:true adds host-side tesseract fusion (optional dep — degrades to normal output + hint when absent): canvas/image text becomes ocr_only elements tappable by center. Same numbering space as screenshot_annotated and compat/som.py","inputSchema":schema(
+        {"name":"describe_screen","description":"SoM-lite perception: a11y tree → token-budget map — dense element ids (document order) ↔ bounds center ↔ label/rid/simple-class/flags C=clickable K=checked S=selected F=focused D=disabled. Each element also carries `i` = the list_elements/tap_index/set_text_index/verify_after.match.i interactive index — feed it straight to tap_index: this call refreshes the index snapshot from the SAME dump, so describe→tap_index is atomic (stale-guarded). Element `id`/`#n` is SoM space (tap by center only), `i` is tap space. ocr:true adds host-side tesseract fusion (optional dep — degrades to normal output + hint when absent): canvas/image text becomes ocr_only elements tappable by center. Same numbering space as screenshot_annotated and compat/som.py","inputSchema":schema(
             &[("max_label",prop("integer","label char cap, default 28")),("ocr",prop("boolean","OCR text fusion tier, needs local tesseract, default false"))],&[])},
         {"name":"screenshot_annotated","description":"SoM-lite perception: screenshot JPEG with the describe_screen element ids drawn as numbered boxes at their bounds (scale fixed 1.0; path = file bypass preferred, else base64)","inputSchema":schema(
             &[("path",prop("string","output file")),("quality",prop("integer","1-100, default 80"))],&[])},
@@ -2418,6 +2457,77 @@ mod tests {
         assert_eq!(resps[0]["result"]["isError"], true);
         let text = resps[0]["result"]["content"][0]["text"].as_str().unwrap();
         assert!(text.contains("list_elements"), "got {text}");
+    }
+
+    #[test]
+    fn describe_arms_snapshot_for_tap_index() {
+        // Fresh session, NO list_elements: describe_screen arms the
+        // index snapshot from its own dump — `i` in its output is
+        // directly consumable (describe→tap_index is one layout,
+        // no TOCTOU window). DIVERGENT dump: SoM id≠interactive i.
+        let resps = serve_once_at(
+            &[
+                r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"describe_screen","arguments":{}}}"#,
+                r#"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"tap_index","arguments":{"i":0}}}"#,
+            ]
+            .join("\n"),
+            spawn_fake_dump(FAKE_DUMP_DIVERGENT),
+        );
+        let body: Value =
+            serde_json::from_str(resps[0]["result"]["content"][0]["text"].as_str().unwrap())
+                .unwrap();
+        // Checkbox is SoM id 2 but interactive i 0 — tap_index must
+        // hit i=0 (Checkbox bounds), not the SoM-id-2 element.
+        assert_eq!(body["elements"][1]["id"], 2);
+        assert_eq!(body["elements"][1]["i"], 0);
+        assert_ne!(
+            resps[1]["result"]["isError"], true,
+            "describe→tap_index failed: {}",
+            resps[1]["result"]["content"][0]["text"]
+        );
+        let tap: Value =
+            serde_json::from_str(resps[1]["result"]["content"][0]["text"].as_str().unwrap())
+                .unwrap();
+        assert_eq!(tap["i"], 0);
+        assert_eq!(tap["bounds"], json!([10, 50, 300, 100])); // Checkbox
+    }
+
+    #[test]
+    fn describe_snapshot_stale_on_drift() {
+        // The armed snapshot guards describe→tap atomically: layout A
+        // described, layout B at guard time → stale error naming the
+        // provenance (describe_screen), not a silent wrong tap.
+        let resps = serve_once_at(
+            &[
+                r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"describe_screen","arguments":{}}}"#,
+                r#"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"tap_index","arguments":{"i":0}}}"#,
+            ]
+            .join("\n"),
+            spawn_fake_flipping(),
+        );
+        assert_eq!(resps[1]["result"]["isError"], true);
+        let text = resps[1]["result"]["content"][0]["text"].as_str().unwrap();
+        assert!(text.contains("stale"), "expected stale error, got {text}");
+        assert!(
+            text.contains("describe_screen"),
+            "expected provenance, got {text}"
+        );
+    }
+
+    #[test]
+    fn verify_after_state_empty_match_errors() {
+        // expect.state with `match:{}` (no selector keys) used to
+        // silently return found:false — now an explicit tool error.
+        let resps = serve_once_at(
+            &[
+                r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"verify_after","arguments":{"action":{"tool":"dump","args":{}},"expect":{"state":{"match":{},"checked":true}}}}}"#,
+            ]
+            .join("\n"),
+            spawn_fake_dump(FAKE_DUMP_DIVERGENT),
+        );
+        assert_eq!(resps[0]["result"]["isError"], true);
+        let text = resps[0]["result"]["content"][0]["text"].as_str().unwrap();
+        assert!(text.contains("no selector keys"), "got {text}");
     }
 
     #[test]

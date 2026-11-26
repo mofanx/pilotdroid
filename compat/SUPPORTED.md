@@ -185,9 +185,11 @@ benchmark/suite 跑旧 targetSdk app 前需先放行（openatx u2 官方
   | interactive `i`（0-based） | `list_elements`（默认 `interactive_only`）、`describe_screen` 元素 `i` 字段 | `clickable‖editable‖scrollable` 全树计数（含非 useful 交互节点，如裸 EditText） | `tap_index`、`set_text_index`、`verify_after.match.i` |
   | 全树 index（`node index=` attr） | `list_elements{interactive_only:false}`、agent 端 XML dump | 无过滤 | 无直接消费面——勿与 `i` 混用 |
   `describe_screen` 自 0.8.1 起每元素同时携带 `id` 与 `i`——盲驾
-  配方取 `i` 喂 `tap_index`（带 stale-guard；注意 `tap_index`
-  需先 `list_elements` 填快照，`describe_screen` 不填——首次
-  索引动作前必备一拍），`id` 仅供中心点
+  配方取 `i` 喂 `tap_index`。索引快照由**所有观测面**填充：
+  `list_elements`/`describe_screen`/`screenshot_annotated` 均以
+  自身 dump 同构填充（describe 系自 0.8.2 起——describe→tap_index
+  原子消费同一 layout，无 TOCTOU 窗；stale-guard 仍护观测→动作
+  间漂移并以快照来源名报错）。`id` 仅供中心点
   坐标路径与截图标注对照；`ocr_only` 合成元素无 `i`（无 a11y
   节点，仅 center 可点、先天无 stale-guard）。
 - **元素状态面（M32）**：`list_elements`/`describe_screen`/compat

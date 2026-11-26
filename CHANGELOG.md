@@ -6,14 +6,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- **观测面填同构快照——describe→tap_index 原子化**：`describe_screen`/
+  `screenshot_annotated` 现以自身 dump 同构填充索引快照（溯源标
+  `describe_screen`/`screenshot_annotated`）——`describe→tap_index{i}`
+  在新鲜会话直接可跑，无 `list_elements` 前置拍、无 TOCTOU 窗
+  （stale-guard 仍护观测→动作间漂移，报错带快照来源名）。interactive
+  谓词单源化（`pilotdroid_agent::is_interactive`，facade/serve/som
+  三处共用）。README 配方降回**四拍**，`SUPPORTED`/工具描述同步
+  撤「需先 list_elements」注记。
+
 ### Fixed
 
-- **inspector-loop 配方勘正**（t6 复核）：README「四拍」改**五拍**——
-  `tap_index` 消费的快照仅由 `list_elements` 填充，`describe_screen`
-  不填快照；字面按旧配方 `describe→tap_index` 在新鲜会话必踩
-  `no element snapshot`。配方补 `list_elements` 拍，`SUPPORTED`
-  三空间表与 `describe_screen` 工具描述同步补快照前置注记
-  （ledger §附31-C）。
+- **`expect.state.match:{}` 空键显式报错**：此前静默 `found:false`
+  （断言无从成立却不报错），现显式 tool error 提示需
+  text|desc|class|i 其一。
 
 ## [0.8.1] — 2026-11-26
 

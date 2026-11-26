@@ -11,7 +11,7 @@ mod manager;
 mod stream;
 
 pub use client::AgentClient;
-pub use facade::{Device, ElemInfo, ScrollDir, Session};
+pub use facade::{is_interactive, Device, ElemInfo, ScrollDir, Session};
 pub use manager::{
     embedded_jar_path, AgentManager, AGENT_DIR, AGENT_JAR_BYTES, AGENT_JAR_REMOTE,
     AGENT_MAIN_CLASS, AGENT_SOCKET, MEDIA_SOCKET,
