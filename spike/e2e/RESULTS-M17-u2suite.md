@@ -1619,3 +1619,67 @@ MIUI 五包名单（misubscreenui/agenthub/securitycenter/miui.home/sctrl）在 
 - 新语义边界明示：元素 text 正当变化（倒计时/动态标签）observe→tap 间现报 `element {i} changed` stale——fails closed 方向保守，恢复路径=重 describe 取新 i
 - `verify_after.match.i` 天然免疫声明（fresh dump 解析不经 snap）；`ocr_only` 先天无 guard（无 a11y 节点可复核）一并明示，防复核误报新洞
 - annotated `id`→`i` 脚枪在 payload 层闭环（elements 同 dump 回带+工具描述警句）
+
+## 附40 t5 —— t2+t3+t4 独立复核（2026-11-26，复核员自跑）
+
+### A. t2 工程卫生微批：**PASS**
+
+| 件 | 复核 | 结果 |
+|---|---|---|
+| `dump_hierarchy` 空载重试 | 代码实证 `<hierarchy` 未达即 sleep.3×3——同帧采样物理不可行，重试对症；前后对照**诚实成立**：t5-期 17/6/7（空 dump ParseError 在列）→ 修后 **22/0/8 连续两跑**（ParseError 族结构性消，屏态 lookup 族本轮亦零现身） | ✔ |
+| `loop_v3` 空集除零 | `loop_v3.py NO_SUCH_TASK_XYZ` **exit=2** + `no tasks selected` usage 提示 + IME restore finally 正常执行 | ✔ |
+
+### B. t3 CFE6R 跨 OEM 行：**PASS**
+
+抽查复跑 3 题（≥2 达标）：`describe_tap_direct 6.1s / checkbox_state 12.1s / stale_pkg_guard 7.4s` ——**3/3 PASS**。挑的是 OEM 敏感度最高的三题（settings 靶可观测等待+SDK 警告消框路径全被命中），11/11 宣称方向一致。
+
+### C. t4 v0.8.3 四面发布：**PARTIAL**（四面全实证 + 挖出一例闸回归）
+
+| 面 | 独立复验 | 结果 |
+|---|---|---|
+| GitHub Release | `gh release download v0.8.3` 6 assets+SUMS `sha256sum -c` **全 OK**；二进制 `--version`=0.8.3 | ✔ |
+| PyPI | version=0.8.3 | ✔ |
+| tap | sha256 与 SUMS 逐字一致（linux `0a978296…`/macos `04e1ae5b…`） | ✔ |
+| registry | 0.8.3 `active`+`isLatest` | ✔ |
+| install-smoke | 复跑 **9/0**（bootstrap execv 0.8.3；hello=0.7.4 错落符合 notes） | ✔ |
+
+**★复核挖出回归**：0.8.3 fold **把 `## [Unreleased]` 段头一并移除**——而 v0.8.1/v0.8.2 两版惯例均为「fold 后留空 Unreleased 段头」，doc-drift 闸 5 无条件 `split("## [Unreleased]")` 直接 IndexError 崩溃——发版后回归闸事实失效。复核员按惯例补回空段（unstaged，随主执行者入库），doc-drift 复绿（`1 commit since v0.8.3; bullets=0; folded` PASS）。**流程建议**：PUBLISH.md fold 步明示「保留空 `## [Unreleased]` 段头」，或 doc-drift 改为容忍缺段（两选项留主执行者）。
+
+### D. 回归面（自跑）
+
+doc-drift **0 fail**（补段后）、pytest **95**、cargo **107/0**+fmt/clippy 净、verify-agent **44/0**（shot_quality PASS）、u2suite **22/0/8**、install-smoke 9/0。
+
+## 附40 t6 —— t1 annotated 闭环独立复核（2026-11-26，复核员自跑非转述）
+
+### A. id+i 双字段同帧——真机实证
+
+`screenshot_annotated`（ba0d072d，Settings 主屏）响应含 `elements` 99 项与 `describe_screen` 同构；`i` 字段仅现于 interactive 项（19/99，与 describe 契约一致）。发散实证：非交互前置把 `id`/`i` 错开——id=8→i=0、id=13→i=1 …（图标注 8，tap 空间 0）。
+
+### B. 图编号→tap_index 直消费闭环
+
+- 正确消费：`tap_index{i:0}` 命中 bounds `[0,548,1440,753]` = elements 中 id=8 项 bounds——**图编号经 elements 的 `i` 字段直消费 PASS**；
+- 脚枪实体钉死：若误喂图编号 `i:8` 会命中 `id=49` LinearLayout `[44,2160,1396,2365]`——**不同元素**；钉测 `annotated_elements_resolve_image_label_to_i` 语义核对：误消费 `i:2`（超 interactive 上界）显式 `out of range` 拒，非静默。
+
+### C. Serve close forward 卫生——前后对照
+
+| 时点 | ba0d072d agent forwards |
+|---|---|
+| attach 前 | 7 条（17932/17933 + 历史泄漏×5） |
+| Serve() 存活 | +42755 |
+| close 后 | 回 7 条基线——`42755` 摘除，**零新增孤儿** |
+
+复核顺带清账：历史泄漏 32801/46287/37555/43129/39991 五条摘除（多为裸 `p.kill()` 未走 close() 的测试遗留——close 卫生只能护走 close() 的路径，kill -9 仍漏，属已知边界）。
+
+### D. 复核插曲（新 nit，记档）
+
+- `cargo test --workspace` 不产生 `pilotdroid-cli` 可执行——`~/.cargo-target/…/debug/pilotdroid-cli` 是**旧 binary**（annotated 改动前），首测 elements 缺失一度误判为回归；`cargo build -p pilotdroid-cli` 后实证正常。**复核方法学注记：复核 serve 行为必须 rebuild bin 或用 release 产物，test 只证语义**；
+- 顺带清 274M worktree-local `target/`（/home 曾打满）。
+
+### 判定
+
+| 项 | 判定 |
+|---|---|
+| elements 同 dump 回带（id+i 同帧） | ✔ 实机 99 项+发散样本 |
+| 图编号→tap_index 可直读 | ✔ i=0 命中 id=8 bounds；误消费路径实体钉死 |
+| 单测语义 | ✔ 正消费 bounds 等式+误消费 out-of-range 双钉 |
+| Serve close forward 卫生 | ✔ 差集摘除实证；kill -9 边界如实 |
