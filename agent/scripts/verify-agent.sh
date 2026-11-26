@@ -152,12 +152,18 @@ echo "$PTS" | grep -q '"ok": *true\|"ok":true' && echo "$PTS" | grep -q '"events
   && ok "swipe_points" || bad "swipe_points" "resp=$PTS"
 
 echo "== M3-A3 SHOT quality affects bytes (30 < 80) =="
-S30=$(shot_stat 1.0 30)
-S80=$(shot_stat 1.0 80)
-B30=$(echo "$S30" | sed -n 's/.*<\([0-9]*\)B>.*/\1/p')
-B80=$(echo "$S80" | sed -n 's/.*<\([0-9]*\)B>.*/\1/p')
-[ -n "$B30" ] && [ -n "$B80" ] && [ "$B30" -lt "$B80" ] \
-  && ok "shot_quality" || bad "shot_quality" "q30=${B30:-?}B q80=${B80:-?}B"
+# content can drift between the two SHOTs (animated/transient frames
+# carry different entropy) — retry back-to-back pairs so a drifting
+# frame can't fail an otherwise valid quality ordering.
+SQ=0
+for _i in 1 2 3; do
+  S30=$(shot_stat 1.0 30)
+  S80=$(shot_stat 1.0 80)
+  B30=$(echo "$S30" | sed -n 's/.*<\([0-9]*\)B>.*/\1/p')
+  B80=$(echo "$S80" | sed -n 's/.*<\([0-9]*\)B>.*/\1/p')
+  [ -n "$B30" ] && [ -n "$B80" ] && [ "$B30" -lt "$B80" ] && SQ=$_i && break
+done
+[ "$SQ" -gt 0 ] && ok "shot_quality" || bad "shot_quality" "q30=${B30:-?}B q80=${B80:-?}B"
 
 echo "== M3-A4 backend force: uia forced, bogus rejected =="
 BU=$($CLI inject-tap 700 1600 uia 2>&1) || true

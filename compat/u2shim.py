@@ -15,7 +15,7 @@ app_current / app_list / app_info / info / window_size / screen_on /
 screen_off / unlock / orientation (get+set) / watcher;
 d(text|resourceId|description|className|packageName|scrollable,index).click() /
 .exists / .wait / .info / .set_text / .get_text / .long_click /
-d(scrollable=True).scroll.(forward|backward|toEnd|toBeginning).
+d(scrollable=True).scroll.(forward|backward|toEnd|toBeginning|to(**kw)).
 M18 additions (RESULTS-M17 G-gap closure): app_start front-wait +
 stop=True, click implicit wait, swipe host-side duration sleep, push /
 pull / wlan_ip / app_list_running / app_auto_grant_permissions /
@@ -576,6 +576,25 @@ class _Scroll:
     def toBeginning(self):
         return self._to(False)
 
+    def to(self, max_swipes=20, **kw):
+        """u2 `d(scrollable=True).scroll.to(text='x', ...)` — forward-
+        scroll until a node matching the selector kwargs exists.
+        Returns True when the target is found; False when content stops
+        changing (dump-hash stable, end reached) or max_swipes is hit."""
+        if not kw:
+            raise ValueError("scroll.to() requires selector kwargs")
+        prev = None
+        for _ in range(max_swipes):
+            if _Selector(self.dev, **kw).exists:
+                return True
+            cur = hash(self.dev.dump_hierarchy())
+            if cur == prev:
+                return False
+            prev = cur
+            self._once(True)
+            time.sleep(0.4)
+        return _Selector(self.dev, **kw).exists
+
 
 class _WhenCtx:
     """One watcher rule builder: `d.watcher.when(text='x').click()`."""
@@ -1072,7 +1091,17 @@ class Device:
         return self._watcher
 
     def dump_hierarchy(self):
-        return self.a.dump()["payload"]["xml"]
+        """Transient empty/truncated dumps observed on ROM screen
+        transitions (a11y tree momentarily empty → XML declaration
+        only, `ParseError: no element found` downstream) — retry
+        back-to-back until a real hierarchy arrives."""
+        xml = ""
+        for _ in range(3):
+            xml = self.a.dump()["payload"]["xml"] or ""
+            if "<hierarchy" in xml:
+                break
+            time.sleep(0.3)
+        return xml
 
     def screenshot(self, path=None, scale=1.0, quality=80):
         data = self.a.shot(quality=quality, scale=scale)["payload"]["data"]

@@ -14,6 +14,7 @@ Env: PILOTDROID_CLI to override the binary (default: debug build).
 """
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -25,10 +26,25 @@ CLI = os.environ.get(
 APIDEMOS = "io.appium.android.apis"
 
 
+def _agent_forwards():
+    """Ports of adb forward rules targeting the pilotdroid agent —
+    Serve() spawns leak one per instance (RESULTS-M17 §附35-D)."""
+    try:
+        out = subprocess.check_output(
+            ["adb", "-s", SERIAL, "forward", "--list"],
+            timeout=5, text=True)
+    except Exception:
+        return set()
+    return {int(m.group(1)) for m in
+            re.finditer(r"tcp:(\d+)\s+localabstract:pilotdroid_agent",
+                        out)}
+
+
 class Serve:
     """Stdio JSON-RPC client; notifications (no id) are collected."""
 
     def __init__(self):
+        self._fwd0 = _agent_forwards()
         self.p = subprocess.Popen(
             [CLI, "serve", "-s", SERIAL],
             stdin=subprocess.PIPE, stdout=subprocess.PIPE,
@@ -73,6 +89,10 @@ class Serve:
             self.p.wait(5)
         except Exception:
             self.p.kill()
+        for port in _agent_forwards() - getattr(self, "_fwd0", set()):
+            subprocess.run(
+                ["adb", "-s", SERIAL, "forward", "--remove",
+                 f"tcp:{port}"], timeout=5, check=False)
 
 
 def describe(srv):

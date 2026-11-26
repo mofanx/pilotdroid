@@ -29,7 +29,7 @@ uiautomator2 `Device` 公共 API 的逐条标注。约定：**drop-in 只承诺�
 | `.click()` `.long_click(d)` `.set_text(s)` | ✅ | `.set_text` = 先点击再注入文本，同 u2 |
 | `.info` | ✅ | property，同 u2；返回字段为子集（text/id/desc/bounds/class/clickable/enabled/scrollable/pkg） |
 | `.wait(timeout)` | ✅ | M8 修正为 u2 语义：返回 bool |
-| `.scroll.<dir>` | ✅ | forward/backward/toEnd/toBeginning（shim 额外需要 `scrollable=True` 选择器先命中） |
+| `.scroll.<dir>` | ✅ | forward/backward/toEnd/toBeginning/to(**kw 选择器，forward 滚动至命中或内容不再变化)（shim 额外需要 `scrollable=True` 选择器先命中） |
 | `.pinch_in(pct)` `.pinch_out(pct)` | ✅ | M10 多指针 INJECT（CAP_MULTI_PTR），作用于命中节点 bounds（clamp 到 display）；⚠️ MIUI 鬼 bounds（a11y 报屏外坐标，如 [268,3312]@3200 高）→ LookupError 而非静默注入屏边 |
 | `.gesture(s1,e1,s2,e2)` | ✅ | 任意双点轨迹可用 `points[].pid` 直接表达 |
 | `.drag_to(x,y)` `.swipe` `.fling` | ✅ | 单指针 points 免费项（此前误标 ❌） |
@@ -91,6 +91,16 @@ ALL"→"随机播放所有曲目"，均 dump 直证）。en 脚本在 zh 设备 
 消失）。benchmark/verify 跑含此类 app 的脚本前需在系统设置解锁，或
 把被锁 app 移出评测名单（Markor 实测踩到：脚本等 "More options" 但
 屏幕停在应用锁 PIN 盘）。
+
+**第五类环境因子——前台劫持（fg takeover）**：MIUI 侧子屏服务
+`com.xiaomi.misubscreenui`、协作端 `com.agenthub`、`com.miui.securitycenter`
+等会在用例中途抢前台/持 `mFocusedApp`——被抢期间注入 tap 全部落在
+劫持者窗口上静默吃掉（实测 Controls1 checkbox 行扫点全不翻转，
+force-stop 劫持者后恢复）。`benchmark.py` 内置逐出+一次 env 重试
+（`env-hijack:<pkg>→retry` 标记，不伪装真实失败）；手写脚本按
+`_ensure_fg` 模式断言前台再操作。另：横屏 extract-IME（MIUI 全屏
+输入法）覆盖整屏且无视 BACK——退出键在候选条右上「完成」，
+`_dismiss_fullscreen_ime` 已封装。
 
 **第四类环境因子——MIUI 权限复核屏（com.lbe.security.miui）**：
 targetSdk<23 的 app（如 ApiDemos targetSdk19）首启被
@@ -184,8 +194,11 @@ benchmark/suite 跑旧 targetSdk app 前需先放行（openatx u2 官方
   | SoM `id`/`#n`（document order 宽集） | `describe_screen`、`screenshot_annotated`、`compat/som.py` | 有 text/desc/rid 或任一 interactive flag | 仅 `[cx,cy]` 中心点 → `tap{x,y}` |
   | interactive `i`（0-based） | `list_elements`（默认 `interactive_only`）、`describe_screen` 元素 `i` 字段 | `clickable‖editable‖scrollable` 全树计数（含非 useful 交互节点，如裸 EditText） | `tap_index`、`set_text_index`、`verify_after.match.i` |
   | 全树 index（`node index=` attr） | `list_elements{interactive_only:false}`、agent 端 XML dump | 无过滤 | 无直接消费面——勿与 `i` 混用 |
-  `describe_screen` 自 0.8.1 起每元素同时携带 `id` 与 `i`——盲驾
-  配方取 `i` 喂 `tap_index`。索引快照由**所有观测面**填充：
+  `describe_screen` 自 0.8.1 起每元素同时携带 `id` 与 `i`；
+  `screenshot_annotated` 响应自 0.8.3 起回带**同 dump elements 数组**
+  （`id`=图上编号、`i`=动作空间同帧）——图编号→`tap_index{i}` 经
+  `elements` 直读映射，勿把 `id` 直接当 `i` 喂（guard 不拦布局未变
+  的错空间消费）。索引快照由**所有观测面**填充：
   `list_elements`/`describe_screen`/`screenshot_annotated` 均以
   自身 dump 同构填充（describe 系自 0.8.2 起——describe→tap_index
   原子消费同一 layout，无 TOCTOU 窗；stale-guard 仍护观测→动作

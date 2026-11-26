@@ -381,6 +381,13 @@ def main():
                 ["adb", "-s", SERIAL, "shell",
                  "settings get secure default_input_method"],
                 timeout=6, text=True).strip()
+            if old_ime == "pilotdroid.eval/.NoIme":
+                # poisoned baseline: a previous SIGKILLed run left the pin
+                # in place — restoring it would cement the contamination.
+                print("eval env WARN: captured default_input_method is the "
+                      "eval pin (stale from a killed run?) — skip restore; "
+                      "re-set the real IME manually")
+                old_ime = None
             subprocess.run(
                 ["adb", "-s", SERIAL, "shell",
                  "settings put secure default_input_method "
@@ -429,6 +436,10 @@ def main():
     np = sum(ok for runs in res.values() for ok, _ in runs)
     n = sum(len(runs) for runs in res.values())
     kind = "portable" if portable else "v3"
+    if n == 0:
+        print(f"eval-{kind}: no tasks selected — task names must "
+              f"belong to the {kind} set", file=sys.stderr)
+        sys.exit(2)
     print(f"\neval-{kind}: {np}/{n} ({np / n * 100:.0f}%) "
           f"serial={SERIAL}")
     if fails:

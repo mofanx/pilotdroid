@@ -644,7 +644,11 @@ type Snap = (
 /// layout signature must match the snapshot's — a changed screen means
 /// the cached indexes point at the wrong bounds. Fails closed: a wrong
 /// tap is more expensive than a re-list.
-fn check_snapshot<T: AdbTransport>(s: &mut Session<T>, snap: &Snap) -> Result<()> {
+fn check_snapshot<T: AdbTransport>(
+    s: &mut Session<T>,
+    snap: &Snap,
+    want_i: Option<usize>,
+) -> Result<()> {
     let src = snap.3;
     let cur_pkg = s.app_current().ok().flatten().map(|(p, _)| p);
     anyhow::ensure!(
@@ -653,12 +657,30 @@ fn check_snapshot<T: AdbTransport>(s: &mut Session<T>, snap: &Snap) -> Result<()
          (list_elements/describe_screen)",
         snap.2
     );
-    let cur_sig = s.layout_signature()?;
+    // one dump yields both the layout signature AND the element list.
+    let cur = s.list_elements(true)?;
     anyhow::ensure!(
-        cur_sig == snap.1,
+        cur.layout_sig == snap.1,
         "snapshot stale — layout changed since {src}; re-observe \
          (list_elements/describe_screen)"
     );
+    if let Some(i) = want_i {
+        // Signature deliberately ignores text (a ticking clock must not
+        // invalidate a position snapshot) — so two screens sharing tree
+        // GEOMETRY but not content COLLIDE (e.g. ApiDemos main list →
+        // App sublist: same ListView, same row bounds, different texts).
+        // Verify the tap target itself still matches: you must tap the
+        // element you observed, not whatever occupies its slot now.
+        if let (Some(old), Some(new)) = (snap.0.get(i), cur.elements.get(i)) {
+            anyhow::ensure!(
+                old.class == new.class && old.text == new.text && old.desc == new.desc,
+                "snapshot stale — element {i} changed since {src} \
+                 ('{}' → '{}'); re-observe (list_elements/describe_screen)",
+                old.text,
+                new.text
+            );
+        }
+    }
     Ok(())
 }
 
@@ -762,7 +784,7 @@ fn call_tool<T: AdbTransport>(
                     let (els, _, _, src) = snap.as_ref().context(
                         "no element snapshot — call list_elements or describe_screen first",
                     )?;
-                    check_snapshot(s, snap.as_ref().unwrap())?;
+                    check_snapshot(s, snap.as_ref().unwrap(), Some(i))?;
                     let e = els.get(i).with_context(|| {
                         format!(
                             "index {i} out of range — re-observe ({} cached from {src})",
@@ -778,7 +800,7 @@ fn call_tool<T: AdbTransport>(
                     let (els, _, _, src) = snap.as_ref().context(
                         "no element snapshot — call list_elements or describe_screen first",
                     )?;
-                    check_snapshot(s, snap.as_ref().unwrap())?;
+                    check_snapshot(s, snap.as_ref().unwrap(), Some(i))?;
                     let e = els.get(i).with_context(|| {
                         format!(
                             "index {i} out of range — re-observe ({} cached from {src})",
@@ -1043,9 +1065,15 @@ fn call_tool<T: AdbTransport>(
                         std::fs::write(p, &data)
                             .with_context(|| format!("write {}", p.display()))?;
                     }
+                    // Same-dump elements (id = image label space, i =
+                    // tap_index space) so a labelled box on the image
+                    // resolves straight to an action index — no second
+                    // describe needed and no id-vs-i footgun.
+                    let desc = som::describe(&xml, None);
                     Ok(json!({
                         "format": "jpeg", "bytes": data.len(), "path": path,
                         "b64": path.is_none().then(|| b64(&data)),
+                        "elements": desc["elements"].clone(),
                     }))
                 }
                 "verify_after" => {
@@ -1285,7 +1313,7 @@ fn tools() -> Value {
         {"name":"stream_stop","description":"stop stream; returns {frames_sent,dropped}","inputSchema":schema(&[],&[])},
         {"name":"describe_screen","description":"SoM-lite perception: a11y tree → token-budget map — dense element ids (document order) ↔ bounds center ↔ label/rid/simple-class/flags C=clickable K=checked S=selected F=focused D=disabled. Each element also carries `i` = the list_elements/tap_index/set_text_index/verify_after.match.i interactive index — feed it straight to tap_index: this call refreshes the index snapshot from the SAME dump, so describe→tap_index is atomic (stale-guarded). Element `id`/`#n` is SoM space (tap by center only), `i` is tap space. ocr:true adds host-side tesseract fusion (optional dep — degrades to normal output + hint when absent): canvas/image text becomes ocr_only elements tappable by center. Same numbering space as screenshot_annotated and compat/som.py","inputSchema":schema(
             &[("max_label",prop("integer","label char cap, default 28")),("ocr",prop("boolean","OCR text fusion tier, needs local tesseract, default false"))],&[])},
-        {"name":"screenshot_annotated","description":"SoM-lite perception: screenshot JPEG with the describe_screen element ids drawn as numbered boxes at their bounds (scale fixed 1.0; path = file bypass preferred, else base64)","inputSchema":schema(
+        {"name":"screenshot_annotated","description":"SoM-lite perception: screenshot JPEG with the describe_screen element ids drawn as numbered boxes at their bounds (scale fixed 1.0; path = file bypass preferred, else base64). Response also carries the same-dump `elements` array — each element has `id` (the image label, SoM space) and `i` (the tap_index/set_text_index space): to act on a labelled box read its `i` from `elements`, never feed `id` straight to tap_index (they diverge whenever a non-interactive node precedes an interactive one)","inputSchema":schema(
             &[("path",prop("string","output file")),("quality",prop("integer","1-100, default 80"))],&[])},
         {"name":"verify_after","description":"closed-loop verify (no u2 equivalent): run one action op → settle_ms → assert on fresh dump. action={tool,args} (side-effect/read ops only); expect={exists:<sel>} and/or {absent:<sel>} and/or {text:<s>} and/or {layout_changed:<bool>} and/or {state:{match:{text|desc|class|i},checked|selected|enabled|focused:bool}} — the state kind asserts widget flags after the action (tap ok≠effect); match.i uses the same interactive index space as list_elements (ANDs with other match keys, never short-circuits); returns {action,checks,pass}","inputSchema":schema(
             &[("action",prop("object","{tool,args} — e.g. {tool:'tap',args:{x,y}}")),("settle_ms",prop("integer","default 500")),("expect",prop("object","{exists|absent|text|layout_changed|state}"))],
@@ -1560,6 +1588,82 @@ mod tests {
                                 OpCode::Dump as u16,
                                 encode(&DumpAck { xml: xml.into() }).unwrap(),
                             )
+                        }
+                        _ => {
+                            let p = encode(&ErrorAck {
+                                code: "UNSUPPORTED".into(),
+                                message: "fake".into(),
+                            })
+                            .unwrap();
+                            let resp = Frame::new(
+                                req.header.channel,
+                                req.header.msg_type,
+                                flags::RESPONSE | flags::ERROR,
+                                req.header.req_id,
+                                p,
+                            );
+                            if resp.write_to(&mut sock).is_err() {
+                                break;
+                            }
+                            continue;
+                        }
+                    };
+                    let resp = Frame::new(
+                        req.header.channel,
+                        ty,
+                        flags::RESPONSE,
+                        req.header.req_id,
+                        payload,
+                    );
+                    if resp.write_to(&mut sock).is_err() {
+                        break;
+                    }
+                }
+            }
+        });
+        addr
+    }
+
+    /// Same-GEOMETRY different-TEXT flipper: dump 0 has row "App",
+    /// dump 1 has row "Activity" at the SAME bounds/class — the layout
+    /// signature (pkg,class,bounds only) COLLIDES, so only the
+    /// element-identity check can catch it. Models nav between two
+    /// same-shape list screens (ApiDemos main → App sublist).
+    fn spawn_fake_same_geometry() -> SocketAddr {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let dumps = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        thread::spawn(move || {
+            while let Ok((mut sock, _)) = listener.accept() {
+                while let Ok(req) = Frame::read_from(&mut sock) {
+                    let (ty, payload) = match OpCode::try_from(req.header.msg_type) {
+                        Ok(OpCode::Hello) => (
+                            OpCode::HelloAck as u16,
+                            encode(&HelloAck {
+                                agent: "fake/0".into(),
+                                caps: caps::INJECT | caps::QUERY,
+                                ver: Some("9.9.9-fake".into()),
+                                proto: None,
+                                sdk: None,
+                                abi: None,
+                                display: None,
+                                inject: None,
+                            })
+                            .unwrap(),
+                        ),
+                        Ok(OpCode::Dump) => {
+                            let n = dumps.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                            let text = if n == 0 { "App" } else { "Activity" };
+                            let xml = format!(
+                                concat!(
+                                    r#"<?xml version='1.0'?><hierarchy>"#,
+                                    r#"<node text="{}" class="android.widget.TextView" "#,
+                                    r#"package="com.x" clickable="true" bounds="[0,0][10,10]"/>"#,
+                                    r#"</hierarchy>"#,
+                                ),
+                                text
+                            );
+                            (OpCode::Dump as u16, encode(&DumpAck { xml }).unwrap())
                         }
                         _ => {
                             let p = encode(&ErrorAck {
@@ -2288,6 +2392,47 @@ mod tests {
     }
 
     #[test]
+    fn annotated_elements_resolve_image_label_to_i() {
+        // `id` is the image label (SoM space); `i` is the interactive
+        // space tap_index consumes — annotated now returns the same-dump
+        // elements array carrying BOTH, so a labelled box resolves to an
+        // action index directly. DIVERGENT dump: the useful filter keeps
+        // the non-interactive 装饰 (#1), so Checkbox is id=2 but i=0.
+        let resps = serve_once_at(
+            &[
+                json!({"jsonrpc":"2.0","id":1,"method":"tools/call",
+                       "params":{"name":"screenshot_annotated","arguments":{}}})
+                .to_string(),
+                json!({"jsonrpc":"2.0","id":2,"method":"tools/call",
+                       "params":{"name":"tap_index","arguments":{"i":0}}})
+                .to_string(),
+                json!({"jsonrpc":"2.0","id":3,"method":"tools/call",
+                       "params":{"name":"tap_index","arguments":{"i":2}}})
+                .to_string(),
+            ]
+            .join("\n"),
+            spawn_fake_dump(FAKE_DUMP_DIVERGENT),
+        );
+        let ann: Value =
+            serde_json::from_str(resps[0]["result"]["content"][0]["text"].as_str().unwrap())
+                .unwrap();
+        let els = ann["elements"].as_array().unwrap();
+        assert_eq!(els.len(), 3);
+        assert_eq!(els[1]["id"], 2);
+        assert_eq!(els[1]["i"], 0);
+        // correct consumption: i=0 (from elements, not the image label)
+        // taps the checkbox's own bounds — snapshot armed by annotated.
+        let tap: Value =
+            serde_json::from_str(resps[1]["result"]["content"][0]["text"].as_str().unwrap())
+                .unwrap();
+        assert_eq!(tap["bounds"], els[1]["bounds"]);
+        // mis-consumption (image label 2 fed as i) is REJECTED loudly —
+        // only 2 interactive elements exist, so `i:2` is out of range.
+        let err = resps[2]["result"]["content"][0]["text"].as_str().unwrap();
+        assert!(err.contains("out of range"), "unexpected err: {err}");
+    }
+
+    #[test]
     fn watch_events_quiet_media_reports_timeout_union() {
         // A media conn that accepts then stays silent → the read deadline
         // yields {type:"timeout"} as a normal result (isError stays false;
@@ -2512,6 +2657,27 @@ mod tests {
             text.contains("describe_screen"),
             "expected provenance, got {text}"
         );
+    }
+
+    #[test]
+    fn describe_snapshot_stale_same_geometry() {
+        // Benchmark catch (frozen-v1 stale_layout_guard): nav to a
+        // screen with IDENTICAL tree geometry but different row text —
+        // the layout signature collides (it ignores text on purpose),
+        // so the element-identity check must reject the tap: without it
+        // tap_index{i} silently taps whatever now sits in the slot.
+        let resps = serve_once_at(
+            &[
+                r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"describe_screen","arguments":{}}}"#,
+                r#"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"tap_index","arguments":{"i":0}}}"#,
+            ]
+            .join("\n"),
+            spawn_fake_same_geometry(),
+        );
+        assert_eq!(resps[1]["result"]["isError"], true);
+        let text = resps[1]["result"]["content"][0]["text"].as_str().unwrap();
+        assert!(text.contains("stale"), "expected stale error, got {text}");
+        assert!(text.contains("element 0 changed"), "got {text}");
     }
 
     #[test]

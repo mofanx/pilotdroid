@@ -130,6 +130,15 @@ weditor/u2inspector 在 AI 时代的等效物不是 GUI 查看器，而是一段
   随机 checkbox 索引+`verify_after` state 谓词断言翻转），失败记录带
   前台包名归因（`fg=` 字段，外部 app 抢前台不再静默）；`--portable`
   跑无 ApiDemos 依赖的 Settings 子集（多设备行）。
+- `benchmark.py` —— **盲驾基准（frozen-v1，11 题）**：与 eval 序列的
+  区别是**确定性冻结**——同题同靶同序（eval v3 随机抽靶证明泛化，
+  benchmark 冻结出题使版间差可归因）。覆盖 describe→tap_index
+  原子消费、`id`/`i` 双空间、B4 checkbox+state 谓词、stale guard
+  （layout/pkg 双漂移）、scroll、set_text_index、watch toast、
+  脏杀恢复、`match:{}` 负路径。环境性前台劫持（misubscreenui/
+  agenthub 等）自动逐出+一次重试并打 `env=` 标记——绝不伪装真实
+  失败。真机 ba0d072d 首轮 **11/11**（§附35）。跑法：
+  `PILOTDROID_SERIAL=<serial> python3 benchmark.py [task ...]`
 
 ```bash
 python3 spike/e2e/agent-loop/inspector.py            # 列元素

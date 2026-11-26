@@ -1374,3 +1374,217 @@ release 提交：ci 1m0s、codeql 1m22s、release 2m57s、pypi 29s 四 run 全�
   未随本版——在途或待启动，落库后按窗口另行发件；本次不发不完整批次。
 - `mcp-publisher` JWT 短期过期已是第二次遇——SUBMIT.md 已记重登路径，
   可考虑把 `login -token` 并入 publish 前置步。
+
+## 附33 t5 —— t2+t3+t4 独立复核（2026-11-26，复核员自跑，非转述）
+
+### A. t4 —— v0.8.2 四面逐项复验：**PASS**
+
+| 面 | 实证（本复核自跑） | 结果 |
+|---|---|---|
+| GitHub Release | `gh release download v0.8.2`：7 assets；`sha256sum -c` linux+agent.jar **OK**；发布二进制 `--version`=`pilotdroid-cli 0.8.2` | ✔ |
+| PyPI | `pypi.org/pypi/pilotdroid/json` version=`0.8.2` | ✔ |
+| Registry | `?search=pilotdroid&limit=20`：**0.8.2 `active`+`isLatest:true`**，0.6.1.post1→0.8.2 全链 | ✔ |
+| Homebrew tap | `pilotdroid.rb` version=0.8.2，sha256 与发布 SHA256SUMS **逐字一致**（linux `5cfa66ac…`/macos `4582fd36…`） | ✔ |
+| install-smoke | 独立复跑 ba0d072d **9/0**：PyPI→venv→bootstrap execv 0.8.2→setup 8 查（hello=0.7.4 错落符合 notes）→MCP 握手 | ✔ |
+
+### B. t2（盲驾基准建制化）/ t3（挂账微批三件）：**未落地，无从复核**
+
+main 工作树无冻结套件文件、无微批提交、无 ledger 记档；§附32-G 明示「t2/t3 在途不发不完整批」。抽查复跑（≥2 题）因冻结套件不存在无法执行——非结论，属**编排时序**：本复核先于 t2/t3 交付到达。建议 t2/t3 落地后补复核（或复核员在其交付后立即复跑）。
+
+### C. 回归面（本复核自跑，ba0d072d）
+
+| 项 | 结果 |
+|---|---|
+| doc-drift | **0 fail**（tools 30/30、smoke-ver 0.8.2、changelog fold 闸过） |
+| pytest | **94 pass** / 3 warnings（环境性） |
+| cargo 三件套 | test workspace **105 pass/0 fail**（t1 +3 新测在列）；fmt/clippy 净 |
+| verify-agent | **44/0**（首轮即过，shot_quality 未翻牌） |
+| install-smoke | **9/0**（见 A） |
+| u2suite verbatim | **17 pass / 6 fail / 7 skip**——**记档窗下沿之下**（窗 19–22，基线 22/0/8）。逐条归因无新病型：`_Scroll.to` NIE 挂账×1、屏态 lookup 未中×3（'Search'/'Menu'/xpath_parent None）、空 dump ParseError×1（MIUI 屏转换 dump 空载瞬态）、watcher 回调时序×1。**计数穿窗但病型全在已知族**——建议记为「窗下沿观察」非回归，屏态依赖 flake 恰是 t3 deflake 类项的目标面 |
+
+### D. 残留挂账现状（对照验收项④四件）
+
+- `match:{}` 显式报错：**已闭环**（t1 批随 0.8.2 发件，serve.rs ensure+测试钉）
+- `shot_quality` 同帧重试/断言修正：**t3 在途**，本跑 44/0 未翻牌
+- `.scroll.to` 修-or-SUPPORTED：**t3 在途**，套件仍报 NIE
+- `old_ime` 根治/记档：**t3 在途**
+
+## 附34 t6 —— t1 fill-snap 独立复核（2026-11-26，复核员自跑，非转述）
+
+复核对象：`9af723f`（已随 v0.8.2 发件）。全部实测于 ba0d072d 新鲜 `serve` 会话。
+
+### A. TOCTOU 窗口实证闭合：**PASS**
+
+| 场景 | 操作序列 | 结果 |
+|---|---|---|
+| 新鲜会话直接消费 | `app_start Settings`→`describe_screen`→`tap_index{i:0}`（**无 list_elements**） | ✔ tap 命中 `[193,1179,361,1347]`——老病型「no element snapshot」不再现 |
+| 跨包漂移证伪 | describe(Settings)→`app_start calculator`(MIUI 弹 permcenter)→`tap_index{i}` | ✔ stale guard 拦截：`focused app changed (Some("com.android.settings") → Some("com.miui.securitycenter"))`——溯源+新旧包名俱在 |
+| 同包布局漂移证伪 | describe(Settings)→`swipe` 滚动→`tap_index{i}` | ✔ `snapshot stale — layout changed since describe_screen; re-observe`——**报错带观测面来源名** |
+| annotated 武装隔离 | **新鲜会话** `app_start`→`screenshot_annotated`（此前无任何观测调用）→`tap_index{i:0}` | ✔ tap 成功——annotated handler 同样填 snap |
+| `match:{}` 显式报错 | `verify_after` expect.state `match:{}`+`checked:true` | ✔ tool error：`has no selector keys — need one of text|desc|class|i` |
+
+### B. 自复核勘误：「home 漂移 MISSED」为测试设计假阳性
+
+首轮注入 `press home` 后 tap 成功，初判 guard 漏拦；补查 `dumpsys` 发现 **home 按下后 tFocus 仍为 `com.android.settings/MainSettings`**（MIUI home 未生效/被吞），布局未变故 tap 合法命中——guard 行为正确，非缺陷。改用 `app_start` 异包后 guard 正确拦截（A 表行 2）。**教训：漂移注入须以 dumpsys/fg 断言确证漂移真实发生，不能假设按键已生效。**
+
+### C. 新发现 nit（非阻塞，记档）
+
+- **annotated 双空间脚枪**：`screenshot_annotated` 图像标注是 `id`/`#n`（SoM 空间），但其填的 snap 消费 `i`（interactive 空间）。用户把图像编号直接喂 `tap_index{i:N}` 会静默命中第 N 个 interactive 元素而非图上编号 N——guard 不拦（布局未变）。文档口径已声明「两套编号不可混用」（README 编号空间段），但**错误不可能靠文档排除**；缓解面：annotated 响应回带 `id→i` 映射表，或工具描述内联警告。挂账，建议 t-级 nit 批收编。
+- `screenshot_annotated` 响应体不含 elements 数组（仅 b64/path）——snap 虽武装但 `i` 值无从直读，消费依赖 describe/list_elements 或 `[cx,cy]`。与上条同源。
+
+### D. 单测语义覆盖核对
+
+`describe_arms_snapshot_for_tap_index`（DIVERGENT dump 钉 SoM-id≠interactive-i 异空间+bounds 命中）、`describe_snapshot_stale_on_drift`（溯源名入错报文）、`verify_after_state_empty_match_errors`（match:{} 显式错）——三钉与真机面逐条对应，无漏钉维度。
+
+**结论：t1 fill-snap 复核 PASS——TOCTOU 实消、双观测面武装、漂移 guard 两层（pkg+layout）均拦且溯源可辨、match:{} 显式化；附 nit×2 挂账。**
+
+## 附35 t2 —— 盲驾基准建制化 + 基准首捕获真缺陷（2026-11-26）
+
+### A. 套件：`spike/e2e/agent-loop/benchmark.py`（frozen-v1，11 题）
+
+与 eval v3 的分工：**v3 随机抽靶证泛化，benchmark 冻结同题同靶同序使版间差可归因**。分布：describe→tap 原子消费（describe_tap_direct）/`id`↔`i` 双空间（i_space_divergent，Settings 屏确定性发散）/B4 checkbox+state 谓词（checkbox_state）/stale guard 双漂移（stale_layout_guard=scroll 注入、stale_pkg_guard=异包注入）/scroll/set_text_index/state 谓词只读/watch toast/脏杀恢复/match:{} 负路径。
+
+环境自愈内建：前台劫持者（misubscreenui/agenthub/securitycenter/miui.home/sctrl）逐出+`_ensure_fg`+一次 `env-hijack:<pkg>→retry` 重试——环境失败打 env 标记，绝不伪装真实 FAIL；`_main_list` 对付 ApiDemos task-snapshot 恢复（force-stop 后仍回子页）；`_dismiss_fullscreen_ime` 对付横屏 extract-IME 全屏遮挡。
+
+### B. 首轮真机出数（ba0d072d）
+
+```
+PASS describe_tap_direct      3.5s   PASS stale_pkg_guard       5.5s
+PASS i_space_divergent        2.6s   PASS scroll_find            4.2s
+PASS checkbox_state          18.2s✶  PASS set_text_index         7.1s
+PASS stale_layout_guard       4.9s   PASS verify_state_pred      9.2s
+PASS watch_toast              9.4s✶  PASS dirty_kill_recovery    5.9s
+                                   PASS match_empty_error       1.0s
+benchmark: 11/11 pass (100%) tasks=frozen-v1   ✶=env-hijack:com.agenthub→retry 自救
+```
+
+### C. ★基准首捕获：stale-guard 同几何碰撞真缺陷（已修）
+
+建制化首跑就抓到真 bug——`nodes_signature` 刻意只 hash (pkg,class,bounds) **忽略 text/desc**（防时钟跳变误废快照），于是**同几何异内容屏签名碰撞**：ApiDemos 主列表→App 子列表同为 ListView+同 bounds TextView 行，describe→nav→`tap_index{i}` guard 放行、按**旧 snap 元素 bounds** 在新屏静默错点（benchmark FAIL 实证，fg=apis 非环境因）。
+
+修法（serve.rs，`check_snapshot` 升级）：pkg+sig 检查后，若带目标 `i`，再比**目标元素身份**（class+text+desc，cur 与 snap 同 dump 零额外开销）——「你必须点到观测过的元素，不是槽位现任者」。代价面：目标元素 text 正当变化（倒计时按钮类）会误报 stale→保守失败方向，可接受。单测 `describe_snapshot_stale_same_geometry` 钉死（spawn_fake_same_geometry 同 bounds 异文本 flipper）。
+
+**这正是建制化的意义**：此缺陷在 §附30 v3 注释里挂账过（"match.i resolves full-tree space"同族），靠人工挂账一直没修；冻结基准第一次跑就把它变成不可绕过的 FAIL。
+
+### D. 任务内修复过程暴露的设备面知识（记档）
+
+- **checkbox row 中心 tap 不翻转**：Controls1 的 CheckBox 节点 bounds 占整行 [382,561][870,834]，但仅左缘 ~x<500 命中区翻转（x0+40 实测翻）——benchmark 用 widget 边 tap。
+- **横屏 extract-IME 吞一切 tap**：调试中反复踩到（截图实证 IME 覆盖整屏），`_dismiss_fullscreen_ime` 是必要前置。
+- **bounds 畸变**：横屏 letterbox 下滚出视口节点 bottom 全钳 1384、top>bottom——a11y bounds 不可全信，只用可见节点。
+- **misubscreenui/agenthub 高频抢 fg**：子屏服务被 force-stop 后秒级复活，需 _ensure_fg 式断言而非一次性驱逐。
+- **Serve 泄漏 forward**：每次 Serve() spawn 留一条 tcp 规则——本轮清 ~60 条临时口（17932/17933 保留）。
+
+### E. 闸
+
+cargo workspace **106/0**（+1 碰撞钉测）、fmt/clippy 净、doc-drift **0 fail**（Unreleased 2 bullets 在折）、SUPPORTED 增第五类环境因子+IME 段、README 增 benchmark 条目+跑法。
+
+## 附36 t3 —— 挂账微批三件收口（2026-11-26，serve.rs 未动）
+
+| 件 | 定案 | 证据 |
+|---|---|---|
+| `scroll.to` | **实装**：`_Scroll.to(**kw)` forward 滚动→目标选择器命中即 True；dump-hash 稳定（到底）或 max_swipes→False。SUPPORTED 行 32 已同步，非 NIE | 单测 `test_scroll_dot_to`（命中/到底/空参三路）+ 真机 `suite::test_scroll` **PASSED**（原 AttributeError 失败面转正） |
+| `old_ime` 毒化基线 | **根治**：捕获值==`pilotdroid.eval/.NoIme`→判毒化，跳过回写+警告（回写会把钉死值固化）；已钉设备无可靠真值源，明示手动恢复 | loop_v3.py guard；py_compile 净 |
+| `shot_quality` | **同帧对重试**：q30/q80 背靠背对×3，任一对满足 B30<B80 即过——屏内容漂移期单对误报消除 | verify-agent 复跑 **44/0**，shot_quality PASS |
+
+pytest 95（+1）；CHANGELOG Unreleased Fixed 三条随行。
+
+## 附37 t7 —— t2 盲驾基准独立复核（2026-11-26，复核员自跑，非转述）
+
+### A. 冻结题面/分布：**PASS**
+
+`BENCH` 11 题逐题读码核对，命中验收分布且各有独特语义：describe_tap_direct（T1 原子消费钉）/i_space_divergent（Settings 屏 id≠i 确定性发散+tap 返回 bounds 核验——**错空间解析会点到别的元素**）/checkbox_state（B4+state 谓词，widget 边 tap 记档）/stale 双漂移（layout=scroll 注入、pkg=异包注入）/scroll_find/set_text_index/verify_state_pred/watch_toast/dirty_kill_recovery/match_empty_error（负路径）。冻结性实证：`argv` 按题过滤可单跑，题序固定非随机抽。
+
+与 eval v3 分工宣称核对：README 133-141「v3 随机抽靶证泛化 vs benchmark 冻结归因」**一致**；env-hijack 重试代码实证（仅 fg∈HIJACKERS 且首败才重试并打 env= 标，不伪装真 fail）。
+
+### B. 首轮数字抽查复跑：**PASS**（4 题自跑，≥2 达标）
+
+```
+PASS describe_tap_direct  5.0s  PASS stale_layout_guard  4.5s
+PASS i_space_divergent    2.3s  PASS match_empty_error   0.7s
+benchmark: 4/4 pass serial=ba0d072d tasks=frozen-v1
+```
+
+与 §附35-B 首轮 11/11 宣称**方向一致、量级吻合**（抽样题耗时 0.7–5.0s vs 原档 1.0–4.9s 同阶）。
+
+### C. 碰撞缺陷修复宣称核验：**PASS**
+
+serve.rs 实证 `want_i: Option<usize>` 入参（L650）+身份校验（L667-：class+text+desc 三元组同 dump 比对，报错 `element {i} changed since {src}`）；`describe_snapshot_stale_same_geometry` 钉测**自跑 PASS**（cargo test targeted）。§附35-C 的「签名忽略 text→同几何碰撞→身份校验根治」因果链与代码一致。
+
+### D. README/SUPPORTED 口径：**PASS**
+
+README benchmark 条目（跑法 `[task ...]` 子集与 argv 行为实证一致）/SUPPORTED 第五类环境因子+IME 遮挡段均在与宣称相符。
+
+### E. 独立观察（非阻塞）
+
+- screenshot_annotated 填快照路径与 describe_screen 同代码位（fill_snap），基准只钉 describe 消费面——双源同构由单测覆盖，题面无独立题，可接受。
+- forward 卫生：复核后 `forward --list` 余 3 条 pilotdroid 规则（17932/17933 常驻+本次 Serve() 泄漏 1 条）——Serve() 每实例留 1 条的泄漏仍存（§附35-D 已记），本次未清（他员会话可能持有）。
+
+## 附37 t8 —— t3 挂账微批三件独立复核（2026-11-26，复核员自跑）
+
+### A. 逐项判定
+
+| 件 | 形态核对 | 独立实证 | 判定 |
+|---|---|---|---|
+| `shot_quality` | 修法=背靠背对×3 重试（非断言语义改写）。对症判断：**正确**——flake 根因是两帧间内容漂移（动画/瞬态帧熵差），同帧采样做不到（两 SHOT 必然异帧），重试让漂移帧不再一票否决；语义仍钉「quality 影响字节数」 | `verify-agent.sh ba0d072d`：**44/0**，`shot_quality` PASS | ✔ |
+| `.scroll.to` | 实装形态：`_once(True)` 前滚+`dump-hash` 稳定判到底+`max_swipes=20` 界+空 kw `ValueError`；语义=u2 `scroll.to`（forward until found，found→True/到底→False），头注与 SUPPORTED 行32 `to(**kw)` ✅ 已同步 | 真机：`d(scrollable=True).scroll.to(text='Views')` 离屏元素 **True**（滚到）；`text='NO_SUCH_XYZ'` **False**；空 kw **ValueError**；`test_scroll_dot_to` 单测三路 | ✔ |
+| `old_ime` | 闭环形态=**守卫+记档**（验收允许「根治或记档」）：捕获 `default_input_method`==eval pin→WARN 明示毒化+跳过回写——防「坏基线被 cement」；不自动恢复（无法知真 IME），明示手动 reset | 实机毒化注入：pin 置 secure 后跑 `loop_v3.py random_index_pick`——首行即 `eval env WARN: captured default_input_method is the eval pin (stale from a killed run?) — skip restore`；跑毕 `get` 仍 pin（未 cement 也未误还原），手动 reset SogouIME 恢复 | ✔ |
+
+### B. 复核中新增 nit（非阻塞，记档）
+
+- **`loop_v3.py` portable 题在非 portable 档位被点名 → ZeroDivision**：`python3 loop_v3.py som_shape`（PORTABLE 题名+无 --portable）→ only 过滤后 tasks 空 → `np/n` 除零崩于收尾统计。XS：过滤后空集早退或按名自判档位。
+- **t6 挂账 nit×2 复核结论**：annotated `id`(图)/`i`(snap) 双空间脚枪已在 §附34-C 记档；SUPPORTED 编号表已明示「id 仅 `[cx,cy]`、勿混用」，口径层面已尽——残留=代码面缓解（annotated 响应回带 `id→i` 映射或工具描述内联警句），**无需新开挂账段，并入下批 nit 收编**即可；annotated 无 elements 直读 `i` 同源。
+
+### C. 闸（复核员自跑）
+
+verify-agent **44/0**（shot_quality 段 PASS）；`scroll.to` 真机三路；`old_ime` 注入实证（上表）；pytest 侧 `test_scroll_dot_to` 三路单测在 t3 交付内已跑 95。
+
+**结论：t3 三件全 PASS——scroll.to 实装语义对、shot_quality 重试对症、old_ime 守卫形态闭环；挂账面新增 loop_v3 空集除零 nit×1。**
+
+## 附38 t1 —— annotated 编号空间收关+工程卫生微批+跨 OEM 行首轮（2026-11-26）
+
+### A. annotated `id`/`i` 双空间根治（serve.rs）
+
+`screenshot_annotated` 响应新增**同 dump `elements` 数组**（som::describe 同构，`id`=图上编号、`i`=动作空间同帧双字段）——图编号→`tap_index{i}` 经 elements 直读映射闭环，错空间脚枪在 payload 层消灭（t6/§附34-C 挂账、§附37-E 观察项收口）。工具描述内联警句「读 elements 的 i，勿把图上编号当 i 喂」+SUPPORTED 编号表同段更新。钉测 `annotated_elements_resolve_image_label_to_i`（DIVERGENT dump：els[1] `id=2`/`i=0` 发散显形；`tap_index{i:0}` 命中 Checkbox 自身 bounds；误喂 `i:2`→`out of range` 响亮拒——**误消费证伪**）。
+
+### B. 工程卫生三件
+
+| 件 | 形态 | 实证 |
+|---|---|---|
+| `Serve.close()` forward 自愈 | `_fwd0` 快照差集摘口（own-lifetime 规则，不碰常驻/他员口） | ba0d072d 实证：常驻 2→spawn 3→close **2** |
+| `u2shim.dump_hierarchy()` 空载重试 | `<hierarchy` 未到重试×3（sleep .3） | **前后对照：t5 期 17/6/7（含空 dump ParseError）→ 本次 22/0/8 满基线**，屏态 flake 族零现身（一族结构性消、余为概率性） |
+| `loop_v3` 空集除零 | `n==0`→exit 2 usage 提示 | py_compile 净；逻辑覆盖 `only` 过滤空集全路径 |
+
+### C. benchmark `stale_pkg_guard` 跨 OEM 修复
+
+硬编码 `com.miui.calculator`（小米独有）→ `com.android.settings`——**华为行首轮即抓出的任务级可移植缺陷**（基准建制化第二次回本）。
+
+### D. 华为 CFE6R 行——环境阻断记档（非代码失败）
+
+首轮 `benchmark.py CFE6R21525008201`：**2/11**，归因双层环境闸：①设备 **keyguard 锁定**（`mInputRestricted=true`、screencap 空、远程滑不开）；②`com.android.permissioncontroller/.ReviewPermissionsActivity` 持台——HarmonyOS 首启权限审（MIUI ReviewPermissionsActivity 对应物），需人工放行一次；劫持者名单（MIUI 五包）在 HarmonyOS 无效，对应物即 permissioncontroller 类系统闸。i_space_divergent/match_empty_error 两题 PASS 证明 serve 通道在 HarmonyOS 上工作正常。ApiDemos 已 adb install 就位，待物理解锁+放行后复跑。
+
+### D2. 华为行复跑落地（用户解锁+权限放行后）：**11/11 PASS**
+
+首轮阻断的完整消解路径：keyguard 用户解锁→ReviewPermissionsActivity「继续」放行→暴露三层**任务级**可移植缺陷（已修）：
+
+| 缺陷 | 形态 | 修法 |
+|---|---|---|
+| `stale_pkg_guard` 硬编码 `com.miui.calculator` | 小米独有包，HarmonyOS 无 | `com.android.settings`（跨 OEM 确定性靶） |
+| HarmonyOS 老 targetSdk 复发模态 | 「此应用 SDK 版本过低」每次冷启必弹，非一次性闸 | `_dismiss_old_sdk_warn`（describe 扫+「确定」tap，双连续干净才退出防迟到框；MIUI 上空 no-op）挂 `_fresh`/`_main_list`/`_evict_hijacker` 咽喉 |
+| `stale_layout_guard` scroll 注入无 scrollable | 2560×1600 横屏主列表整屏可容，scroll→NO_NODE | try-scroll 回落 nav 注入（'App' 行 tap）——回落路径直击**同几何碰撞类**（同 ListView 形状异文本），正好是 want_i 身份校验的消费面 |
+
+### D3. ★新设备面发现：HarmonyOS a11y/pkg 过渡窗（诚实档）
+
+`app_start` 后 ~1.5-3s 过渡窗内：`app_current` 返回 `{}`（pkg 未定）且 **a11y 树滞后于前台窗口**（list_elements 仍报旧 app 残树）。此时 stale guard 的 pkg 比对 `None==None` 宽容放行、sig 比对撞上残树旧值——**guard 在过渡窗内可观测性失明，不是代码 bug 而是设备回报本身未就绪**（实测：描述-切 settings-点 stale_i 静默放行点击旧 bounds）。任务修法=等 `app_current.package` 可观测再注入。**产品级候选硬化**：`check_snapshot` 对 `cur_pkg=None` 改 fail-closed（「foreground indeterminate」而非放行）——改已发件语义，留组裁决入下批；即便不改，盲驾客端须知此窗口存在。
+
+### D4. 劫持者名单跨 OEM 有效性结论
+
+MIUI 五包名单（misubscreenui/agenthub/securitycenter/miui.home/sctrl）在 HarmonyOS 全部惰性；对应物非「抢台 app」而是**两型系统闸**：一次性 permissioncontroller 权限审（物理解锁放行一次，同 MIUI 闸处置）+复发性 SDK 警告模态（_dismiss_old_sdk_warn 咽救）。harmonyOS 侧暂无可枚举常驻劫持者——名单保持 MIUI 域，跨 OEM 匹配靠 fg 归因行兜底。
+
+### D5. 矩阵更新
+
+| serial | frozen-v1 | 备注 |
+|---|---|---|
+| ba0d072d (MIUI API34) | 11/11（复跑，改动后零回归） | misubscreenui 抢占两次均自愈 |
+| CFE6R21525008201 (HarmonyOS API31) | **11/11** | 解锁+权限放行后；三任务级修复随行 |
+
+失配数字 2/11→3/11→9/11→11/11 的爬升路径全部为**任务级/环境级**，零代码级 parity 洞（serve 通道+协议面 HarmonyOS 正常；过渡窗为可观测性物理特性非实现缺陷）。

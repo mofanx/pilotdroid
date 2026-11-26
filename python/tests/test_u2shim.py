@@ -401,6 +401,44 @@ class TestXPathLite(unittest.TestCase):
         self.assertIsNotNone(el)
         self.assertEqual(el.get_text(), "Target")
 
+    def test_scroll_dot_to(self):
+        state = {"n": 0}
+
+        class _A:
+            def query(self, sel):
+                if sel.get("text") and state["n"] < 1:
+                    return {"payload": {"found": False}}
+                return {"payload": {"found": True,
+                                    "node": {"bounds": [0, 100, 1000, 2000]}}}
+        d = self._d()
+        d.a = _A()
+        dumps = [self._XML, '<hierarchy><node scrollable="true"'
+                 ' bounds="[0,100][1000,2000]"/></hierarchy>']
+        d.dump_hierarchy = lambda: dumps[min(state["n"], 1)]
+        d.swipe = lambda *a, **kw: state.__setitem__("n", state["n"] + 1)
+        self.assertTrue(d(scrollable=True).scroll.to(text="Target"))
+        self.assertEqual(state["n"], 1)
+
+        # target never appears → end-of-content → False after one swipe
+        class _A2:
+            def query(self, sel):
+                if sel.get("text"):
+                    return {"payload": {"found": False}}
+                return {"payload": {"found": True,
+                                    "node": {"bounds": [0, 100, 1000, 2000]}}}
+        d2 = self._d()
+        d2.a = _A2()
+        d2.dump_hierarchy = lambda: self._XML
+        n = [0]
+        d2.swipe = lambda *a, **kw: n.__setitem__(0, n[0] + 1)
+        self.assertFalse(d2(scrollable=True).scroll.to(text="Nope"))
+        self.assertEqual(n[0], 1)
+
+        d3 = self._d()
+        d3.a = _A()
+        with self.assertRaises(ValueError):
+            d3(scrollable=True).scroll.to()
+
     def test_get_missing_raises_u2_not_found(self):
         d = self._d()
         d.settings["wait_timeout"] = 0.1

@@ -6,6 +6,58 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+- `tap_index`/`set_text_index` stale guard missed same-GEOMETRY
+  different-content screens: the layout signature deliberately ignores
+  text (a ticking clock must not invalidate a snapshot), so two screens
+  with identical tree shape but different labels collided and
+  `tap_index{i}` silently tapped whatever now sat in the slot — e.g.
+  ApiDemos main list → App sublist. The guard now also verifies the tap
+  target's element identity (class+text+desc) from the same dump —
+  caught by the new blind-driving benchmark's stale_layout_guard.
+- `d(scrollable=True).scroll.to(**kw)` was NIE (`AttributeError`) —
+  implemented: forward-scroll until the selector target exists or the
+  dump stops changing (u2 semantics); u2suite `test_scroll` path.
+- eval harness poisoned-IME baseline: a SIGKILLed run leaves
+  `default_input_method` pinned to `pilotdroid.eval/.NoIme`; the next
+  run captured that pin as the "original" and restored it, cementing
+  the contamination. Now detected at capture — restore is skipped and
+  a warning tells the user to re-set the real IME manually.
+- `screenshot_annotated` now returns the same-dump `elements` array
+  (each element carries `id` = image label and `i` = tap space) so a
+  labelled box resolves straight to `tap_index`/`set_text_index` — no
+  second describe, and the id-vs-i footgun is closed at the payload level.
+- `verify-agent.sh` `shot_quality` flake: q30-vs-q80 byte ordering can
+  invert when screen content drifts between the two SHOTs. Now retries
+  up to 3 back-to-back pairs and passes on the first valid pair.
+- `Serve.close()` (agent-loop harnesses) now removes the adb forward
+  rules created during its own lifetime — every spawned serve used to
+  leak one `tcp:* → localabstract:pilotdroid_agent` rule per instance.
+- `u2shim.dump_hierarchy()` retries empty/truncated dumps (a11y tree
+  momentarily empty on ROM screen transitions → `ParseError: no
+  element found`) — up to 3 attempts.
+- `loop_v3.py` empty-selection crash: naming a portable-only task
+  without `--portable` divided by zero in the summary — now exits 2
+  with a usage hint.
+- `benchmark.py` cross-OEM portability (found by the CFE6R HarmonyOS
+  row, now 11/11): `stale_pkg_guard` used Xiaomi-only
+  `com.miui.calculator` as the drift injection → `com.android.settings`
+  + waits until the drift is observable to the agent (HarmonyOS
+  app_current/a11y transition window); recurring old-targetSdk modal
+  dismissed via `_dismiss_old_sdk_warn`; `stale_layout_guard` scroll
+  injection falls back to nav when no scrollable node exists (tablets
+  whose main list fits on one screen).
+
+### Added
+- `spike/e2e/agent-loop/benchmark.py` — frozen blind-driving benchmark
+  (v1, 11 tasks): describe→tap atomicity, i-space divergence, B4
+  checkbox+state predicate, stale guard (layout+pkg flavors), scroll,
+  set_text, state-predicate verify, toast, dirty-kill recovery,
+  match:{} negative pin. Deterministic targets (unlike eval v3's
+  randomized draw) so release-to-release deltas are attributable;
+  environmental fg-hijack retry marked `env=` never masks real fails.
+
+
 ## [0.8.2] — 2026-11-26
 
 ### Changed
