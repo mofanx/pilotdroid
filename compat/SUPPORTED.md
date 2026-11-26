@@ -174,7 +174,10 @@ benchmark/suite 跑旧 targetSdk app 前需先放行（openatx u2 官方
   `verify_after`（操作后 dump 断言闭环，`expect.state` 支持
   checked/selected/enabled/focused 状态谓词——「tap ok≠效果」
   分层成 ACK vs 效果断言，u2 无此能力；`match.i` 归
-  `list_elements`/`describe_screen` 同一 interactive 编号空间、
+  `list_elements` 同一 interactive 编号空间（即 `tap_index`/
+  `set_text_index` 消费的空间；注意 `describe_screen` 的 SoM
+  编号是 document-order 宽集、与 `match.i` **不同**——SoM id
+  需经 `list_elements` 取 i 后才能用于 `match.i`）、
   与其余 match 键 AND 组合，纯 text/desc/class match 搜全树）、
   `watch_arm{push}`（上条）。
 - **元素状态面（M32）**：`list_elements`/`describe_screen`/compat

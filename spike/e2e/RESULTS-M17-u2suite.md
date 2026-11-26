@@ -1058,3 +1058,31 @@ facade `ElemInfo.class` 存简单名、som.rs emit `rsplit`、compat/som.py 镜�
 - `adb connect 192.168.123.125:5555` → `No route to host`（多次）；`ping` 100% 丢包；`nmap -p 5555 192.168.123.0/24` 无开放设备——**该机当前不在网/无线 adb 已关**，远端不可恢复。
 - `adb devices` 现 11.0.0.2:5555 为 `device` 态（adb 自动重连的旧址，疑同机换网段回连）——**遵用户禁令未触碰**，未做任何 shell 探测。
 - 已就绪待跑命令（设备恢复后）：`pilotdroid-cli -s 192.168.123.125:5555 setup` + describe + `PILOTDROID_SERIAL=192.168.123.125:5555 python3 loop_v3.py --portable`（portable 档零安装零设置写——IME 钉已对 portable 关闭，见 B）。
+
+## 附25 t9 —— 独立复核 t7（match.i 索引空间修复，23b593d）
+
+### ① 语义审——**PASS（一处文档错误已随复核修正）**
+
+- **同空间成立**：`e.i` 在 facade `retain` 后 enumerate 赋值（facade.rs:410-412）⇒ `e.i`≡filtered 位置≡serve `enumerate()` 位置≡`tap_index` `els.get(i)`——match.i 与 tap_index/list_elements 确属同一编号空间；filter 字面量与 facade.rs:407 逐字一致。
+- **无 snapshot 污染**：`snap` 仅在 serve `list_elements` 工具分支（serve.rs:728）写入；verify_after 内部 `s.list_elements(false)` 不触 snap——后续 tap_index 不会被全树快照劫持。
+- **AND 不短路**：`keys(e)` 对 text/desc/class 全 map_or 真，i+其余键逐键合取；i-only（无其他键）走全 true 路径正常解析。
+- **纯文本 match 搜全树**：disabled/非交互节点可断言（设计决策，注释明示）。
+- **文档错（复核修正）**：SUPPORTED.md:177 原写 match.i 归「list_elements/**describe_screen** 同一空间」——**错误**：som.rs `enumerate` 为 document-order 宽集（text/desc/rid 或交互标志任一算数），有纯文本 Label 时必与 interactive 空间分叉。已改为仅宣称 `list_elements` 空间并明示 SoM id 不可直用于 match.i/tap_index。
+- **非阻塞 nit**：interactive filter 字面量在 facade/serve 两处复制（drift 风险，建议后续提取共享谓词）；`match:{}` 空键+state 谓词返回 found:false 而非报错（低优先）。
+
+### ② 单测审——**PASS**
+
+`FAKE_DUMP_DIVERGENT` 全树 [装饰0,CheckBox1,Label2] vs interactive [CheckBox0,Label1] 真分叉钉四断言：i=2 越界不命中、i+错 text found:false（不短路）、i+Label+enabled:false 正向 AND、i-only checked 读回。本机重跑 3/3 通过。
+
+### ③ 真机独立复跑（ba0d072d，debug CLI 23b593d+）——**PASS**
+
+- `match:{i:5}+checked:true`（interactive CheckBox）：首跑 found:true 但 tap 被横屏全屏 IME 吃掉（复现 p2 同款坑）；钉 NoIme 后 **pass:true，checked 翻转断言命中**。
+- `match:{i:5,text:"NO_SUCH_TEXT"}` → **found:false**（i 不短路实证）。
+- i-only `match:{i:5}` → found:true，state 读回诚实。
+- IME 已恢复基线 `com.sohu.inputmethod.sogou.xiaomi/.SogouIME`。
+
+### ④ 工程面抽样——**PASS**
+
+cargo workspace **101/0**（serve 34 含新测）+ fmt 净；pytest **93/0**。
+
+**裁定：t7 PASS**。移交遗留：SUPPORTED describe_screen 空间误称已修；filter 双处复制 + describe/list 双编号空间的 agent 消费陷阱（SoM id≠tap_index i）为预存设计面，建议后续统一或文档显著化。
