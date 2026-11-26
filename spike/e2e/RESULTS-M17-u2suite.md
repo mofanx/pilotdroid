@@ -1086,3 +1086,45 @@ facade `ElemInfo.class` 存简单名、som.rs emit `rsplit`、compat/som.py 镜�
 cargo workspace **101/0**（serve 34 含新测）+ fmt 净；pytest **93/0**。
 
 **裁定：t7 PASS**。移交遗留：SUPPORTED describe_screen 空间误称已修；filter 双处复制 + describe/list 双编号空间的 agent 消费陷阱（SoM id≠tap_index i）为预存设计面，建议后续统一或文档显著化。
+
+## 附25 t10 —— t8 独立复核（2026-11-27，复核员自跑，非转述）
+
+| 项 | 判定 | 证据 |
+|---|---|---|
+| ① V816 多设备行数字 | **blocked（同 t8 口径）** | `adb connect 192.168.123.125:5555` → `No route to host`、ping 无响应；与 t8 记档一致。`11.0.0.2:5555` 虽呈 device 态——遵禁令零触碰（无 shell 探测、无 forward、无 setup）。 |
+| ② fg 门修复有效性 | **pass** | `_ensure_fg` 代码审：启动校验+app_start 恢复≤3 次+不可恢复带 pkg 显式报错；任务内仅 `fg_pkg() != APIDEMOS` 才触发重试——真失败不误赦，抢占比率保守。实证：全量 27/27，`random_index_pick` r2 耗时 12.8s（fg 恢复路径实跑，非空转）。本复核 t5 轮曾独立复现该病型（0/2 fg=com.miui.home）——修复对症。 |
+| ② IME 基线恢复 | **pass（附 nit）** | 跑前 `com.sohu.inputmethod.sogou.xiaomi/.SogouIME`→跑后同值，恢复打印 `restored to ...SogouIME` 审计行实证；`--portable` 不写 secure 设置 ✔。**残留 nit**：`old_ime` 若捕到上轮 SIGKILL 遗留的 `pilotdroid.eval/.NoIme` 仍会当原值回写（毒化基线只缓解未根治）；缓解建议——捕获时校验 `old_ime != NoIme 钉` 否则跳过恢复写。 |
+| ③ eval v3 全量 | **pass** | ba0d072d 9 任务×3 轮独立复跑 **27/27**（t8 报 26/27 修复后 4/4 同任务，本跑全绿）。 |
+| ④ ledger | **本附段** | — |
+
+**补充观察**：`--portable` 的 fg 门挂在 `_settings_list`（portable 三任务共用入口）——覆盖正确；`_ensure_fg` 对 V816 类日常机也无设置写副作用，跑机前提成立。
+
+## 附26 t11 —— 多设备第二行定案：**BLOCKED（设备不可达，有据可查）**
+
+### 连通性证据（2026-11-28 复测，含本日多次重试）
+
+| 探测 | 结果 |
+|---|---|
+| `adb connect 192.168.123.125:5555` | `failed to connect: No route to host`（t8 起累计 ≥3 次） |
+| `ping 192.168.123.125` | 100% packet loss |
+| `nmap -p 5555 192.168.123.0/24` | 无开放 5555 设备——该机不在本网段/无线 adb 已关 |
+| `adb devices` | `11.0.0.2:5555 device`（adb 自动重连的旧址，疑同机回连 11.0.0.x 网段）——**遵用户禁令全程未触碰、未发任何 shell 探测** |
+
+### 定案
+
+- **第二台机 eval 行不可产出**——授权地址当前无网络路径，唯一可达地址被禁令覆盖；两项条件均非代码/流程问题。
+- **前置能力已就绪**（t8 落地）：`--portable` 子集（som_shape/settings_random_pick/verify_exists_pred）零 ApiDemos 依赖、零安装；IME 钉已收敛为非 portable 档——**该路径对用户日常机零 secure 设置写、零持久改动**，设备恢复后可直接跑。
+- **待跑命令清单**（解锁后一次执行）：
+  ```bash
+  pilotdroid-cli -s <serial> setup
+  pilotdroid-cli -s <serial> describe | head
+  cd spike/e2e/agent-loop && PILOTDROID_SERIAL=<serial> python3 loop_v3.py --portable
+  ```
+- **唯一解除条件**：用户恢复 V816 无线 adb（任一网段给出可达地址），或明示授权使用当前可达的 `11.0.0.2:5555`（同机、禁令可解除）。
+
+### 矩阵现状
+
+| 设备 | serial | API | 结果 |
+|---|---|---|---|
+| Xiaomi 测试机 | ba0d072d (USB) | 34 | eval v3 全量 **26/27→修后 nit 病型 4/4**（§附24）；verify-agent 44/0 |
+| V816 dash 2602BRT18C | 192.168.123.125:5555 | 37 | **BLOCKED**——setup/describe 历史上已过（§附21-D），portable 数字待设备可达 |
