@@ -173,7 +173,10 @@ benchmark/suite 跑旧 targetSdk app 前需先放行（openatx u2 官方
   提示，canvas/图片文本转 `ocr_only` 元素按 center 可点）、
   `verify_after`（操作后 dump 断言闭环，`expect.state` 支持
   checked/selected/enabled/focused 状态谓词——「tap ok≠效果」
-  分层成 ACK vs 效果断言，u2 无此能力）、`watch_arm{push}`（上条）。
+  分层成 ACK vs 效果断言，u2 无此能力；`match.i` 归
+  `list_elements`/`describe_screen` 同一 interactive 编号空间、
+  与其余 match 键 AND 组合，纯 text/desc/class match 搜全树）、
+  `watch_arm{push}`（上条）。
 - **元素状态面（M32）**：`list_elements`/`describe_screen`/compat
   `som.py` 元素统一透出 widget 状态——`checked`/`selected`/`focused`
   仅 true 时输出、`enabled` 仅 false 时输出（省 token）；`class`

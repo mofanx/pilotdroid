@@ -20,7 +20,7 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use pilotdroid_adb::AdbTransport;
-use pilotdroid_agent::{MediaEvent, ScrollDir, Session};
+use pilotdroid_agent::{ElemInfo, MediaEvent, ScrollDir, Session};
 use pilotdroid_proto::payload::*;
 use serde_json::{json, Map, Value};
 
@@ -1083,22 +1083,40 @@ fn call_tool<T: AdbTransport>(
                     // text/desc match is substring; class is the simple
                     // name. Any state key may be true or false — a
                     // checkbox toggle verifies both ways (B4 gap).
+                    // `match.i` resolves in the INTERACTIVE index space —
+                    // the same numbering list_elements returns (its
+                    // interactive_only default), i.e. the same space
+                    // tap_index/set_text_index consume; derived locally
+                    // from one dump via
+                    // the same filter the facade applies. Given with
+                    // other keys it ANDs: the element at i must also
+                    // satisfy text/desc/class (i never short-circuits).
+                    // text/desc/class alone search the FULL tree — a
+                    // disabled/non-interactive node is a legitimate
+                    // state-predicate target and text match carries no
+                    // numbering ambiguity.
                     if let Some(st) = expect.get("state") {
                         let els = s.list_elements(false)?.elements;
                         let m = st.get("match").cloned().unwrap_or_else(|| json!({}));
                         let mi = m.get("i").and_then(Value::as_u64).map(|v| v as usize);
-                        let found = els.iter().find(|e| {
-                            if let Some(i) = mi {
-                                return e.i == i;
-                            }
-                            let t = str_arg(&m, "text");
-                            let d = str_arg(&m, "desc");
-                            let c = str_arg(&m, "class");
-                            (t.is_some() || d.is_some() || c.is_some())
-                                && t.map_or(true, |v| e.text.contains(&v))
-                                && d.map_or(true, |v| e.desc.contains(&v))
-                                && c.map_or(true, |v| e.class == v)
-                        });
+                        let t = str_arg(&m, "text");
+                        let d = str_arg(&m, "desc");
+                        let c = str_arg(&m, "class");
+                        let keys = |e: &ElemInfo| {
+                            t.as_ref().map_or(true, |v| e.text.contains(v))
+                                && d.as_ref().map_or(true, |v| e.desc.contains(v))
+                                && c.as_ref().map_or(true, |v| e.class == *v)
+                        };
+                        let found = if let Some(i) = mi {
+                            els.iter()
+                                .filter(|e| e.clickable || e.editable || e.scrollable)
+                                .enumerate()
+                                .find(|(idx, e)| *idx == i && keys(e))
+                                .map(|(_, e)| e)
+                        } else {
+                            els.iter()
+                                .find(|e| (t.is_some() || d.is_some() || c.is_some()) && keys(e))
+                        };
                         let mut mismatched = serde_json::Map::new();
                         let mut pass = found.is_some();
                         if let Some(e) = found {
@@ -1230,7 +1248,7 @@ fn tools() -> Value {
             &[("max_label",prop("integer","label char cap, default 28")),("ocr",prop("boolean","OCR text fusion tier, needs local tesseract, default false"))],&[])},
         {"name":"screenshot_annotated","description":"SoM-lite perception: screenshot JPEG with the describe_screen element ids drawn as numbered boxes at their bounds (scale fixed 1.0; path = file bypass preferred, else base64)","inputSchema":schema(
             &[("path",prop("string","output file")),("quality",prop("integer","1-100, default 80"))],&[])},
-        {"name":"verify_after","description":"closed-loop verify (no u2 equivalent): run one action op → settle_ms → assert on fresh dump. action={tool,args} (side-effect/read ops only); expect={exists:<sel>} and/or {absent:<sel>} and/or {text:<s>} and/or {layout_changed:<bool>} and/or {state:{match:{text|desc|class|i},checked|selected|enabled|focused:bool}} — the state kind asserts widget flags after the action (tap ok≠effect); returns {action,checks,pass}","inputSchema":schema(
+        {"name":"verify_after","description":"closed-loop verify (no u2 equivalent): run one action op → settle_ms → assert on fresh dump. action={tool,args} (side-effect/read ops only); expect={exists:<sel>} and/or {absent:<sel>} and/or {text:<s>} and/or {layout_changed:<bool>} and/or {state:{match:{text|desc|class|i},checked|selected|enabled|focused:bool}} — the state kind asserts widget flags after the action (tap ok≠effect); match.i uses the same interactive index space as list_elements (ANDs with other match keys, never short-circuits); returns {action,checks,pass}","inputSchema":schema(
             &[("action",prop("object","{tool,args} — e.g. {tool:'tap',args:{x,y}}")),("settle_ms",prop("integer","default 500")),("expect",prop("object","{exists|absent|text|layout_changed|state}"))],
             &["action","expect"])},
         {"name":"batch","description":"BATCH op array — {ops:[{inject|wait_until|query|dump|screenshot|text}]}","inputSchema":schema(
@@ -1314,7 +1332,45 @@ mod tests {
 
     /// Minimal control-socket fake: HELLO + INJECT + QUERY + DUMP +
     /// SCREENSHOT (tiny grey JPEG — enough for the som annotate path).
+    const FAKE_DUMP: &str = concat!(
+        r#"<?xml version='1.0' encoding='UTF-8' standalone='yes' ?>"#,
+        r#"<hierarchy><node index="0" text="设置" resource-id="com.x:id/t" "#,
+        r#"class="android.widget.TextView" package="com.x" content-desc="" "#,
+        r#"clickable="true" checked="true" focused="true" "#,
+        r#"bounds="[10,20][110,60]"/>"#,
+        r#"<node index="1" text="" resource-id="com.x:id/e" "#,
+        r#"class="android.widget.EditText" package="com.x" content-desc="输入框" "#,
+        r#"clickable="true" bounds="[10,80][300,140]"/>"#,
+        r#"<node index="2" text="标题" resource-id="" "#,
+        r#"class="android.widget.TextView" package="com.x" content-desc="" "#,
+        r#"clickable="false" enabled="false" "#,
+        r#"bounds="[10,150][200,190]"/></hierarchy>"#,
+    );
+
+    /// Dump where the first node is NON-interactive — the interactive
+    /// index space diverges from the full-tree space:
+    ///   full:       0=装饰(non-click) 1=CheckBox 2=Label
+    ///   interactive:                0=CheckBox    1=Label
+    const FAKE_DUMP_DIVERGENT: &str = concat!(
+        r#"<?xml version='1.0' encoding='UTF-8' standalone='yes' ?>"#,
+        r#"<hierarchy><node index="0" text="装饰" resource-id="" "#,
+        r#"class="android.widget.TextView" package="com.x" content-desc="" "#,
+        r#"clickable="false" bounds="[10,10][200,40]"/>"#,
+        r#"<node index="1" text="Checkbox 1" resource-id="com.x:id/cb" "#,
+        r#"class="android.widget.CheckBox" package="com.x" content-desc="" "#,
+        r#"clickable="true" checked="false" bounds="[10,50][300,100]"/>"#,
+        r#"<node index="2" text="Label" resource-id="com.x:id/l" "#,
+        r#"class="android.widget.TextView" package="com.x" content-desc="" "#,
+        r#"clickable="true" enabled="false" bounds="[10,110][300,150]"/></hierarchy>"#,
+    );
+
     fn spawn_fake() -> SocketAddr {
+        spawn_fake_dump(FAKE_DUMP)
+    }
+
+    /// Same fake protocol surface, caller-supplied DUMP xml — for tests
+    /// that need a different a11y tree shape.
+    fn spawn_fake_dump(xml: &'static str) -> SocketAddr {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap();
         let mut jpeg = Vec::new();
@@ -1352,24 +1408,7 @@ mod tests {
                         ),
                         Ok(OpCode::Dump) => (
                             OpCode::Dump as u16,
-                            encode(&DumpAck {
-                                xml: concat!(
-                                    r#"<?xml version='1.0' encoding='UTF-8' standalone='yes' ?>"#,
-                                    r#"<hierarchy><node index="0" text="设置" resource-id="com.x:id/t" "#,
-                                    r#"class="android.widget.TextView" package="com.x" content-desc="" "#,
-                                    r#"clickable="true" checked="true" focused="true" "#,
-                                    r#"bounds="[10,20][110,60]"/>"#,
-                                    r#"<node index="1" text="" resource-id="com.x:id/e" "#,
-                                    r#"class="android.widget.EditText" package="com.x" content-desc="输入框" "#,
-                                    r#"clickable="true" bounds="[10,80][300,140]"/>"#,
-                                    r#"<node index="2" text="标题" resource-id="" "#,
-                                    r#"class="android.widget.TextView" package="com.x" content-desc="" "#,
-                                    r#"clickable="false" enabled="false" "#,
-                                    r#"bounds="[10,150][200,190]"/></hierarchy>"#,
-                                )
-                                .into(),
-                            })
-                            .unwrap(),
+                            encode(&DumpAck { xml: xml.into() }).unwrap(),
                         ),
                         Ok(OpCode::Query) => (
                             OpCode::Query as u16,
@@ -2099,6 +2138,64 @@ mod tests {
         assert_eq!(bodies[1]["pass"], true, "enabled:false hit: {bodies:?}");
         assert_eq!(bodies[2]["pass"], false, "mismatch must fail");
         assert_eq!(bodies[2]["checks"][0]["mismatched"]["checked"]["got"], true);
+    }
+
+    #[test]
+    fn verify_after_state_match_i_interactive_space() {
+        // FAKE_DUMP_DIVERGENT: full-tree [装饰0, Checkbox1, Label2] vs
+        // interactive [Checkbox0, Label1]. match.i must resolve in the
+        // INTERACTIVE space (same numbering as list_elements), and i
+        // must AND with other match keys — never short-circuit.
+        let call = |expect: Value| {
+            json!({"jsonrpc":"2.0","id":1,"method":"tools/call",
+                   "params":{"name":"verify_after","arguments":{
+                       "action":{"tool":"tap","args":{"x":1,"y":2}},
+                       "settle_ms":10,
+                       "expect": expect}}})
+            .to_string()
+        };
+        let resps = serve_once_at(
+            &[
+                // i=2 exists only in the full tree — interactive space
+                // has no such index → not found.
+                call(json!({"state":{"match":{"i":2}, "checked":false}})),
+                // i=1 interactive = Label; text "Checkbox 1" must also
+                // hold — i must not short-circuit the other keys.
+                call(json!({"state":{"match":{"i":1,"text":"Checkbox 1"},
+                                    "checked":false}})),
+                // Positive AND: i=1 + text Label + enabled:false all hold.
+                call(json!({"state":{"match":{"i":1,"text":"Label"},
+                                    "enabled":false}})),
+                // Positive i-only in interactive space: i=0 = CheckBox.
+                call(json!({"state":{"match":{"i":0}, "checked":false}})),
+            ]
+            .join("\n"),
+            spawn_fake_dump(FAKE_DUMP_DIVERGENT),
+        );
+        let bodies: Vec<Value> = resps
+            .iter()
+            .map(|r| {
+                serde_json::from_str(r["result"]["content"][0]["text"].as_str().unwrap()).unwrap()
+            })
+            .collect();
+        assert_eq!(
+            bodies[0]["checks"][0]["found"], false,
+            "i=2 must not resolve in interactive space: {bodies:?}"
+        );
+        assert_eq!(
+            bodies[1]["checks"][0]["found"], false,
+            "i+text must AND, not short-circuit: {bodies:?}"
+        );
+        assert_eq!(bodies[2]["checks"][0]["found"], true, "{bodies:?}");
+        assert_eq!(
+            bodies[2]["pass"], true,
+            "enabled:false on interactive i=1: {bodies:?}"
+        );
+        assert_eq!(bodies[3]["checks"][0]["found"], true, "{bodies:?}");
+        assert_eq!(
+            bodies[3]["pass"], true,
+            "checked:false on interactive i=0: {bodies:?}"
+        );
     }
 
     #[test]

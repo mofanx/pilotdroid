@@ -6,6 +6,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **`expect.state.match.i` 索引空间修正**：此前 `i` 按全树
+  （`interactive_only=false`）索引解析且短路其余 match 键——与
+  host 可见的 interactive 编号空间不一致（`i` 错位/盲区）。
+  现 `match.i` 与 `list_elements`/`describe_screen` 同一
+  interactive 编号空间，且与其余 match 键做 AND 组合（不再短路）；
+  纯 `text`/`desc`/`class` match 仍搜全树（disabled/非交互节点
+  是合法断言目标）。
+
 ## [0.8.0] — 2026-11-27
 
 ### Added
