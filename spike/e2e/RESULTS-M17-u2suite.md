@@ -1588,3 +1588,34 @@ MIUI 五包名单（misubscreenui/agenthub/securitycenter/miui.home/sctrl）在 
 | CFE6R21525008201 (HarmonyOS API31) | **11/11** | 解锁+权限放行后；三任务级修复随行 |
 
 失配数字 2/11→3/11→9/11→11/11 的爬升路径全部为**任务级/环境级**，零代码级 parity 洞（serve 通道+协议面 HarmonyOS 正常；过渡窗为可观测性物理特性非实现缺陷）。
+
+## 附39 t4 —— v0.8.3 patch 发版列车记档（2026-11-26）
+
+「修复不滞留」**第三次适用**且为最重一件：同几何签名碰撞修复是发件缺陷三连中最重——match.i（0.8.1）错索引可见、match:{}（0.8.2）假阴性可觉、**碰撞=假成功错点**（ok:true 报旧 bounds），盲驾场景模型无从自纠。密度远超阈值（碰撞修+annotated 收关+五件微批+基准建制化），列车全程 ~25min。
+
+### 产物
+
+- 在途批入库 `95f431f`（serve.rs 碰撞修+annotated elements / benchmark.py / u2shim scroll.to+dump 重试 / verify-agent deflake / loop_v3 守卫×2 / loop.py forward 自愈 / SUPPORTED+README+CHANGELOG+§附33-38）
+- release commit `d7bdff6` + tag `v0.8.3`（bump 四处：Cargo.toml/pyproject/server.json×2/install-smoke VER；Cargo.lock 随 cargo check）
+
+### 四面
+
+| 面 | 证据 |
+|---|---|
+| GitHub Release | run 45844993246 绿 2m41s，draft→published，7 assets（含 agent.jar 94bf8e9b… 与 0.8.0/0.8.1/0.8.2 同 hash——agent 未动版本错落如实注记） |
+| PyPI | run 45845536417 绿 31s；`pip index versions` 首查仅到 0.8.2（索引传播延迟 ~1min），重试后 `pilotdroid==0.8.3` 可见可装 |
+| MCP Registry | `mcp-publisher publish` → `0.8.3 active isLatest:true`（curl 复核，旧版非 latest 不动） |
+| Homebrew | tap commit `c524218`，linux `0a978296…`/macos `04e1ae5b…` 逐字取自发布 SHA256SUMS |
+
+### 闸
+
+- cargo test 全 workspace 0 fail（serve 40 + agent 33 + proto 4 + adb 19 等）、fmt/clippy 净；doc-drift 4 PASS（smoke-ver 已同步 0.8.3）
+- install-smoke `ba0d072d`：**9/0**（含 bootstrap 真链下载+setup+MCP tools/list 握手）
+- 首次 smoke 2/5 fail 系 PyPI 索引传播延迟（JSON 报 0.8.2 时 index 轮询已见 0.8.3——分片不一致），非发件缺陷，记档防后人误报
+
+### notes 诚实档要点
+
+- 碰撞机理写透：签名**刻意**忽略 text/desc（时钟类正当变化不该失效快照），同几何异内容屏哈希同值→guard 放行→错点
+- 新语义边界明示：元素 text 正当变化（倒计时/动态标签）observe→tap 间现报 `element {i} changed` stale——fails closed 方向保守，恢复路径=重 describe 取新 i
+- `verify_after.match.i` 天然免疫声明（fresh dump 解析不经 snap）；`ocr_only` 先天无 guard（无 a11y 节点可复核）一并明示，防复核误报新洞
+- annotated `id`→`i` 脚枪在 payload 层闭环（elements 同 dump 回带+工具描述警句）
