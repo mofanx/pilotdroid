@@ -100,17 +100,27 @@ else:
                             f"{tag}..HEAD", "--oneline"],
                            capture_output=True, text=True)
     n_new = len([l for l in log_r.stdout.splitlines() if l.strip()])
-    sec = changelog.split("## [Unreleased]", 1)[1].split("\n## ", 1)[0]
-    n_bullets = len(re.findall(r"^\s*[-*] ", sec, re.M))
-    # Release-window exemption: once Unreleased is folded into
-    # `## [<current pyproject version>]` the coverage moved with it —
-    # the tag just doesn't exist yet (v0.6.4 bump commit hit FAIL here).
-    folded = bool(pyver and re.search(
-        rf"^## \[{re.escape(pyver.group(1))}\]", changelog, re.M))
-    rep("changelog-unreleased",
-        n_new == 0 or n_bullets >= 1 or folded,
-        f"{n_new} commit(s) since {tag}; Unreleased bullets={n_bullets}"
-        + ("; folded into current version" if folded else ""))
+    hdr = re.search(r"^## \[Unreleased\]\s*$", changelog, re.M)
+    if not hdr:
+        # v0.8.3 fold removed the header wholesale → this gate crashed
+        # on the split; the convention is the empty header stays.
+        # Match must be the header LINE — a prose mention (e.g. inside
+        # a bullet) must not satisfy it (t3 review catch).
+        rep("changelog-unreleased", False,
+            "missing '## [Unreleased]' header — release fold must keep "
+            "the empty section header")
+    else:
+        sec = changelog[hdr.end():].split("\n## ", 1)[0]
+        n_bullets = len(re.findall(r"^\s*[-*] ", sec, re.M))
+        # Release-window exemption: once Unreleased is folded into
+        # `## [<current pyproject version>]` the coverage moved with it —
+        # the tag just doesn't exist yet (v0.6.4 bump commit hit FAIL here).
+        folded = bool(pyver and re.search(
+            rf"^## \[{re.escape(pyver.group(1))}\]", changelog, re.M))
+        rep("changelog-unreleased",
+            n_new == 0 or n_bullets >= 1 or folded,
+            f"{n_new} commit(s) since {tag}; Unreleased bullets={n_bullets}"
+            + ("; folded into current version" if folded else ""))
 
 print(f"{'PASS' if not fails else 'FAIL'}: {len(fails)} check(s) failed" +
       (f" {fails}" if fails else ""))

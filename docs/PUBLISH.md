@@ -29,7 +29,10 @@ worked examples from that cycle.
       catches a fully-empty section — coverage completeness is still
       this human step (M26: 7 commits landed post-tag with zero
       Unreleased coverage; the wrong "0.6.3 shipped defect" label on
-      the click fix was caught only in review).
+      the click fix was caught only in review). When folding, keep the
+      now-empty `## [Unreleased]` header — v0.8.3 dropped the header
+      wholesale and crashed the gate; it now FAILs when the header is
+      missing.
 
 ## The five user steps
 

@@ -17,7 +17,9 @@ import os
 import re
 import subprocess
 import sys
+import tempfile
 import time
+from pathlib import Path
 
 SERIAL = os.environ.get("PILOTDROID_SERIAL", "ba0d072d")
 CLI = os.environ.get(
@@ -40,10 +42,46 @@ def _agent_forwards():
                         out)}
 
 
+def _fwd_tag(port):
+    """Ownership tag left by each Serve for its own forward rule —
+    a `kill -9`ed Serve never runs close(), so the next Serve start
+    uses the tag's dead pid to sweep the orphan (§附41; close() alone
+    could not)."""
+    return Path(tempfile.gettempdir()) / \
+        f"pilotdroid-serve-{SERIAL}-{port}.fwd"
+
+
+def _pid_is_serve(pid):
+    try:
+        with open(f"/proc/{pid}/cmdline", "rb") as f:
+            return b"serve" in f.read()
+    except OSError:
+        return False
+
+
+def _sweep_orphan_forwards():
+    """Remove forward rules tagged by now-dead Serve processes.
+    Untagged rules (fixed verify ports, manual forwards) are kept —
+    matches the 'remove listed ones only' hygiene rule."""
+    for port in _agent_forwards():
+        tag = _fwd_tag(port)
+        try:
+            pid = int(tag.read_text().strip())
+        except (OSError, ValueError):
+            continue
+        if _pid_is_serve(pid):
+            continue
+        subprocess.run(
+            ["adb", "-s", SERIAL, "forward", "--remove",
+             f"tcp:{port}"], timeout=5, check=False)
+        tag.unlink(missing_ok=True)
+
+
 class Serve:
     """Stdio JSON-RPC client; notifications (no id) are collected."""
 
     def __init__(self):
+        _sweep_orphan_forwards()
         self._fwd0 = _agent_forwards()
         self.p = subprocess.Popen(
             [CLI, "serve", "-s", SERIAL],
@@ -52,6 +90,9 @@ class Serve:
         self.notifications = []
         self._id = 0
         self.call("initialize", {})
+        self._own_fwd = _agent_forwards() - self._fwd0
+        for port in self._own_fwd:
+            _fwd_tag(port).write_text(str(self.p.pid))
 
     def call(self, method, params, timeout=30):
         self._id += 1
@@ -93,6 +134,8 @@ class Serve:
             subprocess.run(
                 ["adb", "-s", SERIAL, "forward", "--remove",
                  f"tcp:{port}"], timeout=5, check=False)
+        for port in getattr(self, "_own_fwd", set()):
+            _fwd_tag(port).unlink(missing_ok=True)
 
 
 def describe(srv):
