@@ -4,6 +4,26 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+### Added
+- CI daily-build channel: every push to main uploads a release-profile
+    linux-x86_64 `pilotdroid-cli` as the ci artifact
+    `pilotdroid-cli-linux-x86_64` (14d retention);
+    `spike/e2e/fetch-ci-cli.sh` downloads it and the real-device
+    harnesses consume it via the existing `PILOTDROID_CLI` override —
+    the local `cargo build` path is unchanged and remains the fallback
+    for unpushed work.
+
+### Fixed
+- eval-harness `Serve`: orphan `adb forward` rules left by `kill -9`ed
+    serve processes are now swept at the next `Serve()` start via
+    dead-pid ownership tags (untagged rules — fixed verify ports,
+    manual forwards — are kept); `close()` cleanup unchanged.
+- `doc-drift` changelog gate: a missing `## [Unreleased]` header now
+    FAILs instead of crashing (v0.8.3 fold regression); PUBLISH.md
+    documents keeping the empty header.
+
 ## [0.8.3] — 2026-11-26
 
 ### Fixed

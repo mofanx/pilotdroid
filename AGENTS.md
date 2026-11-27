@@ -19,6 +19,21 @@
   `agent_ver` assert (HELLO.ver must match AGENT_VER in Agent.java).
 - `agent/data/verify-*.json` are regenerated on every verify run — ignored;
   don't commit them.
+- Rebuild before real-device re-verify: `cargo test` compiles test
+  binaries only — `serve`/`setup`/benchmark exec `target/debug/pilotdroid-cli`.
+  After editing `serve.rs`, run `cargo build -p pilotdroid-cli` first or
+  the re-verify exercises the stale binary (t6 methodology nit).
+- Two build paths, pick per need:
+  1. **local** — `cargo build -p pilotdroid-cli` (or `--release`); required
+     for unpushed changes, costs local disk (`~/.cargo-target`).
+  2. **GitHub Actions** — every push to main builds a release-profile
+     linux-x86_64 binary and uploads it as the ci artifact
+     `pilotdroid-cli-linux-x86_64` (14d retention). Pull it with
+     `spike/e2e/fetch-ci-cli.sh` and point the harnesses at it:
+     `export PILOTDROID_CLI="$(spike/e2e/fetch-ci-cli.sh)"` — loop.py /
+     benchmark.py / loop_v3.py / ghost_repro.py / inspector.py /
+     t6_verify.py all honor the override. The artifact only exists for
+     commits CI has already built, so unpushed work still needs path 1.
 - Fake-adb relay fidelity (facade tests): when you extend the
   `AdbTransport` stub's `forward` relay, propagate half-close like real
   adb — after each `io::copy` ends, `shutdown(Both)` the *other*

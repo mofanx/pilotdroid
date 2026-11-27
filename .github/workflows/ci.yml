@@ -39,6 +39,22 @@ jobs:
           cargo build -p pilotdroid-cli
           python3 spike/e2e/docs-smoke.py
 
+      - name: build linux-x86_64 cli (daily-build artifact)
+        # Release profile so the artifact matches shipped-binary behavior
+        # closely (debug binaries carry different timing/inlining). This is
+        # the GitHub-side of the two build paths — real-device harnesses
+        # consume it via `PILOTDROID_CLI=$(spike/e2e/fetch-ci-cli.sh)`;
+        # local `cargo build` stays the other path (AGENTS.md).
+        run: cargo build --release -p pilotdroid-cli
+
+      - name: upload cli artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: pilotdroid-cli-linux-x86_64
+          path: target/release/pilotdroid-cli
+          retention-days: 14
+          if-no-files-found: error
+
   agent-jar-sync:
     # agent/agent.jar is committed AND embedded via include_bytes! — it must
     # be rebuilt + recommitted whenever agent/java/** changes. Guard: the
