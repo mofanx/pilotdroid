@@ -36,7 +36,7 @@ mkdir -p "$DEST"
 # Skip re-download when this run's artifact is already cached.
 if [ ! -x "$DEST/pilotdroid-cli" ]; then
     gh run download "$RUN_ID" --name pilotdroid-cli-linux-x86_64 \
-        --dir "$DEST" --clobber
+        --dir "$DEST"
     chmod +x "$DEST/pilotdroid-cli"
 fi
 echo "fetch-ci-cli: run $RUN_ID -> $DEST/pilotdroid-cli" >&2
