@@ -1779,3 +1779,28 @@ doc-drift **0 fail**（含缺头→FAIL 实证）、pytest **95**、cargo **107/
 | doc-drift 段头断言 | ✔ 缺头 FAIL 非崩+行锚定防 prose 绕过；live 5 PASS |
 | kill -9 孤儿清扫 | ✔ 注入实证全链（tag→kill→sweep→摘），保护边界语义对 |
 | AGENTS.md rebuild 注记 | ✔ 与 t6 实证逐字相符 |
+
+## 附43 t1 —— GitHub Actions 日常构建通道落地+真机闭环（2026-11-28）
+
+### A. 通道构成（双轨，本地路径原样保留）
+
+| 轨 | 路径 | 适用 |
+|---|---|---|
+| 本地 build | `cargo build -p pilotdroid-cli`（debug）→ harness 默认 `~/.cargo-target/...` | **未 push 改动**的唯一路径 |
+| CI artifact | push main → ci.yml release 构建 → `pilotdroid-cli-linux-x86_64`（14d）→ `fetch-ci-cli.sh` 下载 → `PILOTDROID_CLI` 喂回路 | 已入库改动的日常验证；本机可免 cargo target |
+
+### B. 入库与 CI 实证
+
+- `ce1e0e3` 卫生批（forward tag 摘+doc-drift 闸锚定+PUBLISH）+ `1a0f779` CI 通道 + `53c5686` clobber 修复，已 push main。
+- run `46084706562`（1a0f779）**4/4 job 绿**：rust 2m21s 含新 release 构建+artifact 上传；`46085064039`（53c5686）复绿。CodeQL success。artifact 实证：`pilotdroid-cli-linux-x86_64` **2,162,915B**。
+- 插曲：首版 `gh run download --clobber` 在本机 gh 版本不存在——run-id 分目录缓存本免冲突，去旗标修复（53c5686）。
+
+### C. 真机闭环实证（ba0d072d）
+
+`fetch-ci-cli.sh` → `~/.cache/pilotdroid/ci-cli/<run-id>/pilotdroid-cli`（`pilotdroid-cli 0.8.3`）→ `PILOTDROID_CLI` 喂 benchmark：
+- run 46084706562 产物：**describe_tap_direct/checkbox_state/stale_pkg_guard 3/3 PASS**
+- 缓存轮换：53c5686 push 后自动切 run 46085064039 目录，再跑 **1/1 PASS**；两 run 目录并存。
+
+### D. 边界成文（AGENTS.md）
+
+①artifact 仅覆盖 CI 已构建 commit——未 push 的 serve.rs 改动必须本地 build；②`cargo test` 不产 cli bin 注记保留；③agent.jar 由 include_bytes 内嵌进 release 产物，与源码 byte-repro 由 agent-jar-repro job 独立把守。
