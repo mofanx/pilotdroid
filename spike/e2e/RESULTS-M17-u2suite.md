@@ -1986,3 +1986,37 @@ README 30→32 tools 两处、SUPPORTED serial 标签+失效语义、use-from-ot
 - **registry 分页阱升级**:版本数已 12>默认 limit=10——`limit=10` 查询连 0.8.4/0.9.0 都截断藏住,复核必须 `limit≥30` 或按 count 分页。已入 PUBLISH.md。
 - **install-smoke SERIAL 是位置参数**(`$1`)非环境变量——`PILOTDROID_SERIAL` 环境传参会导致 step5 静默 SKIP(7/0 假绿)。本次首跑即踩,复跑位置参数出 9/0 真值。
 - **server.json 工具计数漂移**:描述 "30 MCP tools" 未随 32 更新,发件前修——doc-drift 闸未覆盖 server.json(仅查 README),记 nit:tools-claims 闸应扩 server.json。
+
+## 附49 t2 —— v0.9.0 select_device 独立复核（2026-11-28，复核员自跑非转述，`~/.local/bin/pilotdroid-cli` 0.9.0 release 二进制）
+
+### A. 切换链全链实证
+
+| 步 | 结果 |
+|---|---|
+| `list_devices` | 三行全列（CFE6R device/ba0d072d device/11.0.0.2 offline），`current` 标 ba0d072d ✔ |
+| 小米 describe（arm snap, 5 元素）→ `select_device→CFE6R` | `switched:true, from:ba0d072d, cleared:{snapshot:true,…}` 如实报告 ✔ |
+| 华为 `describe_screen` | 10 元素（rid 含 android action_bar——确系另一台机dump）+`list_elements` 4 项 ✔ |
+| `select_device→ba0d072d` 切回 | `switched:true`；describe 复得 5 元素 ✔ |
+
+### B. 跨设备防护实证
+
+- **快照**：切机后立刻 `tap_index{i:0}`（旧机编号）→显式 `no element snapshot` 拒——**零静默错点**。源码层面是双保险：select_device 清 snap=None（主防）+check_snapshot 串行比对 `snap.4==s.serial()`（深防，当前不可达的冗余路径——方向保守，无缺陷）；
+- **watcher**：小米 arm `watch_id:1` 后切机 → `cleared.watchers:1` 如实报告，session drop 连带设备端 watcher  teardown，**不泄漏到华为**。
+
+### C. 边界四形态
+
+| 注入 | 错误形态 | 会话存活 |
+|---|---|---|
+| 不存在 serial `NO_SUCH_SERIAL_XYZ` | `connect to … failed (no device matching) — still on ba0d072d` 指名目标+留守 | ✔ describe 复通（lazy reconnect prev） |
+| offline 设备 `11.0.0.2:5555` | `adb backend error: device offline` 显式 | ✔ 同上 |
+| 缺 serial 参 | `missing 'serial' — see list_devices` 用法指引 | ✔ |
+| 同机重复 select | `switched:false, note:already on this device` 无副作用无清除 | ✔ |
+
+### D. 闸
+
+cargo test **111/0**、fmt/clippy 净、doc-drift 0 fail（含 changelog 闸 folded-exemption）。
+
+### E. 复核注记（非阻塞）
+
+- `watch`（阻塞式）与 `watch_arm`（异步）是两个工具——复核首轮误用 `watch` 试探 arm 语义，工具描述准确无误，属复核员学习成本非文档缺陷；
+- serial 深防路径当前不可达（主防已清空）——保留合理，如未来引入「保留快照的热切换」优化时它会变成主防线。
