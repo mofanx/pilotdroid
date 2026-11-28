@@ -1872,3 +1872,29 @@ doc-drift **0 fail**（含缺头→FAIL 实证）、pytest **95**、cargo **107/
 
 - `devin mcp remove` 不带 `-s` 默认 local scope 找不到 user 条目——`add` 覆盖同 key 即可，无需先 remove；
 - 非交互 `-p` 模式默认拒工具调用：`--permission-mode dangerous` 或预先 allowlist（推荐后者，本机已配）。
+
+## 附46 t3 —— v0.8.4 发版+Devin 接入批独立复核（2026-11-28，复核员自跑）
+
+### A. 四面逐项复验：**PASS**
+
+| 面 | 实证 | 结果 |
+|---|---|---|
+| GitHub Release | 6 assets+SHA256SUMS.txt `sha256sum -c` **全 OK**；二进制 `--version`=0.8.4 | ✔ |
+| PyPI | version=0.8.4 | ✔ |
+| tap | sha256 与 SUMS 逐字一致（linux `548391c7…`/macos `ded7c4e5…`） | ✔ |
+| registry | 0.8.4 `active`+`isLatest:true`（official meta；0.8.3 正确翻 false） | ✔ |
+| install-smoke | 复跑 **9/0**（ba0d072d；17932/17933=记档 keep 的固定 verify 口） | ✔ |
+
+注：registry 响应的 status/isLatest 在 `_meta[io.modelcontextprotocol.registry/official]` 嵌套层，非顶层——查询姿势注记。
+
+### B. 缓存逐出策略实证：**PASS**
+
+栽 3 个低 id 假目录（10000000001-3）+4 个真缓存=7 → `fetch-ci-cli.sh` 运行后：3 假目录按数值序**全部被摘**、恰好保留最新 5（4 真+新下载 46088657014）、真缓存零误伤。KEEP=5+`sort -rn` 语义正确。
+
+### C. CHANGELOG fold 段头核对：**PASS**
+
+`## [Unreleased]`（行 7）空段头正确保留于 `## [0.8.4]` 前——0.8.3 回归的 fold 惯例首次正确执行，PUBLISH 注记+闸 5 锚定双保险生效。
+
+### D. 回归面（自跑）
+
+doc-drift **0 fail**、pytest **95**、cargo **107/0**+fmt/clippy 净。
