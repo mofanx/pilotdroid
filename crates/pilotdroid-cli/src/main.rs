@@ -325,7 +325,38 @@ fn main() -> Result<()> {
             eprintln!("pulled {}:{} -> {}", serial, remote, local.display());
         }
         Cmd::Serve { socket, port } => {
-            let serial = resolve_serial(&cli, &mut adb)?;
+            // Soft resolution: an explicit -s binds; otherwise exactly one
+            // ready device auto-binds. Zero/multiple devices (or an
+            // unreachable adb) starts UNBOUND instead of dying — the MCP
+            // process stays up for list_devices/select_device, and every
+            // other tool errors with guidance until the client picks one.
+            // Hard-failing here was the other half of the M32 pain: a
+            // config with no serial binding became a dead server whenever
+            // the wrong number of phones was plugged in.
+            let serial = match &cli.device {
+                Some(se) => Some(se.clone()),
+                None => match adb.list_devices() {
+                    Ok(devs) => {
+                        let ready: Vec<_> = devs.into_iter().filter(|d| d.is_ready()).collect();
+                        match ready.len() {
+                            1 => Some(ready[0].serial.clone()),
+                            n => {
+                                eprintln!(
+                                    "pilotdroid-serve: {n} ready devices — starting unbound; \
+                                     use list_devices + select_device to pick one"
+                                );
+                                None
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!(
+                            "pilotdroid-serve: adb enumeration failed ({e}) — starting unbound"
+                        );
+                        None
+                    }
+                },
+            };
             let socket = socket.clone();
             let port = *port;
             let adb_port = cli.adb_port;

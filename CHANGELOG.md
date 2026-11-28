@@ -6,6 +6,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.9.1] — 2026-11-28
+
+### Fixed
+- `serve` no longer dies at startup when the serial can't be resolved
+    (zero or multiple ready devices, or adb unreachable): without `-s`
+    it now starts UNBOUND — the MCP process stays up, `list_devices`/
+    `select_device` work immediately, and every other tool errors with
+    guidance ("no device selected …") until the client binds a device.
+    Exactly one ready device still auto-binds. This is the missing
+    other half of v0.9.0 device switching: MCP configs no longer need
+    ANY serial binding — plug in any single phone and it just works,
+    plug in several and the AI picks mid-session. Hard-failing here
+    meant a binding-free config became a dead server whenever the wrong
+    number of phones was attached.
+- `select_device` binds correctly from the unbound state
+    (`switched_from: null`) and a failed first bind stays unbound
+    instead of inventing a stale fallback.
+
 ## [0.9.0] — 2026-11-28
 
 ### Added

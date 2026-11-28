@@ -84,7 +84,7 @@ fn negotiate_version(offered: Option<&str>) -> &'static str {
 pub fn run<T: AdbTransport, R: std::io::BufRead + Send + 'static, W: Write>(
     inp: R,
     out: &mut W,
-    initial_serial: String,
+    initial_serial: Option<String>,
     mut connect: impl FnMut(&str) -> Result<Session<T>>,
     mut list_devs: impl FnMut() -> Result<Vec<(String, String)>>,
 ) -> Result<()> {
@@ -292,13 +292,13 @@ pub fn run<T: AdbTransport, R: std::io::BufRead + Send + 'static, W: Write>(
                 // reachable; null keeps the handshake device-free.
                 let agent_ver = match session.as_ref() {
                     Some(s) => s.agent_ver().map(str::to_string),
-                    None => match connect(&cur_serial) {
-                        Ok(s) => {
+                    None => match cur_serial.as_deref().map(&mut connect) {
+                        Some(Ok(s)) => {
                             let v = s.agent_ver().map(str::to_string);
                             session = Some(s);
                             v
                         }
-                        Err(_) => None,
+                        _ => None,
                     },
                 };
                 ok(
@@ -363,9 +363,23 @@ pub fn run<T: AdbTransport, R: std::io::BufRead + Send + 'static, W: Write>(
                     write_resp(out, &resp)?;
                     continue;
                 }
+                let Some(se) = cur_serial.clone() else {
+                    write_resp(
+                        out,
+                        &tool_err(
+                            id,
+                            anyhow::anyhow!(
+                                "no device selected — this serve started unbound \
+                                 (zero or multiple devices at spawn); call list_devices \
+                                 then select_device{{serial}} first"
+                            ),
+                        ),
+                    )?;
+                    continue;
+                };
                 let s = match session.as_mut() {
                     Some(s) => s,
-                    None => match connect(&cur_serial) {
+                    None => match connect(&se) {
                         Ok(s) => session.insert(s),
                         Err(e) => {
                             write_resp(out, &tool_err(id, e))?;
@@ -762,7 +776,7 @@ fn fill_snap<T: AdbTransport>(
 fn select_device<T: AdbTransport>(
     id: Value,
     args: &Value,
-    cur_serial: &mut String,
+    cur_serial: &mut Option<String>,
     session: &mut Option<Session<T>>,
     snapshot: &mut Option<Snap>,
     armed: &mut HashMap<u32, ArmedRule>,
@@ -780,7 +794,7 @@ fn select_device<T: AdbTransport>(
             )
         }
     };
-    if target == *cur_serial {
+    if cur_serial.as_deref() == Some(target.as_str()) {
         let ver = session
             .as_ref()
             .and_then(|s| s.agent_ver().map(str::to_string));
@@ -806,7 +820,7 @@ fn select_device<T: AdbTransport>(
     pending.clear();
     *demux_dead = false;
     *epoch = 0;
-    *cur_serial = target.clone();
+    *cur_serial = Some(target.clone());
     match connect(&target) {
         Ok(s) => {
             let ver = s.agent_ver().map(str::to_string);
@@ -831,11 +845,13 @@ fn select_device<T: AdbTransport>(
         }
         Err(e) => {
             *cur_serial = prev.clone();
+            let where_now = match &prev {
+                Some(p) => format!("still on {p}"),
+                None => "still unbound".to_string(),
+            };
             tool_err(
                 id,
-                anyhow::anyhow!(
-                    "select_device: connect to {target} failed ({e}) — still on {prev}"
-                ),
+                anyhow::anyhow!("select_device: connect to {target} failed ({e}) — {where_now}"),
             )
         }
     }
@@ -1941,7 +1957,7 @@ mod tests {
         run(
             std::io::Cursor::new(lines.as_bytes().to_vec()),
             &mut out,
-            "fake0".to_string(),
+            Some("fake0".to_string()),
             move |_se: &str| {
                 Device::with_transport(adb.take().unwrap(), "fake0")
                     .session_opts(Some(addr.port()), "pilotdroid_agent")
@@ -2868,7 +2884,7 @@ mod tests {
                 .into_bytes(),
             ),
             &mut out,
-            "fake0".to_string(),
+            Some("fake0".to_string()),
             move |_se: &str| {
                 Device::with_transport(TestAdb::default(), "fake1")
                     .session_opts(Some(addr.port()), "pilotdroid_agent")
@@ -2916,7 +2932,7 @@ mod tests {
                 .into_bytes(),
             ),
             &mut out,
-            "fake0".to_string(),
+            Some("fake0".to_string()),
             move |se: &str| {
                 if se == "bad0" {
                     anyhow::bail!("device offline");
@@ -2937,6 +2953,97 @@ mod tests {
         let text = resps[1]["result"]["content"][0]["text"].as_str().unwrap();
         assert!(text.contains("still on fake0"), "got {text}");
         assert!(text.contains("device offline"), "got {text}");
+    }
+
+    #[test]
+    fn unbound_start_refuses_device_tools_but_selects() {
+        // Unbound spawn (no initial serial — zero/multiple devices at
+        // spawn): list_devices/select_device stay live, every other tool
+        // fails with guidance instead of the process never starting.
+        let addr = spawn_fake();
+        let mut out = Vec::new();
+        run(
+            std::io::Cursor::new(
+                [
+                    r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05"}}"#,
+                    r#"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"tap","arguments":{"x":1,"y":2}}}"#,
+                    r#"{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"list_devices","arguments":{}}}"#,
+                    r#"{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"select_device","arguments":{"serial":"fake1"}}}"#,
+                    r#"{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"tap","arguments":{"x":1,"y":2}}}"#,
+                ]
+                .join("\n")
+                .into_bytes(),
+            ),
+            &mut out,
+            None,
+            move |se: &str| {
+                Device::with_transport(TestAdb::default(), se.to_string())
+                    .session_opts(Some(addr.port()), "pilotdroid_agent")
+                    .map_err(Into::into)
+            },
+            || Ok(vec![
+                ("fake0".to_string(), "device".to_string()),
+                ("fake1".to_string(), "device".to_string()),
+            ]),
+        )
+        .unwrap();
+        let resps: Vec<Value> = String::from_utf8(out)
+            .unwrap()
+            .lines()
+            .map(|l| serde_json::from_str(l).unwrap())
+            .collect();
+        // handshake survives with null agentVer
+        assert!(resps[0]["result"]["serverInfo"]["agentVer"].is_null());
+        // device tool before binding: guided refusal, not a crash
+        assert_eq!(resps[1]["result"]["isError"], true);
+        let text = resps[1]["result"]["content"][0]["text"].as_str().unwrap();
+        assert!(text.contains("no device selected"), "got {text}");
+        assert!(text.contains("select_device"), "got {text}");
+        // list_devices works, current is null
+        let ld = resps[2]["result"]["content"][0]["text"].as_str().unwrap();
+        let ldj: Value = serde_json::from_str(ld).unwrap();
+        assert!(ldj["current"].is_null(), "got {ld}");
+        assert_eq!(ldj["devices"].as_array().unwrap().len(), 2);
+        // select_device binds from unbound: switched, no provenance
+        let sw = resps[3]["result"]["content"][0]["text"].as_str().unwrap();
+        let swj: Value = serde_json::from_str(sw).unwrap();
+        assert_eq!(swj["switched"], true, "got {sw}");
+        assert!(swj["switched_from"].is_null(), "got {sw}");
+        // post-bind device tool works
+        assert_ne!(resps[4]["result"]["isError"], true);
+    }
+
+    #[test]
+    fn unbound_select_failure_stays_unbound() {
+        let mut out = Vec::new();
+        run(
+            std::io::Cursor::new(
+                [
+                    r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"select_device","arguments":{"serial":"bad0"}}}"#,
+                    r#"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"tap","arguments":{"x":1,"y":2}}}"#,
+                ]
+                .join("\n")
+                .into_bytes(),
+            ),
+            &mut out,
+            None,
+            |se: &str| -> Result<Session<TestAdb>> {
+                anyhow::ensure!(se != "bad0", "device offline");
+                unreachable!("only bad0 is ever dialed")
+            },
+            || Ok(vec![]),
+        )
+        .unwrap();
+        let resps: Vec<Value> = String::from_utf8(out)
+            .unwrap()
+            .lines()
+            .map(|l| serde_json::from_str(l).unwrap())
+            .collect();
+        let text = resps[0]["result"]["content"][0]["text"].as_str().unwrap();
+        assert!(text.contains("still unbound"), "got {text}");
+        // still unbound afterwards — guided refusal, not stale binding
+        let text2 = resps[1]["result"]["content"][0]["text"].as_str().unwrap();
+        assert!(text2.contains("no device selected"), "got {text2}");
     }
 
     #[test]
@@ -2993,7 +3100,7 @@ mod tests {
                 .into_bytes(),
             ),
             &mut out,
-            "fake0".to_string(),
+            Some("fake0".to_string()),
             // fresh transport per connect — exercises the reconnect path
             move |_se: &str| {
                 Device::with_transport(TestAdb::default(), "fake0")
@@ -3056,7 +3163,7 @@ mod tests {
         run(
             BufReader::new(r#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#.as_bytes()),
             &mut out,
-            "fake0".to_string(),
+            Some("fake0".to_string()),
             move |_se: &str| {
                 Device::with_transport(adb.take().unwrap(), "fake0")
                     .session_opts(Some(addr.port()), "pilotdroid_agent")

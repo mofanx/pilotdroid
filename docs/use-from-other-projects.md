@@ -24,12 +24,12 @@ pilotdroid-cli --version          # 核验
 ## 3. Devin 用户级 MCP 注册（一次性，全项目生效）
 
 ```bash
-devin mcp add pilotdroid -s user \
-    -e PILOTDROID_SERIAL=<你的serial> \
-    -- pilotdroid-cli serve
+devin mcp add pilotdroid -s user -- pilotdroid-cli serve
 ```
 
 写入 `~/.config/devin/mcp_config.json`——所有项目的会话都能用。
+**不需要任何 serial 绑定**（v0.9.1 起）：插一台手机即插即用，插多台时
+会话内 `select_device` 任选（见下节）。
 
 **免确认**（可选但推荐，否则每个工具调用要按一次确认）：
 `~/.config/devin/config.json` 的 `permissions.allow` 加一条
@@ -52,12 +52,13 @@ armed watcher、缓冲事件全部失效，响应里如实报告 `cleared` 清�
 | 级 | 方式 | 适用 |
 |---|---|---|
 | 会话内切换 | `select_device` 工具 | **推荐**——任何时刻换任意设备，零配置零重启 |
-| 注册时 env | `-e PILOTDROID_SERIAL=ba0d072d` | 仅决定初始设备 |
-| 单机自动 | 不配 serial：恰好一台设备 ready 时自动选 | 只插一台机 |
+| 单机自动 | 不配 serial：恰好一台设备 ready 时自动绑定 | 只插一台机（最常见） |
+| unbound 启动 | 不配 serial：零/多台 ready 时 serve 存活待选 | 多机党——AI 用 list/select 任选 |
+| 注册时 env | `-e PILOTDROID_SERIAL=ba0d072d` | 固定初始机（兼容保留，非必需） |
 | 项目覆盖 | 项目 `.devin/mcp_config.json` 同名 server 覆盖 user 级 | 某项目固定用另一台初始机 |
 
-多设备同时连着又没指定 serial 时 `serve` 会报
-`multiple devices ready — pick one with -s <serial>`。
+v0.9.1 起多设备/无设备不再让 serve 启动即死——进程以 unbound 状态存活，
+`list_devices`/`select_device` 立即可用，其余工具显式报错引导绑定。
 
 ## 5. 使用姿势（盲驾四拍）
 
