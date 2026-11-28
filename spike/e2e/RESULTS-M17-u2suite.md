@@ -1967,3 +1967,22 @@ describe(小米)=5元素 → list_devices双机+current正确
 ### D. 文档面
 
 README 30→32 tools 两处、SUPPORTED serial 标签+失效语义、use-from-other-projects §4 重写（select_device 为推荐换机方式，env pin 降级为初始设备）、CHANGELOG。doc-drift 0 fail。
+
+## §48 v0.9.0 minor 发件四面证据（select_device 列车）
+
+版本 bump+tag `8584f1e`→`v0.9.0`,release run 46138393465 全绿（三 OS cli+python-dist+verify-tag+release)。
+
+| 面 | 证据 |
+|---|---|
+| GitHub release | 7 assets(agent.jar/whl/tar.gz/三 OS cli/SHA256SUMS);linux-x86_64 sha256sum -c OK;`--version`=0.9.0;notes-file 发布 draft=false |
+| PyPI | publish run 46138708023 success;index 可见(0.9.0 居首);pip download 实取 whl |
+| install-smoke | `install-smoke.sh ba0d072d` **9/0**(含 cli setup+serve MCP handshake;hello=0.7.4 符合预期——agent 版本独立) |
+| homebrew tap | `homebrew-pilotdroid` 88aa853:version/双 url/双 sha256 逐字对拍 SHA256SUMS(linux 3ff89c5d/mac c6107244) |
+| MCP registry | publisher publish 成功;curl `limit=30` 复核 **0.9.0 active+isLatest** |
+| 用户级二进制 | `~/.local/bin/pilotdroid-cli`→0.9.0(ETXTBSY 绕行:unlink+cp,运行中 MCP 进程持旧 inode 不受影响)——其他项目 select_device 即刻可用 |
+
+### 过程新发现(防再发)
+
+- **registry 分页阱升级**:版本数已 12>默认 limit=10——`limit=10` 查询连 0.8.4/0.9.0 都截断藏住,复核必须 `limit≥30` 或按 count 分页。已入 PUBLISH.md。
+- **install-smoke SERIAL 是位置参数**(`$1`)非环境变量——`PILOTDROID_SERIAL` 环境传参会导致 step5 静默 SKIP(7/0 假绿)。本次首跑即踩,复跑位置参数出 9/0 真值。
+- **server.json 工具计数漂移**:描述 "30 MCP tools" 未随 32 更新,发件前修——doc-drift 闸未覆盖 server.json(仅查 README),记 nit:tools-claims 闸应扩 server.json。

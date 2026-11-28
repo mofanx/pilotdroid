@@ -105,10 +105,12 @@ GitHub → Settings → Branches → protect `main`, required status checks:
   `0.6.1.post1` after that one-off post release).
   **Step 6b (post-publish): registry curl 复核** — don't trust a
   bare `?search=<name>` result: the default page size returns the
-  OLDEST entry only (a deprecated `0.6.1.post1` was mistaken for the
+  OLDEST entries only — and once version count exceeds the limit even
+  `limit=10` hides the newest (bit us at v0.9.0 with 12 versions;
+  use `limit=30` or paginate) (a deprecated `0.6.1.post1` was mistaken for the
   live entry once). Verify the newest version is `isLatest`+`active`:
   ```bash
-  curl -s "https://registry.modelcontextprotocol.io/v0/servers?search=pilotdroid&limit=10" \
+  curl -s "https://registry.modelcontextprotocol.io/v0/servers?search=pilotdroid&limit=30" \
     | python3 -c "import json,sys; d=json.load(sys.stdin); \
       [print(s['server']['version'], s['_meta']['io.modelcontextprotocol.registry/official']['status'], s['_meta']['io.modelcontextprotocol.registry/official']['isLatest']) for s in d['servers']]"
   ```
