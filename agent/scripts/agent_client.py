@@ -22,7 +22,8 @@ T = dict(HELLO=0x0001, HELLO_ACK=0x0002, PING=0x0003, PONG=0x0004,
          SCREENSHOT=0x0030, BATCH=0x0040, BATCH_RESULT=0x0041,
          STREAM_CTRL=0x0050, FRAME=0x0001, WATCH_HIT=0x0002,
          TEXT=0x0060, WATCH=0x0070, WATCH_ARM=0x0071,
-         WATCH_DISARM=0x0072, APP_INFO=0x0080, AGENT_STOP=0x00F0)
+         WATCH_DISARM=0x0072, APP_INFO=0x0080, USAGE_STATS=0x0090,
+         USAGE_ACCESS=0x0091, AGENT_STOP=0x00F0)
 
 
 class Agent:
@@ -146,6 +147,20 @@ class Agent:
 
     def watch_disarm(self, watch_id):
         return self.call(T["WATCH_DISARM"], {"watch_id": int(watch_id)})
+
+    def usage_stats(self, begin_ms, end_ms, packages=None):
+        """USAGE_STATS (CAP_USAGE): per-day usage aggregation via shell-identity
+        UsageStatsManager — entries carry raw bucket timestamps (device
+        lazy-rollover, NOT midnight-aligned); partial/earliest_data_ms flag
+        upstream retention truncation."""
+        payload = {"begin_ms": begin_ms, "end_ms": end_ms}
+        if packages:
+            payload["packages"] = list(packages)
+        return self.call(T["USAGE_STATS"], payload)
+
+    def usage_access(self):
+        """USAGE_ACCESS probe: is UsageStatsManager reachable as shell."""
+        return self.call(T["USAGE_ACCESS"], {})
 
     def app_info(self):
         """APP_INFO (CAP_APP_INFO): foreground pkg via UiAutomation — ~ms,

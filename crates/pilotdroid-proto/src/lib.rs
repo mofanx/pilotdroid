@@ -67,6 +67,8 @@ pub enum OpCode {
     WatchArm = 0x0071,
     WatchDisarm = 0x0072,
     AppInfo = 0x0080,
+    UsageStats = 0x0090,
+    UsageAccess = 0x0091,
     AgentStop = 0x00F0,
 }
 
@@ -92,6 +94,8 @@ impl TryFrom<u16> for OpCode {
             0x0071 => Self::WatchArm,
             0x0072 => Self::WatchDisarm,
             0x0080 => Self::AppInfo,
+            0x0090 => Self::UsageStats,
+            0x0091 => Self::UsageAccess,
             0x00F0 => Self::AgentStop,
             other => return Err(ProtocolError::InvalidType(other)),
         })
@@ -654,6 +658,60 @@ pub mod payload {
         pub sdk: u32,
     }
 
+    /// `USAGE_STATS` (CAP_USAGE, agent ≥0.7.5): per-day usage aggregation
+    /// via shell-identity UsageStatsManager. Diagnostics surface, not
+    /// automation — per-user (user 0) visibility, OEM-defined retention.
+    #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+    pub struct UsageStatsReq {
+        pub begin_ms: i64,
+        pub end_ms: i64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub packages: Option<Vec<String>>,
+    }
+
+    /// One per-(package, daily-bucket) row. `visible_ms`/`launch_count`
+    /// carry -1 when the field is unreadable on this API level (visible
+    /// needs ≥29; launch count is a hidden field extracted defensively).
+    /// Bucket edges are the device's lazy-rollover clock, NOT midnight.
+    #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+    pub struct UsageEntry {
+        pub package: String,
+        pub bucket_first_ms: i64,
+        pub bucket_last_ms: i64,
+        pub foreground_ms: i64,
+        pub visible_ms: i64,
+        pub launch_count: i64,
+        pub last_time_used: i64,
+    }
+
+    #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+    pub struct UsageStatsAck {
+        /// `api` when answered by UsageStatsManager; the op never parses
+        /// dumpsys (rolling-window output cannot produce per-day truth).
+        pub source: String,
+        /// True when the oldest bucket starts after `begin_ms` (retention
+        /// truncated upstream) or the range is empty — absence of a day
+        /// must not be read as non-use.
+        pub partial: bool,
+        pub earliest_data_ms: Option<i64>,
+        pub begin_ms: i64,
+        pub end_ms: i64,
+        pub entries: Vec<UsageEntry>,
+    }
+
+    /// `USAGE_ACCESS` probe — is UsageStatsManager reachable as shell.
+    #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+    pub struct UsageAccessReq {}
+
+    #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+    pub struct UsageAccessAck {
+        pub available: bool,
+        /// `api` | `unavailable` (detail carries the reason).
+        pub source: String,
+        pub detail: String,
+        pub note: String,
+    }
+
     /// `TEXT` op — `ACTION_SET_TEXT` on the focused node (§4.4). Failure when
     /// nothing is focused surfaces as `code:"NO_FOCUS"`.
     #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -841,4 +899,7 @@ pub mod caps {
     pub const WATCH_ASYNC: u32 = 1 << 9;
     /// `APP_INFO` conn-side foreground-app lookup (no adb spawn).
     pub const APP_INFO: u32 = 1 << 10;
+    /// `USAGE_STATS`/`USAGE_ACCESS` opcodes served (UsageStatsManager
+    /// bridge — diagnostics surface, not automation).
+    pub const USAGE: u32 = 1 << 11;
 }

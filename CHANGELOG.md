@@ -6,6 +6,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.10.0] — 2026-11-28
+
+### Added
+
+- `usage_access_status`/`usage_stats` MCP 工具(agent 0.7.5,CAP_USAGE):
+  shell 身份直读 UsageStatsManager,按天聚合+时间范围+包名过滤,
+  `partial`/`earliest_data_ms`  retention 诚实字段——diagnostics 面,
+  per-user(user 0)可见性,诚实边界见 compat/SUPPORTED.md
+
+
 ## [0.9.1] — 2026-11-28
 
 ### Fixed

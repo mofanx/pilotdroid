@@ -42,14 +42,15 @@ import java.util.Set;
 public final class Agent {
     private static final String SOCKET_NAME = "pilotdroid_agent";
     private static final String MEDIA_SOCKET = "pilotdroid_agent_media";
-    private static final String AGENT_VER = "0.7.4";
+    private static final String AGENT_VER = "0.7.5";
     private static final int PROTO_VER = 0;
 
     // capability bitmap — normative spec is pilotdroid-proto `caps` (bit-for-bit)
     private static final int CAP_INJECT = 1, CAP_DUMP = 2, CAP_SHOT = 4,
             CAP_QUERY = 8, CAP_BATCH = 16, CAP_STREAM = 32, CAP_TEXT = 64,
             CAP_MPTR = 128, CAP_WATCH = 256,
-            CAP_WATCH_ASYNC = 512, CAP_APP_INFO = 1024;
+            CAP_WATCH_ASYNC = 512, CAP_APP_INFO = 1024,
+            CAP_USAGE = 2048;
 
     // opcodes
     private static final int T_HELLO = 0x0001, T_HELLO_ACK = 0x0002,
@@ -58,7 +59,8 @@ public final class Agent {
             T_SHOT = 0x0030, T_BATCH = 0x0040, T_BATCH_RESULT = 0x0041,
             T_STREAM = 0x0050, T_FRAME = 0x0001, T_WATCH_HIT = 0x0002,
             T_TEXT = 0x0060, T_WATCH = 0x0070, T_WATCH_ARM = 0x0071,
-            T_WATCH_DISARM = 0x0072, T_APP_INFO = 0x0080, T_STOP = 0x00F0;
+            T_WATCH_DISARM = 0x0072, T_APP_INFO = 0x0080,
+            T_USAGE_STATS = 0x0090, T_USAGE_ACCESS = 0x0091, T_STOP = 0x00F0;
     private static final int CH_MEDIA = 1;
     private static final int F_RESP = 0x0001, F_MORE = 0x0002,
             F_ERR = 0x0004, F_NOACK = 0x0008;
@@ -70,6 +72,8 @@ public final class Agent {
             Looper.prepareMainLooper();
         } catch (Throwable ignore) {
         }
+        Usage.init();         // shell-identity UsageStatsManager bridge — must run
+                             // on the main-looper thread (MIUI NPEs otherwise)
         UiAutomation uia = connectUiAutomation();
         Dumper dumper = new Dumper(uia);
         Injector injector = new Injector(uia);
@@ -311,6 +315,8 @@ public final class Agent {
                     case T_WATCH_ARM:   rtype = T_WATCH_ARM;   payload = watchArm(req);   break;
                     case T_WATCH_DISARM:rtype = T_WATCH_DISARM;payload = watchDisarm(req);break;
                     case T_APP_INFO:    rtype = T_APP_INFO;    payload = appInfo();       break;
+                    case T_USAGE_STATS: rtype = T_USAGE_STATS; payload = usageStats(req);   break;
+                    case T_USAGE_ACCESS:rtype = T_USAGE_ACCESS;payload = usageAccess();     break;
                     case T_STOP:    rtype = T_STOP;
                         payload = map("bye", true); stop = true;                          break;
                     default:
@@ -346,6 +352,25 @@ public final class Agent {
             out.flush();
         }
 
+        private Map<String, Object> usageStats(Object req) throws Exception {
+            Map<?, ?> r = req instanceof Map ? (Map<?, ?>) req : new LinkedHashMap<>();
+            long begin = (long) num(r.get("begin_ms"), -1);
+            long end = (long) num(r.get("end_ms"), -1);
+            if (begin < 0 || end <= begin)
+                throw new OpError("ERR_ARGS",
+                        "usage_stats needs begin_ms < end_ms (epoch ms)");
+            List<String> filter = null;
+            if (r.get("packages") instanceof List) {
+                filter = new ArrayList<>();
+                for (Object o : (List<?>) r.get("packages")) filter.add(String.valueOf(o));
+            }
+            return Usage.query(begin, end, filter);
+        }
+
+        private Map<String, Object> usageAccess() {
+            return Usage.probe();
+        }
+
         private Map<String, Object> hello() {
             Map<String, Object> m = new LinkedHashMap<>();
             Rect b = dumper.displayBounds();
@@ -359,7 +384,7 @@ public final class Agent {
             m.put("display", disp);
             m.put("caps", CAP_INJECT | CAP_DUMP | CAP_SHOT | CAP_QUERY | CAP_BATCH
                     | CAP_STREAM | CAP_TEXT | CAP_MPTR | CAP_WATCH
-                    | CAP_WATCH_ASYNC | CAP_APP_INFO);
+                    | CAP_WATCH_ASYNC | CAP_APP_INFO | CAP_USAGE);
             m.put("inject", injector.backend()); // "im" | "uia" | "im+uia-fallback"
             return m;
         }
@@ -1960,6 +1985,125 @@ public final class Agent {
         m.put("message", message);
         m.put("error", message);
         return m;
+    }
+
+    /** Shell-identity bridge to UsageStatsManager (CAP_USAGE). No user
+     *  grant, no appops write, no helper APK: com.android.shell holds
+     *  PACKAGE_USAGE_STATS granted on stock Android, so the query is a
+     *  plain binder call. Honesty notes baked into the contract:
+     *  per-user visibility (user 0 only — work profiles and MIUI Second
+     *  Space are invisible), INTERVAL_DAILY buckets roll on the device's
+     *  lazy-rollover clock (NOT midnight — observed 22:13 MIUI / 23:59
+     *  HarmonyOS), and retention depth is OEM-defined (5 daily files
+     *  MIUI vs 10 HarmonyOS) — hence `partial`/`earliest_data_ms` are
+     *  first-class fields, not decoration. */
+    private static final class Usage {
+        private static Object manager;
+        private static String initError;
+
+        /** Must run on a Looper-prepared thread (MIUI constructs the
+         *  ActivityThread handler eagerly and NPEs looper-less threads). */
+        static void init() {
+            try {
+                Class<?> at = Class.forName("android.app.ActivityThread");
+                Object thread = at.getDeclaredMethod("systemMain").invoke(null);
+                Object ctx = at.getDeclaredMethod("getSystemContext").invoke(thread);
+                manager = ctx.getClass()
+                        .getMethod("getSystemService", String.class)
+                        .invoke(ctx, "usagestats");
+            } catch (Throwable t) {
+                initError = String.valueOf(t);
+            }
+        }
+
+        private static android.app.usage.UsageStatsManager usm() throws OpError {
+            if (manager == null)
+                throw new OpError("USAGE_UNAVAILABLE",
+                        "usagestats service unreachable"
+                                + (initError != null ? ": " + initError : ""));
+            return (android.app.usage.UsageStatsManager) manager;
+        }
+
+        static Map<String, Object> query(long beginMs, long endMs,
+                List<String> filter) throws Exception {
+            android.app.usage.UsageStatsManager m = usm();
+            List<android.app.usage.UsageStats> res;
+            try {
+                res = m.queryUsageStats(
+                        android.app.usage.UsageStatsManager.INTERVAL_DAILY,
+                        beginMs, endMs);
+            } catch (Throwable t) {
+                throw new OpError("USAGE_UNAVAILABLE", "queryUsageStats failed: " + t);
+            }
+            List<Object> entries = new ArrayList<>();
+            long earliest = Long.MAX_VALUE;
+            boolean empty = res == null || res.isEmpty();
+            if (res != null)
+                for (android.app.usage.UsageStats u : res) {
+                    long first = u.getFirstTimeStamp();
+                    if (first < earliest) earliest = first;
+                    if (filter != null && !filter.contains(u.getPackageName()))
+                        continue;
+                    long vis = -1;
+                    try { vis = u.getTotalTimeVisible(); } catch (Throwable ignore) {}
+                    long launch = -1;
+                    try {
+                        launch = ((Number) android.app.usage.UsageStats.class
+                                .getMethod("getAppLaunchCount").invoke(u)).longValue();
+                    } catch (Throwable ignore) {}
+                    Map<String, Object> e = new LinkedHashMap<>();
+                    e.put("package", u.getPackageName());
+                    e.put("bucket_first_ms", first);
+                    e.put("bucket_last_ms", u.getLastTimeStamp());
+                    e.put("foreground_ms", u.getTotalTimeInForeground());
+                    e.put("visible_ms", vis);
+                    e.put("launch_count", launch);
+                    e.put("last_time_used", u.getLastTimeUsed());
+                    entries.add(e);
+                }
+            // Coverage honesty: if the oldest bucket starts AFTER the
+            // requested window begin, retention was truncated upstream
+            // (OEM keeps 5-10 daily files) — consumers must not read
+            // absence as non-use. Empty range is indistinguishable from
+            // "no data at all", so it degrades to partial too.
+            boolean partial = empty || earliest > beginMs;
+            Map<String, Object> out = new LinkedHashMap<>();
+            out.put("source", "api");
+            out.put("partial", partial);
+            out.put("earliest_data_ms", empty ? null : earliest);
+            out.put("begin_ms", beginMs);
+            out.put("end_ms", endMs);
+            out.put("entries", entries);
+            return out;
+        }
+
+        static Map<String, Object> probe() {
+            Map<String, Object> out = new LinkedHashMap<>();
+            out.put("note", "per-user (user 0) visibility — work profiles / "
+                    + "MIUI Second Space are invisible; privacy control lives "
+                    + "at the host MCP layer, no device-side gate");
+            if (manager == null) {
+                out.put("available", false);
+                out.put("source", "unavailable");
+                out.put("detail", "usagestats service unreachable"
+                        + (initError != null ? ": " + initError : ""));
+                return out;
+            }
+            try {
+                long end = System.currentTimeMillis();
+                ((android.app.usage.UsageStatsManager) manager).queryUsageStats(
+                        android.app.usage.UsageStatsManager.INTERVAL_DAILY,
+                        end - 3600000L, end);
+                out.put("available", true);
+                out.put("source", "api");
+                out.put("detail", "shell identity holds usage access — probe query succeeded");
+            } catch (Throwable t) {
+                out.put("available", false);
+                out.put("source", "unavailable");
+                out.put("detail", "probe query failed: " + t);
+            }
+            return out;
+        }
     }
 
     private static Map<String, Object> map(Object... kv) {

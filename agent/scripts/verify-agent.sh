@@ -89,12 +89,12 @@ miss=[k for k in need if k not in p]
 print("OK "+json.dumps(p) if not miss else "MISS:"+",".join(miss))' > /tmp/hello.res 2>/dev/null \
   || echo "PARSE_FAIL $HELLO" > /tmp/hello.res
 grep -q "^OK" /tmp/hello.res && ok "hello_ack_fields" || bad "hello_ack_fields" "$(cat /tmp/hello.res)"
-echo "$HELLO" | grep -q '"ver": *"0\.7\.4"\|"ver":"0\.7\.4"' \
+echo "$HELLO" | grep -q '"ver": *"0\.7\.5"\|"ver":"0\.7\.5"' \
   && ok "agent_ver" || bad "agent_ver" "$(echo "$HELLO" | head -c 200)"
 
-echo "== A1b CAPS bitmap == INJECT=1 DUMP=2 SHOT=4 QUERY=8 BATCH=16 STREAM=32 TEXT=64 MPTR=128 WATCH=256 WATCH_ASYNC=512 APP_INFO=1024 =="
+echo "== A1b CAPS bitmap == INJECT=1 DUMP=2 SHOT=4 QUERY=8 BATCH=16 STREAM=32 TEXT=64 MPTR=128 WATCH=256 WATCH_ASYNC=512 APP_INFO=1024 USAGE=2048 =="
 CAPS=$(echo "$HELLO" | python3 -c 'import json,sys; print(json.load(sys.stdin)["payload"]["caps"])' 2>/dev/null || echo "?")
-[ "$CAPS" = "2047" ] && ok "caps_bits" || bad "caps_bits" "caps=$CAPS expected 2047 (|WATCH_ASYNC|APP_INFO)"
+[ "$CAPS" = "4095" ] && ok "caps_bits" || bad "caps_bits" "caps=$CAPS expected 4095 (|APP_INFO|USAGE)"
 
 echo "== A2 INJECT tap result + logcat side-effect =="
 adb -s "$DEV" shell 'logcat -c' 2>/dev/null
@@ -739,6 +739,76 @@ while IFS='|' read -r _name _st _det; do
   [ -z "$_name" ] && continue
   [ "$_st" = "PASS" ] && ok "$_name" || bad "$_name" "$_det"
 done <<< "$M11_OUT"
+
+echo "== M33 USAGE_STATS: shell-identity UsageStatsManager bridge =="
+U_OUT=$(python3 - "$HERE" "$PORT" <<'PYEOF' 2>&1
+import sys, time
+sys.path.insert(0, sys.argv[1])
+import agent_client as ac
+PORT = int(sys.argv[2])
+
+def rep(name, ok_, detail=""):
+    print(f"{name}|{'PASS' if ok_ else 'FAIL'}|{str(detail)[:300]}")
+
+a = ac.Agent(PORT).connect()
+
+try:
+    p = a.usage_access()["payload"]
+    rep("usage_access_probe",
+        p.get("available") is True and p.get("source") == "api",
+        f"available={p.get('available')} source={p.get('source')} detail={str(p.get('detail'))[:80]}")
+except Exception as e:
+    rep("usage_access_probe", False, e)
+
+try:
+    end = int(time.time() * 1000)
+    begin = end - 3 * 24 * 3600 * 1000
+    r = a.usage_stats(begin, end)["payload"]
+    entries = r.get("entries") or []
+    launcher = [e for e in entries if "launcher" in str(e.get("package", ""))]
+    e0 = entries[0] if entries else {}
+    keys_ok = all(k in e0 for k in ("package", "bucket_first_ms", "bucket_last_ms",
+                                     "foreground_ms", "visible_ms", "launch_count",
+                                     "last_time_used"))
+    rep("usage_stats_query",
+        r.get("source") == "api" and len(entries) > 50 and keys_ok
+            and isinstance(r.get("partial"), bool) and "earliest_data_ms" in r,
+        f"entries={len(entries)} keys_ok={keys_ok} partial={r.get('partial')} earliest={r.get('earliest_data_ms')}")
+    nonzero = [e for e in entries if (e.get("foreground_ms") or 0) > 0]
+    rep("usage_stats_nonzero",
+        len(nonzero) > 0 and len(launcher) > 0,
+        f"nonzero_fg={len(nonzero)} launcher_entries={len(launcher)}")
+except Exception as e:
+    rep("usage_stats_query", False, e)
+    rep("usage_stats_nonzero", False, e)
+
+try:
+    end = int(time.time() * 1000)
+    begin = end - 3 * 24 * 3600 * 1000
+    rf = a.usage_stats(begin, end, packages=["com.android.settings"])["payload"]
+    entf = rf.get("entries") or []
+    pkgs = set(str(e.get("package")) for e in entf)
+    rep("usage_stats_filter",
+        pkgs <= {"com.android.settings"},
+        f"filtered_entries={len(entf)} pkgs={list(pkgs)[:3]}")
+except Exception as e:
+    rep("usage_stats_filter", False, e)
+
+try:
+    end = int(time.time() * 1000)
+    r = a.usage_stats(end, end - 1000)
+    # error frames surface as payload.code on the ERR flag, not exceptions
+    code = (r.get("payload") or {}).get("code", "")
+    rep("usage_stats_badargs", code == "ERR_ARGS", f"code={code!r}")
+except Exception as e:
+    rep("usage_stats_badargs", "ERR_ARGS" in str(e), str(e)[:120])
+PYEOF
+)
+echo "$U_OUT" | sed 's/^/  /'
+while IFS='|' read -r _name _st _det; do
+  [ -z "$_name" ] && continue
+  [ "$_st" = "PASS" ] && ok "$_name" || bad "$_name" "$_det"
+done <<< "$U_OUT"
 
 echo "== A7 AGENT_STOP: CLI stop exit==0 and process gone =="
 ROOT="$(cd "$HERE/../.." && pwd)"; RCLI="$ROOT/target/debug/pilotdroid-cli"

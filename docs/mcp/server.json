@@ -1,8 +1,8 @@
 {
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-10-17/server.schema.json",
   "name": "io.github.mofanx/pilotdroid",
-  "description": "Android UI automation agent: 32 MCP tools — tap/watcher/stream + SoM, push, verify_after",
-  "version": "0.9.1",
+  "description": "Android UI automation agent: 34 MCP tools — tap/watcher/stream + SoM, push, verify_after",
+  "version": "0.10.0",
   "websiteUrl": "https://github.com/mofanx/pilotdroid",
   "repository": {
     "url": "https://github.com/mofanx/pilotdroid",
@@ -12,7 +12,7 @@
     {
       "registryType": "pypi",
       "identifier": "pilotdroid",
-      "version": "0.9.1",
+      "version": "0.10.0",
       "runtimeHint": "uvx",
       "transport": {
         "type": "stdio"

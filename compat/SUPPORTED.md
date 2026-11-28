@@ -222,3 +222,23 @@ benchmark/suite 跑旧 targetSdk app 前需先放行（openatx u2 官方
   agent-session-bound，崩溃即丢失**——`watch_recv` 遇死连接先治愈
   控制通道再原样抛错，调用方 re-arm 即可；watch_id 重新分配，陈旧
   id 可能撞新 id。恢复阶梯穷尽 → `Recover{stage}` 具名错。
+
+- **Usage stats（M33,diagnostics 面非 automation 面）**:
+  `usage_access_status`/`usage_stats` 经 shell 身份直读设备
+  UsageStatsManager——**读取的是敏感使用数据**（前台时长/启动次数/
+  最近使用时间）,知情姿态内嵌于工具描述;设备侧无额外闸门（隐私
+  边界=adb 授权本身,shell 能力是 usage stats 的严格超集——
+  **不要**用 `cmd appops set` 之类手段为其他身份开此权限,更不要
+  碰 `--checkin`(有状态副作用:把历史日文件标记已上报,干扰系统
+  自身聚合)。诚实边界四条:①**per-user(user 0)可见性**——
+  work profile/MIUI Second Space/双开的数据**不可见**,缺失误读为
+  未使用会出冤案;②桶边按**设备 lazy-rollover 时钟**切(实测
+  MIUI 22:13/HarmonyOS 23:59),非午夜;③**保留深度 OEM 自定**
+  (实测日文件 MIUI 5 vs HarmonyOS 10)——`partial:true`+
+  `earliest_data_ms` 是一等字段,窗口缺口**不得**读作未使用;
+  ④`visible_ms`/`launch_count` 不可得时为 -1(前者需 API≥29,
+  后者系 @hide 字段防御式提取)。dumpsys 解析**刻意不做**——
+  其内存 daily 是滚动窗而非日历日,给不出逐日真值,伪降级不如
+  显式 unavailable。定位:这是 diagnostics/观测面,与自动化核心
+  宣称无涉;前瞻式「是否进前台」用 `app_current`+`watch`,
+  本面只答回溯式「用了多久/开过没有」。

@@ -377,6 +377,22 @@ impl<T: AdbTransport> Session<T> {
         self.with_client(|c| c.app_info())
     }
 
+    /// USAGE_STATS — diagnostics surface (per-user visibility, OEM
+    /// retention); see proto `UsageStatsAck` honesty notes.
+    pub fn usage_stats(
+        &mut self,
+        begin_ms: i64,
+        end_ms: i64,
+        packages: Option<Vec<String>>,
+    ) -> Result<UsageStatsAck> {
+        self.with_client(|c| c.usage_stats(begin_ms, end_ms, packages.clone()))
+    }
+
+    /// USAGE_ACCESS probe.
+    pub fn usage_access(&mut self) -> Result<UsageAccessAck> {
+        self.with_client(|c| c.usage_access())
+    }
+
     /// WATCH — device-side selector→action loop (CAP_WATCH, docs/02 §4.9).
     pub fn watch(&mut self, selector: Selector, action: &str, timeout_ms: u64) -> Result<WatchAck> {
         self.with_client(|c| {

@@ -1028,6 +1028,20 @@ fn call_tool<T: AdbTransport>(
                         None => json!({}),
                     })
                 }
+                "usage_access_status" => {
+                    let ack = s.usage_access()?;
+                    Ok(serde_json::to_value(ack)?)
+                }
+                "usage_stats" => {
+                    let (begin_ms, end_ms) = usage_window(&args)?;
+                    let packages = args.get("packages").and_then(Value::as_array).map(|a| {
+                        a.iter()
+                            .filter_map(|v| v.as_str().map(str::to_string))
+                            .collect()
+                    });
+                    let ack = s.usage_stats(begin_ms, end_ms, packages)?;
+                    Ok(serde_json::to_value(ack)?)
+                }
                 "stream_start" => Ok(json!(s.stream_start(
                     args.get("fps").and_then(Value::as_u64).map(|v| v as u8),
                     args.get("scale").and_then(Value::as_f64).map(|v| v as f32),
@@ -1399,6 +1413,37 @@ fn call_tool<T: AdbTransport>(
     }
 }
 
+/// Resolve the usage_stats time window: explicit begin/end wins, else
+/// `days` lookback ending now. Pinned semantics: end must exceed begin;
+/// days clamped 1..=30 — a wider window only deepens the retention-truncation
+/// lie (OEMs keep ~5-10 daily files), so refuse it honestly.
+fn usage_window(args: &Value) -> anyhow::Result<(i64, i64)> {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0);
+    let (begin_ms, end_ms) = match (
+        args.get("begin_ms").and_then(Value::as_i64),
+        args.get("end_ms").and_then(Value::as_i64),
+    ) {
+        (Some(b), Some(e)) => (b, e),
+        (None, None) => {
+            let days = args.get("days").and_then(Value::as_i64).unwrap_or(7);
+            if !(1..=30).contains(&days) {
+                anyhow::bail!(
+                    "days must be 1..=30, got {days} — wider windows outrun usagestats retention and only deepen partial-coverage misreads"
+                );
+            }
+            (now - days * 86_400_000, now)
+        }
+        _ => anyhow::bail!("begin_ms and end_ms must be given together"),
+    };
+    if end_ms <= begin_ms {
+        anyhow::bail!("end_ms ({end_ms}) must exceed begin_ms ({begin_ms})");
+    }
+    Ok((begin_ms, end_ms))
+}
+
 // ---- tool catalogue ----------------------------------------------------------
 
 fn prop(t: &str, d: &str) -> Value {
@@ -1474,6 +1519,12 @@ fn tools() -> Value {
             &[("pkg",prop("string","")),("activity",prop("string","optional activity"))],&["pkg"])},
         {"name":"app_stop","description":"am force-stop pkg","inputSchema":schema(&[("pkg",prop("string",""))],&["pkg"])},
         {"name":"app_current","description":"{package,activity} of the focused window","inputSchema":schema(&[],&[])},
+        {"name":"usage_access_status","description":"probe whether app-usage statistics (UsageStatsManager) are reachable on this device — diagnostics surface, NOT automation. Returns {available,source,detail}. Visibility is per-user (user 0): work profiles / MIUI Second Space are invisible","inputSchema":schema(&[],&[])},
+        {"name":"usage_stats","description":"read per-app usage statistics (PRIVACY-SENSITIVE: foreground/visible time, launch counts, last-used timestamps) aggregated per day over a time window — diagnostics surface, NOT automation. Source is the device UsageStatsManager (shell identity); buckets align to the device lazy-rollover clock, not midnight. `partial:true` means upstream retention truncated the window — absence of a day must NOT be read as non-use. Per-user (user 0) visibility only. visible_ms/launch_count are -1 when unreadable on this API level","inputSchema":schema(
+            &[("days",prop("integer","lookback window in days, 1-30, default 7 — ignored when begin_ms/end_ms are given")),
+              ("begin_ms",prop("integer","window start, epoch ms (with end_ms, overrides days)")),
+              ("end_ms",prop("integer","window end, epoch ms")),
+              ("packages",prop("array","optional package-name filter, exact strings"))],&[])},
         {"name":"stream_start","description":"start media-channel JPEG frame stream (§4.8)","inputSchema":schema(
             &[("fps",prop("integer","default 5")),("scale",prop("number","default 0.5")),("quality",prop("integer","default 70"))],&[])},
         {"name":"stream_read","description":"read n frames (default 1); to_dir = file bypass","inputSchema":schema(
@@ -2916,6 +2967,58 @@ mod tests {
             text.contains("no element snapshot"),
             "expected re-observe error after switch, got {text}"
         );
+    }
+
+    #[test]
+    fn usage_window_days_default_and_validation() {
+        // default: 7-day lookback ending now
+        let (b, e) = usage_window(&json!({})).unwrap();
+        assert_eq!(e - b, 7 * 86_400_000, "default window must be exactly 7d");
+        // days honored
+        let (b, e) = usage_window(&json!({"days": 3})).unwrap();
+        assert_eq!(e - b, 3 * 86_400_000);
+        // explicit begin/end wins over days
+        let (b, e) = usage_window(&json!({"days": 5, "begin_ms": 1000, "end_ms": 2000})).unwrap();
+        assert_eq!((b, e), (1000, 2000));
+        // days out of range refused — wide windows deepen the retention lie
+        for bad in [0, 31, -1] {
+            assert!(usage_window(&json!({"days": bad})).is_err(), "days={bad}");
+        }
+        // half-specified range refused
+        assert!(usage_window(&json!({"begin_ms": 1000})).is_err());
+        assert!(usage_window(&json!({"end_ms": 1000})).is_err());
+        // inverted range refused
+        assert!(usage_window(&json!({"begin_ms": 2000, "end_ms": 2000})).is_err());
+        assert!(usage_window(&json!({"begin_ms": 3000, "end_ms": 2000})).is_err());
+    }
+
+    #[test]
+    fn usage_ack_wire_shape_roundtrip() {
+        // pin the proto contract the MCP response passes through verbatim:
+        // -1 sentinels survive, earliest_data_ms nullable, partial honored
+        let ack = pilotdroid_proto::payload::UsageStatsAck {
+            source: "api".into(),
+            partial: true,
+            earliest_data_ms: None,
+            begin_ms: 100,
+            end_ms: 200,
+            entries: vec![pilotdroid_proto::payload::UsageEntry {
+                package: "com.x".into(),
+                bucket_first_ms: 100,
+                bucket_last_ms: 199,
+                foreground_ms: 42,
+                visible_ms: -1,
+                launch_count: -1,
+                last_time_used: 150,
+            }],
+        };
+        let v = serde_json::to_value(&ack).unwrap();
+        assert_eq!(v["partial"], true);
+        assert_eq!(v["source"], "api");
+        assert!(v["earliest_data_ms"].is_null());
+        assert_eq!(v["entries"][0]["visible_ms"], -1);
+        assert_eq!(v["entries"][0]["launch_count"], -1);
+        assert_eq!(v["entries"][0]["foreground_ms"], 42);
     }
 
     #[test]

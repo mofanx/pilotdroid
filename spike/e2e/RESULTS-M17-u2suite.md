@@ -2092,3 +2092,129 @@ unbound 存活（stderr 提示 2 ready）→ tap 引导式拒 → list_devices �
 ### D. 判定
 
 **pass**——四面数字全部独立复现,配置零绑定端到端行为与 notes 每项声称对齐,无发件级出入。
+
+## 附52 t1 —— usage stats spike 定路（2026-11-28，探针不入库，设备临时文件已清理）
+
+### 路径裁决：**binder 直调（经 UsageStatsManager API）= 主路径**，双机实证真出数
+
+探针法：一次性 UsageProbe.java（javac+d8 同 agent 构建链）推 /data/local/tmp 跑完即删，不入库。
+
+| 路径 | 小米 MIUI API34 | 华为 HarmonyOS API31 | 裁决 |
+|---|---|---|---|
+| `cmd usagestats` | 仅 `clear-last-used-timestamps`（**写操作**，无查询子命令） | `No shell command implementation` | **死路**，双机皆无查询能力 |
+| binder 直调 queryUsageStats | **出数**：715 条/3日窗 | **出数**：740 条/3日窗 | **主路径**——shell 身份零授权零 APK |
+
+### 实证数据点（华为，蛋仔派对 com.netease.party.huawei 逐日）
+
+fg_ms 4887914 / 9357625 / 4905707（≈1.4h/2.6h/1.4h），vis_ms 同量级略高，**launchCount 反射可读**（int 非 long——hidden API 类型注记）4/7/4 次/天；launcher 67 次/天。fg/vis/lastTimeUsed/launchCount 四字段全部真数据。
+
+### 三个实现级发现（直接影响实装设计）
+
+1. **日 bucket 边界非子夜**：小米 22:13:05 滚动、华为 23:59:57 滚动（lazy rollover——日界锚定每日首个事件/文件落盘节奏而非 00:00），bucket span 恰 24h。**按日历日聚合不能盲信 INTERVAL_DAILY bucket 归属**——实装须原样回传 bucket first/last 时间戳+诚实档，或在 host 侧按 epoch 重分桶（推荐前者：最小实现）；
+2. **覆盖深度 OEM 分裂实证**：7 日窗查询 distinct bucket 天数 **小米 5 / 华为 8**（对应 daily 文件保留 5 vs 10）——`partial`+`earliest_data` 字段是**硬需求**非 nice-to-have，否则 MIUI 查一周静默截断成错数据（与 describe→tap 静默错点同族）；
+3. **小米须先 `Looper.prepare()` 再 `ActivityThread.systemMain()`**（华为容忍缺失）——agent 已在 Looper 上下文运行，实装无碍，仅探针注记。
+
+### 权限面定论（回应分析轮悬念）
+
+shell 身份 queryUsageStats **双机直出**，无 appops 拦截——分析轮「MIUI rejectTime」悬念解除：那是历史拒史不构成现行拦截（mode=default+权限 granted 路径生效）。**无需 appops 写入、无需授权页、无需 helper APK**；隐私管控层在 MCP 白名单（`mcp__pilotdroid__usage_*` 粒度），设备侧不设假门。
+
+### 降级序（如未来某 ROM 拦截 binder）
+
+1. dumpsys usagestats in-memory **当日**解析（locale 阱：timeRange 本地化「下午」；package 行时间戳仍 ISO 可解析）；
+2. 历史日 dumpsys **不可得**（文件内容不输出）——降级即明示 `source: dumpsys-today`+`partial:true`；
+3. `--checkin` **禁条**：标记日文件已上报影响系统聚合，任何路径不得使用。
+
+## 附53 t2 —— agent usage stats op 实装（2026-11-28，agent 0.7.5）
+
+### 实装面
+
+- `Agent.java`：新增 `T_USAGE_STATS=0x0090`/`T_USAGE_ACCESS=0x0091`+`CAP_USAGE=2048`（caps 4095），`Usage` 静态桥接类——`init()` 在 main-looper 线程反射 `ActivityThread.systemMain→getSystemContext→usagestats`（MIUI 必须，§52 注记落地）；query 用 `INTERVAL_DAILY`，launchCount 反射 hidden `getAppLaunchCount`（int 型），visible 反射 `getTotalTimeVisible` 降级 -1；**partial 语义**：entries 空 或 最旧 bucket firstTimeStamp > begin_ms → true（上游保留截断/无数据不可区分，保守方向）；`earliest_data_ms` 一并回传；ERR_ARGS（窗口倒置）/USAGE_UNAVAILABLE（服务不可达）契约码；AGENT_VER 0.7.4→0.7.5；
+- proto：OpCode 两枚+caps::USAGE bit；agent_client.py 两方法；verify-agent.sh M33 段五钉（probe/query结构/非零真数据/包名过滤/ERR_ARGS）+caps 2047→4095+agent_ver 0.7.5。
+
+### 真机实证（关键交叉验证）
+
+华为蛋仔逐日 fg_ms **4887914/9357625/4905707 与 spike 探针逐字节一致**；最新 bucket fg=9900401 launch=15 **与用户手工 APK 流程数据完全一致**——agent 路径数据正确性三方互证。小米 launcher launch=250/215/16/22 高基数合理（主力机）。
+
+### 闸
+
+verify-agent 小米 **49/0**（原 44+新增 5）；cargo 113/0+fmt/clippy 净。
+
+### 华为 verify 诚实档
+
+华为机 verify-agent 42/7——**usage 五钉全 PASS**，7 fail 全部为屏态依赖用例（query_found/text_visible/wait_until 等 found:false）+`app_info_conn` 被 applock（com.huawei.systemmanager 常占前台）劫持。判定环境非回归：①verify-agent 历史上是小米专用闸（ledger 无华为 verify 记录），华为只做 benchmark；②同一 agent.jar 在小米 49/0 含全部相同用例；③全部 fail 用例与 usage stats 零交互。双机出数实证由 usage 五钉+交叉数据对拍承担。
+
+## 附54 t4 独立复核:t1 spike 裁决+t2 agent 实装(p2 执行,**pass**)
+
+方法:绕过 Rust/serve 栈,agent_client.py 直连设备 agent 独立取证(专用 forward tcp:17951/17952,用后已摘)。
+
+### A. spike→实装路径一致性(全 pass)
+
+| spike 裁决(§52) | 实装核对 |
+|---|---|
+| binder 直调=主路径,cmd usagestats 死路 | Agent.java `Usage` 桥接反射 `ActivityThread.systemMain→getSystemContext→usagestats`——与裁决一致;cmd 路径无查询能力实证(小米仅 clear 写命令/华为无实现) |
+| 小米须 Looper 上下文(MIUI NPE) | `Usage.init()` 精确落在 `Looper.prepareMainLooper()` 之后主线(L72-77),注记注释在码 |
+| bucket 时间戳原样回传(lazy-rollover 非子夜) | 响应携 `bucket_first_ms/last_ms` 原始值——实证 span 小米 86399999ms/华为 86404385ms(≈24h,lazy-rollover 实锤;nit:spike 措辞「恰 24h」华为实际 +4.4s,语义无害) |
+| partial+earliest_data 硬需求 | 实证见下 C 段——30 日窗两机 partial:true 且截断深度与 spike 记档逐合 |
+
+### B. agent.jar 版本错落惯例(全 pass)
+
+- jar 单 entry `classes.dex`,dex 内 `0.7.5` 在、`0.7.4` **零残留**;`AGENT_VER="0.7.5"` 源码一致;
+- 双机部署 jar md5 `38d410a0…` **与 worktree byte-identical**;hello 实证在跑 ver=0.7.5 caps=4095(USAGE bit 11 置位)双机同。
+
+### C. 双机独立复跑(agent_client 直连,七项边界)
+
+| 项 | 小米 API34 | 华为 API31 |
+|---|---|---|
+| hello ver/caps | 0.7.5/4095 ✅ | 0.7.5/4095 ✅ |
+| probe | available source=api | 同左 |
+| 3 日窗 | 740 entries,keys 完整,partial=false | 742 entries,同左 |
+| 包名过滤 | com.miui.home 4 条 off-filter=0;launch 250/215/16 与 §53 **逐字节一致**(活桶 22→36 系时间流逝自然增长,反证数据连续真实) | 蛋仔 fg **4887914/9357625/4905707/9900401+launch 4/7/4/15 与 §53 三方互证数字逐字节一致** |
+| 倒置窗 | ERR_ARGS 契约码正确(错误以 payload 返回非异常——协议契约如此) | 同左 |
+| 30 日深窗 | partial=true,截断≈25d→**日文件保留 5** 与 spike 逐合 | partial=true,截断≈20d→**保留 10** 与 spike 逐合 |
+| 未来空窗 | entries=0 partial=true earliest=null(空即 partial 保守方向实证) | 同左 |
+
+### D. verify-agent 独立自跑
+
+`verify-agent.sh ba0d072d 17932` **49/0**——含 M33 五钉(usage_access_probe/usage_stats_query 740 条/nonzero/filter 4 条 settings/badargs ERR_ARGS)全 PASS,与 t2 自报一致。过程 WARN:forward_hygiene 5 规则(含复核自建 17951——用后已摘;余 37869/41775/39381 系既有 serve 会话或孤儿,非本次复核产生,挂账卫生 nit)。
+
+### E. nit(非阻塞)
+
+- n1:spike 措辞「bucket span 恰 24h」华为实测 +4.4s——lazy-rollover 语义下正确表述应为「≈24h 含懒滚偏移」,文档级;
+- n2:小米 3 日窗 entries=740 与华为 742 接近纯属巧合,勿当对照锚;
+- n3:错误以 payload 内 `code/error` 字段返回而非传输层异常——agent_client 消费方需自查 payload,verify 五钉已正确覆盖此径。
+
+### F. 判定
+
+**pass**——spike 五项裁决全部在实装精确落地;双机出数、过滤、边界、retention 截断深度全部独立复现;jar 版本链零错落;verify 49/0 复现。
+
+## 附55 t5 —— serve usage 工具面独立复核（2026-11-28，复核员自跑非转述；原写附54与t4撞号，t6 列车前改号）
+
+### A. 真机端到端（复核员独立驱动 serve MCP，双机）
+
+| 验证点 | 小米 ba0d072d | 华为 CFE6R | 判定 |
+|---|---|---|---|
+| `usage_access_status` | available:true source:api | 同左 | ✔ |
+| 包名过滤正例 | com.miui.home 4条 fg/vis/launch全真(250/215/16) | 蛋仔4条 fg=4887914/9357625/4905707 | ✔ 与t2 agent层数据逐字节一致 |
+| 包名过滤反例 | 不存在包名→entries=0但source:api（**正确形态**：过滤空≠服务不可用） | 同左 | ✔ |
+| days=0/31 边界 | 皆显式拒「days must be 1..=30」附理由 | 同左 | ✔ 诚实拒非静默钳 |
+| **partial 活证据** | 7日窗 **partial:true** earliest=11/23（5日保留） | 7日窗 **partial:false** earliest=11/20（8日覆盖） | ✔ **OEM 保留分裂在真实字段上显现**——设计动机实证 |
+
+### B. source 三态核对
+
+`api` 双机实证；`unavailable` 结构化存在于 UsageAccessAck（不可达时 detail 载因）而 usage_stats 走硬错误 USAGE_UNAVAILABLE——**显式错误即显式 unavailable**，与 SUPPORTED「伪降级不如显式 unavailable」一致；`dumpsys` 态**刻意永不发出**（proto 注释+"dumpsys 解析刻意不做"入档）——三态中一态为有据保留态，非缺陷。
+
+### C. SUPPORTED 诚实档四要素逐项
+
+①per-user(user 0) Second Space 不可见+"冤案"警句 ✔；②checkin 禁条+副作用机理（标记已上报干扰系统聚合）✔；③diagnostics 定位+「前瞻用 app_current+watch,本面只答回溯」边界句 ✔；④隐私知情姿态（工具描述内嵌+shell 超集论证+不为其他身份开 appops）✔。另含 lazy-rollover 实测值/retention OEM 数字/-1 sentinel 三条加码。
+
+### D. 单测语义
+
+`usage_window` 七路（默认7d/days生效/显式优先/0,31,-1拒/半窗拒/倒置拒）+wire shape roundtrip 钉 -1 sentinel 与 nullable——语义与实机行为逐项对得上（复核员实机验证了其中 days=0/31/正反过滤四路）。
+
+### E. 闸
+
+cargo **115/0**、fmt/clippy 净、doc-drift 0 fail。
+
+### F. nit（非阻塞）
+
+- usage_stats 窗口 now 取自 host 时钟——adb-TCP 跨时区/时钟漂移场景 host/device 时钟错位会平移窗口；最小实现可接受，记档。

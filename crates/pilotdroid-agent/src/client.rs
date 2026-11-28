@@ -341,6 +341,33 @@ impl AgentClient {
         Ok(decode(&f.payload)?)
     }
 
+    /// USAGE_STATS (CAP_USAGE): per-day usage aggregation. Agent-side
+    /// rejects begin>=end with ERR_ARGS.
+    pub fn usage_stats(
+        &mut self,
+        begin_ms: i64,
+        end_ms: i64,
+        packages: Option<Vec<String>>,
+    ) -> Result<UsageStatsAck> {
+        let f = self.request(
+            OpCode::UsageStats,
+            encode(&UsageStatsReq {
+                begin_ms,
+                end_ms,
+                packages,
+            })?,
+        )?;
+        expect(&f, OpCode::UsageStats, "USAGE_STATS response")?;
+        Ok(decode(&f.payload)?)
+    }
+
+    /// USAGE_ACCESS probe: is UsageStatsManager reachable as shell.
+    pub fn usage_access(&mut self) -> Result<UsageAccessAck> {
+        let f = self.request(OpCode::UsageAccess, encode(&UsageAccessReq {})?)?;
+        expect(&f, OpCode::UsageAccess, "USAGE_ACCESS response")?;
+        Ok(decode(&f.payload)?)
+    }
+
     /// Ask the agent to exit (AGENT_STOP). The agent may close the socket
     /// before/instead of replying, so a missing response is success too.
     pub fn stop(&mut self) -> Result<()> {
