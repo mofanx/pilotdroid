@@ -2218,3 +2218,29 @@ cargo **115/0**、fmt/clippy 净、doc-drift 0 fail。
 ### F. nit（非阻塞）
 
 - usage_stats 窗口 now 取自 host 时钟——adb-TCP 跨时区/时钟漂移场景 host/device 时钟错位会平移窗口；最小实现可接受，记档。
+
+## 附56 t6 —— v0.10.0 minor 列车四面证据（2026-11-28）
+
+### 密度判定
+
+新增两 MCP 工具（32→34）+协议面两 opcode+agent 0.7.5——feature 级，两路独立复核（t4 agent 面/t5 serve 面）全 pass → **GO minor 0.10.0**。
+
+### 四面发件证据
+
+| 面 | 证据 |
+|---|---|
+| GitHub | release run success 2m42s；draft 7 assets；notes-file 灌入+发布；linux asset sha256sum -c OK |
+| PyPI | pypi run success 26s；`pip index` 0.10.0 居首 |
+| install-smoke | `install-smoke.sh ba0d072d` **9 pass/0 fail**——链上握手实证 `agentVer=0.7.5 caps=0xfff`(CAP_USAGE 随发行链生效) |
+| registry | JWT 重登录后 publish 成功；curl limit=30：**0.10.0 isLatest=True 居首条**（注：返回序非纯版本序，0.10.0 在首条而非尾条——tail 截尾判读法会误判，分页阱注记的二次形态） |
+| tap | 4ded2c0：双 sha 逐字对拍 SHA256SUMS，live 下载复核一致（lnx 46736edd…/mac 0b3bee62…） |
+
+### 随行
+
+`~/.local/bin/pilotdroid-cli` → 0.10.0，sha `46736edd…` 与 release asset 逐字一致；CI/CodeQL 双绿（46148273303/46148273324）。
+
+### 过程发现（记档）
+
+- **smoke forward_hygiene WARN**：12 条孤儿 forward（双机混合，含 verify 标准口 17932/17933/17942 与杀死的测试 serve 随机口）——本轮三层复核+实装高频起杀 serve 的累积；tag 摘机制只覆盖新 spawn 的 serve，历史孤儿需手工摘。非本轮引入，挂账。
+- **registry 排序阱二次形态**：isLatest 条目在返回首条——复核脚本报尾条的习惯在 v0.10.0 会误读，PUBLISH.md 已教 limit=30 但排序假设仍需逐条打印核验（本轮实证）。
+- ledger 段号撞车：t4/t5 并发各写 §54——t6 列车前改 t5 段为 §55。并发写段的 caveat：下一次写段前 grep 最新段号。
