@@ -1804,3 +1804,41 @@ doc-drift **0 fail**（含缺头→FAIL 实证）、pytest **95**、cargo **107/
 ### D. 边界成文（AGENTS.md）
 
 ①artifact 仅覆盖 CI 已构建 commit——未 push 的 serve.rs 改动必须本地 build；②`cargo test` 不产 cli bin 注记保留；③agent.jar 由 include_bytes 内嵌进 release 产物，与源码 byte-repro 由 agent-jar-repro job 独立把守。
+
+## 附44 t2 —— CI 通道独立复核（2026-11-28，复核员自跑非转述）
+
+### A. artifact 一致性对拍
+
+独立 `gh run download 46085064039` 至全新目录 vs fetch 缓存：**sha256 同为 `04e504b8…`、byte-identical**（binary 6,566,544B；artifact zip 2,162,915B——t1 所报 2.16MB 为压缩后尺寸，非 binary 尺寸，一致无矛盾）。run 46085064039 对应 `53c5686`；**缓存轮换实证**：8afd6d3 的 run 46085352245 success 后再跑 fetch 自动换新 run-id 目录，老缓存保留（sha 与前 run 相同——rust 侧无改动，合理）。
+
+### B. PILOTDROID_CLI 闭环独立复跑
+
+`PILOTDROID_CLI=artifact(46085352245)` benchmark ba0d072d 三题：**3/3**（describe_tap_direct 5.6s/stale_layout_guard 7.9s/match_empty_error 1.7s）。`--version` 报 0.8.3 与 workspace 一致。
+
+### C. AGENTS.md 双轨描述逐条核对
+
+| 描述 | 核对 |
+|---|---|
+| 六个 harness 均 honor PILOTDROID_CLI | ✔（benchmark/loop_v3 直接 grep 无字串，但均 `from loop import Serve`——CLI 在 loop.py 模块作用域解析，**传递生效**，真机 3/3 即实证） |
+| artifact 仅存于 CI 已建 commit | ✔ 语义正确（gh run list --status success 取最新成功 run） |
+| 14d retention | ✔ expires=2026-12-11（恰好 14 天） |
+| 本地 build 为另一轨 | ✔ 与 rebuild 注记一致 |
+
+### D. CI yml 配置审查
+
+`push:main + pull_request` 触发；rust job 末尾 release-profile build+upload-artifact@v4（`if-no-files-found: error` 防静默缺件）——artifact 名与 fetch `--name` 逐字一致；release profile 选择理由注释在案（debug 二进制时序/内联差异）。
+
+### E. 边界行为
+
+- **过期路径**：repo 闲置 >14d 时最新成功 run artifact 过期→`gh run download` 失败→`set -e` 显式报错（非静默）。本地已缓存副本不受影响——缓存即副本，设计上可接受；
+- **run 失败时**：`--status success` 过滤保证只取成功 run 的产物；
+- **nit（非阻塞）**：`~/.cache/pilotdroid/ci-cli/<run-id>/` 无逐出策略，每次 main push 累积 ~6.5MB——低频场景可忽略，记档。
+
+### 判定
+
+| 项 | 判定 |
+|---|---|
+| artifact 一致+缓存轮换 | ✔ sha256 对拍 byte-identical+run-id 目录轮换实证 |
+| PILOTDROID_CLI 真机闭环 | ✔ 3/3（独立复跑非转述） |
+| AGENTS.md 双轨 | ✔ 逐条核对，传递生效语义实测证实 |
+| ci.yml 配置 | ✔ 名/retention/触发/防静默缺件全对 |
