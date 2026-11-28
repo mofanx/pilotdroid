@@ -1898,3 +1898,40 @@ doc-drift **0 fail**（含缺头→FAIL 实证）、pytest **95**、cargo **107/
 ### D. 回归面（自跑）
 
 doc-drift **0 fail**、pytest **95**、cargo **107/0**+fmt/clippy 净。
+
+## 附46 t4 —— Devin 接入独立复核（2026-11-28，复核员自跑非转述）
+
+### A. 注册位置/格式 vs devin-cli 文档
+
+| 核对点 | 文档依据 | 实际 | 判定 |
+|---|---|---|---|
+| 用户级文件位置 | `~/.config/devin/mcp_config.json` = User-wide MCP servers（config-file.mdx L19） | 同 | ✔ |
+| 格式 | `{mcpServers:{name:{command,args,env,transport}}}` | 逐字一致，transport stdio 显式 | ✔ |
+| 注册命令 | `devin mcp add <name> -s user -e K=V -- cmd args`（commands.mdx） | 接入文档命令与实装一致 | ✔ |
+| 免确认语法 | `mcp__server__*` server-wide allow（permissions.mdx L291） | `mcp__pilotdroid__*` 已在 user config | ✔ |
+| `devin mcp list` | — | Source 显式 `~/.config/devin/mcp_config.json` | ✔ |
+
+### B. 独立端到端复跑（新路径+不同工具）
+
+`/tmp/pd-verify-t4`（全新独立目录）`devin -p` 会话调 **`list_elements`**（与 t1 的 describe_screen 不同工具）：**返回 elements 数组长度 25，count 一致**——免确认生效（无 permission 拒绝），跨项目发现性+调用链独立复核 PASS。
+
+### C. 接入文档按步可复现性核对
+
+| 步骤 | 核对 |
+|---|---|
+| pip 安装路径 | install-smoke 9/0 已含 venv pip install+bootstrap 实证 | 
+| gh release download 命令 | 与 t1 实装用同法（-O/--clobber 语法正确），不带 tag 取 latest 语义对 |
+| serial 三级 | 多设备歧义错串与 main.rs 源码逐字符；单机 auto-pick 经 resolve_serial 源码核对；项目级覆盖 user 级经 devin 文档 precedence 节证实（MCP servers follow the same precedence） |
+| 盲驾四拍 | 与 README 配方一致 |
+
+### D. 复核发现 nit×1（非阻塞，记档）
+
+接入文档排错速查写「无线/离线设备（如 x.x.x.x:5555 offline）不被支持，用 USB」——**措辞过宽**：offline 状态确实不可用，但 **adb-TCP 在线设备 M7 矩阵实测可用**（4.7-7.4× 性能档），与文内表述矛盾。建议改「offline 状态不可用；adb-TCP 在线可用但 USB 优先」。下批文档 nit 收编。
+
+### 判定
+
+| 项 | 判定 |
+|---|---|
+| 注册位置/格式文档一致 | ✔ 五项全对 |
+| 独立端到端复跑 | ✔ 新目录+list_elements 25 元素 |
+| 接入文档可复现性 | ✔ 步骤全核对，nit×1 记档 |
