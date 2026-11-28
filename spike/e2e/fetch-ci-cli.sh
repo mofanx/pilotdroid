@@ -41,4 +41,16 @@ if [ ! -x "$DEST/pilotdroid-cli" ]; then
 fi
 echo "fetch-ci-cli: run $RUN_ID -> $DEST/pilotdroid-cli" >&2
 "$DEST/pilotdroid-cli" --version >&2 || true
+
+# Cache eviction: keep the newest KEEP newest run-id dirs (ids are
+# monotonically increasing), prune older ones — each dir is ~6.5MB and
+# every main push adds one (§附44-E nit).
+KEEP=5
+CACHE_ROOT="$(dirname "$DEST")"
+mapfile -t dirs < <(ls -1 "$CACHE_ROOT" 2>/dev/null | grep -E '^[0-9]+$' | sort -rn)
+for old in "${dirs[@]:$KEEP}"; do
+    rm -rf "${CACHE_ROOT:?}/$old"
+    echo "fetch-ci-cli: evicted cache $old" >&2
+done
+
 echo "$DEST/pilotdroid-cli"

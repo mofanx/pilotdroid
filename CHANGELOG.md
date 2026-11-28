@@ -13,7 +13,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
     `spike/e2e/fetch-ci-cli.sh` downloads it and the real-device
     harnesses consume it via the existing `PILOTDROID_CLI` override —
     the local `cargo build` path is unchanged and remains the fallback
-    for unpushed work.
+    for unpushed work. `fetch-ci-cli.sh` evicts run-id cache dirs
+    beyond the newest 5 (~6.5MB each; was unbounded).
 
 ### Fixed
 - eval-harness `Serve`: orphan `adb forward` rules left by `kill -9`ed
