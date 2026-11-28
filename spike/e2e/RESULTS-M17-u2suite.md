@@ -2054,3 +2054,41 @@ unbound 存活（stderr 提示 2 ready）→ tap 引导式拒 → list_devices �
 - **端到端实证**：/tmp/pd-verify-091 独立目录 `devin -p` 无绑定配置下 AI 自主完成 list_devices→select_device(ba0d072d)→describe_screen 5 元素——**插任何一台手机即插即用、多台会话内任选**的用户目标达成；
 - restart 提示：已在运行的 Devin 会话持有旧 serve 进程（仍带 serial 环境），新会话起即生效——重启交给用户。
 - CI/CodeQL 双绿（46140169342/46140169411）。
+
+## §51 t4 独立复核:v0.9.1 四面+配置零绑定切换(p2 执行,全部 pass)
+
+复核方法:独立下载 release 资产/独立发 MCP 帧/独立复跑 smoke 与 cargo,不依赖 t3 自报证据。
+
+### A. 四面逐项复验(全 pass)
+
+| 面 | 独立证据 |
+|---|---|
+| GitHub | v0.9.1 非 draft,7 assets 齐;linux-x86_64 `sha256sum -c` OK;`--version`=0.9.1 |
+| PyPI | index 0.9.1 居首(0.9.0 次位) |
+| registry | curl limit=30:**0.9.1 active+isLatest**,0.9.0/0.8.4 active+非 latest |
+| tap | origin/main=588dce7;version 0.9.1、双 url v0.9.1、双 sha256 与发布 SHA256SUMS **逐字一致**(linux 8238653b/mac 278813d1) |
+| 用户级二进制 | `sha256sum ~/.local/bin/pilotdroid-cli` == 发布 linux sha **逐字一致**;`--version`=0.9.1 |
+| install-smoke | 独立复跑 `install-smoke.sh ba0d072d` **9/0**(含 cli setup+serve handshake;hello=0.7.4) |
+| cargo | 独立 `cargo test --workspace`:**113 passed total**(与 t3 声明 113/0 一致) |
+
+### B. 配置零绑定有效性核对(全 pass)
+
+- `~/.config/devin/mcp_config.json`:JSON 合法,pilotdroid 键集合恰为 `[args, command, transport]`,**无 env 绑定**;command 解析到 `~/.local/bin/pilotdroid-cli`(PATH 在位)。
+- **unbound serve 真机独立复验**(双 USB 在线,按配置原样无 `-s` 无 env 启动):
+  - 进程存活不死,stderr 打 `2 ready devices — starting unbound` 提示(与 notes 描述逐字级一致);
+  - 未绑定 `describe_screen` 显式报错引导(list_devices+select_device 方向正确);
+  - `list_devices` device-free 直通,`current:null` 诚实,双机+offline 三行;
+  - `select_device` 首绑:`switched:true switched_from:null`(**与 notes 声称逐字一致**);
+  - 绑后 describe 出真元素:小米 5/华为 31(异机交叉实证);
+  - 二次切换 `switched_from:"ba0d072d"` provenance 正确;`nonexistent0` 失败回滚 `still on CFE6R21525008201` 诚实。
+- notes 迁移指引与落地配置**逐键一致**;「已有绑定配置完全兼容(等价于显式 -s)」核码属实(main.rs:262-265 env 与 -s 填充同一 `cli.device`,serve 软解析不区分来源)。
+
+### C. nit(非阻塞,不挡 pass)
+
+- n1:notes 验证段速记 `switched:true from:null` 字段名不严谨(实为 `switched_from`)——正文段写的是对的,仅验证段 shorthand。
+- n2:单机 auto-bind 路径未实机验(双机插着),仅核码 `ready.len()==1 → Some` + 该路径行为沿用旧逻辑,风险低。
+- n3:notes 引用报错文案为缩写非逐字——引导方向准确。
+
+### D. 判定
+
+**pass**——四面数字全部独立复现,配置零绑定端到端行为与 notes 每项声称对齐,无发件级出入。
