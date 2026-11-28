@@ -62,6 +62,7 @@ exposed to MCP clients via `stream_read`.
 
   仓库内可用 `pip install ./python`；随后 `from pilotdroid import u2shim`。
 - agent.jar 亦可单独取用：Release assets 或仓库 `agent/agent.jar`（与 CLI 内嵌字节一致）。
+- **接入 Devin / 其他 MCP 客户端**：`docs/use-from-other-projects.md`——用户级注册一次、全项目可用。
 
 ## 定位
 

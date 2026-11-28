@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+- `docs/use-from-other-projects.md` — Devin/MCP 跨项目接入说明（用户级
+  注册、serial 三级指定、免确认权限、盲驾四拍、排错速查）。
+
 ## [0.8.4] — 2026-11-28
 
 ### Added

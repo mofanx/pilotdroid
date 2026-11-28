@@ -1842,3 +1842,33 @@ doc-drift **0 fail**（含缺头→FAIL 实证）、pytest **95**、cargo **107/
 | PILOTDROID_CLI 真机闭环 | ✔ 3/3（独立复跑非转述） |
 | AGENTS.md 双轨 | ✔ 逐条核对，传递生效语义实测证实 |
 | ci.yml 配置 | ✔ 名/retention/触发/防静默缺件全对 |
+
+## 附45 t1 —— 0.8.4 列车 + Devin 本机接入端到端（2026-11-28）
+
+### A. 遗留项收编+0.8.4 四面
+
+| 件 | 证据 |
+|---|---|
+| fetch-ci-cli 缓存逐出 | KEEP=5 run-id 数字序；造 7 假目录实证逐出 6 留新 5，`15d3167` |
+| bump 四处+fold | Cargo/pyproject/server.json×2/smoke VER→0.8.4；**fold 保留空 Unreleased 段头**（v0.8.3 教训制度化后首次正确执行） |
+| notes | `release-notes-v0.8.4.md` 诚实头条：**无运行时行为变更**，infrastructure/harness 批 |
+| GitHub Release | run 46087808279 绿→published，7 assets |
+| PyPI | run 46088148834 绿，index 可见 0.8.4 |
+| install-smoke | ba0d072d **9/0**（含 bootstrap 真链 0.8.4+setup+MCP 握手） |
+| registry | JWT 过期插曲→重 login→publish `0.8.4 active isLatest:true`（curl 实证） |
+| tap | `182925f` linux 548391c7/macos ded7c4e5 逐字取自 SHA256SUMS |
+
+### B. 本机 Devin 接入端到端
+
+| 步 | 证据 |
+|---|---|
+| PATH 安装 | `~/.local/bin/pilotdroid-cli` 0.8.4，sha256 `548391c7…` 与发布 SHA256SUMS **逐字一致** |
+| MCP 注册 | `devin mcp add pilotdroid -s user -e PILOTDROID_SERIAL=ba0d072d -- pilotdroid-cli serve` → `~/.config/devin/mcp_config.json` 用户级（不拴 serial 会撞多设备歧义错——CFE6R 同插，故 env 绑定主力机） |
+| 免确认 | 用户级 config.json `permissions.allow` +`mcp__pilotdroid__*`（否则非交互/正常模式逐次确认） |
+| **scratch 端到端** | `/tmp/pilotdroid-scratch`（独立目录非 pilotdroid 仓）`devin -p` 会话调 `describe_screen` 真机返回 **62 元素、首元素 FrameLayout**——跨项目可用性实证 |
+| 接入文档 | `docs/use-from-other-projects.md`：三级 serial 指定+排错速查；README 安装节一行指引；CHANGELOG Unreleased +1 |
+
+### C. 排错插曲（记档防后人）
+
+- `devin mcp remove` 不带 `-s` 默认 local scope 找不到 user 条目——`add` 覆盖同 key 即可，无需先 remove；
+- 非交互 `-p` 模式默认拒工具调用：`--permission-mode dangerous` 或预先 allowlist（推荐后者，本机已配）。
