@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.8.4] — 2026-11-28
+
 ### Added
 - CI daily-build channel: every push to main uploads a release-profile
     linux-x86_64 `pilotdroid-cli` as the ci artifact
