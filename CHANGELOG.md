@@ -7,8 +7,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Added
+- `select_device`/`list_devices` tools: mid-session device switching —
+    rebinds the MCP session to any adb device in one call, tearing down
+    the old connection and invalidating all per-device state (element
+    snapshots/indexes, armed watchers, buffered events); the cleared
+    inventory is reported in the response, connect failure reverts to
+    the previous device, and snapshot consumption across devices errors
+    explicitly (serial-tagged snapshots) instead of silently tapping
+    the wrong phone. The spawn-time serial is now just the initial
+    device — no more MCP-config edit + restart to switch phones.
 - `docs/use-from-other-projects.md` — Devin/MCP 跨项目接入说明（用户级
-  注册、serial 三级指定、免确认权限、盲驾四拍、排错速查）。
+  注册、`select_device` 会话内切换为推荐换机方式、免确认权限、盲驾四拍、
+  排错速查）。
 
 ## [0.8.4] — 2026-11-28
 

@@ -128,6 +128,12 @@ impl<T: AdbTransport> Session<T> {
     /// transparent `recover()`. Callers tracking agent-allocated ids
     /// (watch ids, armed watcher flags) must discard them when the
     /// epoch changes — the fresh agent never heard of them.
+    /// Device serial this session is bound to — snapshots and
+    /// agent-allocated ids are only valid on this device.
+    pub fn serial(&self) -> &str {
+        &self.serial
+    }
+
     pub fn generation(&self) -> u64 {
         self.generation
     }

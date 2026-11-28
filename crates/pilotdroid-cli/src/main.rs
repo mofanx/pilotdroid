@@ -337,13 +337,30 @@ fn main() -> Result<()> {
             // `BufReader::new(stdin)` (not stdin.lock) — the serve loop
             // spawns a reader thread for timed wakeups while push-armed
             // watchers exist; StdinLock borrows and isn't 'static.
-            serve::run(std::io::BufReader::new(stdin), &mut stdout, move || {
-                let adb = AdbClient::at(adb_port)
-                    .context("connecting to adb server (is `adb` running?)")?;
-                pilotdroid_agent::Device::with_transport(adb, serial.clone())
-                    .session_opts(port, &socket)
-                    .map_err(Into::into)
-            })?;
+            // connect(&serial) — serve owns the current target device
+            // (select_device rebinds it); the closure just dials what it
+            // is given. list_devs backs the device-free list_devices tool.
+            serve::run(
+                std::io::BufReader::new(stdin),
+                &mut stdout,
+                serial.clone(),
+                move |se: &str| {
+                    let adb = AdbClient::at(adb_port)
+                        .context("connecting to adb server (is `adb` running?)")?;
+                    pilotdroid_agent::Device::with_transport(adb, se.to_string())
+                        .session_opts(port, &socket)
+                        .map_err(Into::into)
+                },
+                move || {
+                    let mut adb = AdbClient::at(adb_port)
+                        .context("connecting to adb server (is `adb` running?)")?;
+                    Ok(adb
+                        .list_devices()?
+                        .into_iter()
+                        .map(|d| (d.serial, d.state))
+                        .collect())
+                },
+            )?;
         }
         Cmd::Setup { socket, port, jar } => {
             setup::run(adb, cli.device.clone(), jar.clone(), *port, socket)?;

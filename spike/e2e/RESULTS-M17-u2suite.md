@@ -1935,3 +1935,35 @@ doc-drift **0 fail**、pytest **95**、cargo **107/0**+fmt/clippy 净。
 | 注册位置/格式文档一致 | ✔ 五项全对 |
 | 独立端到端复跑 | ✔ 新目录+list_elements 25 元素 |
 | 接入文档可复现性 | ✔ 步骤全核对，nit×1 记档 |
+
+## 附47 t1 —— select_device 会话内设备切换实装（2026-11-28）
+
+### A. 设计要点
+
+- `serve::run` 签名革命：connect 闭包改 `FnMut(&str)`——serve 拥有当前 serial，main.rs 闭包只拨「被要求的那台」；`list_devs` 第二闭包支撑 device-free `list_devices`。
+- `select_device` 拦截于 session ensure **之前**（call_tool 持 &mut 借用无法自 drop）——teardown 旧连接（RAII 摘 forward）+**全状态作古**：snapshot/armed/pending/epoch/demux_dead，响应如实报 `cleared` 清单；connect 失败**回滚 serial**（错误注明 still on X，下次 op 惰性重连旧机）。
+- 防御纵深：Snap 元组第 5 字段 serial 标签——`check_snapshot` 首查设备不匹配即显式报错（正常路径切换即清空，标签兜未来遗忘路径）。
+
+### B. 单测（+4，工作区 107→111/0）
+
+| 测试 | 钉 |
+|---|---|
+| `select_device_rebinds_and_invalidates_snapshot` | 切换响应形状+cleared.snapshot:true+切后 tap_index 无快照显式报错 |
+| `select_device_reverts_on_connect_failure` | bad0 连接失败→错误含 still on fake0+原因 |
+| `list_devices_is_device_free` | 首调用无 session 直通 adb，current 标记正确 |
+| `snapshot_serial_mismatch_errors_loudly` | 错 serial 快照元组→check_snapshot 报 belongs to device |
+
+### C. 真机端到端（ba0d072d↔CFE6R21525008201 往返）
+
+```
+describe(小米)=5元素 → list_devices双机+current正确
+→ select_device(华为): switched/cleared.snapshot=true/agentVer=0.7.4
+→ tap_index 未重观测: 显式 no element snapshot 错(非静默)
+→ describe(华为)=316元素(异机内容实证)
+→ ApiDemos 起+tap_index 首行: 前台导航落华为(无错误)
+→ select_device(小米): 切回 describe=5元素 往返闭环
+```
+
+### D. 文档面
+
+README 30→32 tools 两处、SUPPORTED serial 标签+失效语义、use-from-other-projects §4 重写（select_device 为推荐换机方式，env pin 降级为初始设备）、CHANGELOG。doc-drift 0 fail。

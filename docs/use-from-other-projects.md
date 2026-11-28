@@ -35,13 +35,26 @@ devin mcp add pilotdroid -s user \
 `~/.config/devin/config.json` 的 `permissions.allow` 加一条
 `"mcp__pilotdroid__*"`。
 
-## 4. serial 指定方式（三级，按需选）
+## 4. 设备选择：会话内随时切换（select_device）
+
+**注册时的 serial 只是初始设备，不再是绑定**——会话中途用 MCP 工具直接换机：
+
+```
+list_devices                          # 看当前连着哪些设备（含状态）+ current 标记
+select_device {serial: "CFE6R21525008201"}   # 一键切到华为平板，立即生效
+```
+
+切换语义（重要）：`select_device` 会**作废旧设备全部状态**——元素快照/`i` 编号、
+armed watcher、缓冲事件全部失效，响应里如实报告 `cleared` 清单；切换后必须先
+`describe_screen`/`list_elements` 重新观测再 `tap_index`（直接消费旧编号会收到
+显式报错而非静默错点——索引是 per-device 状态）。连接失败时自动留在原设备。
 
 | 级 | 方式 | 适用 |
 |---|---|---|
-| 注册时 env | `-e PILOTDROID_SERIAL=ba0d072d` | 主力机固定——开箱即用 |
+| 会话内切换 | `select_device` 工具 | **推荐**——任何时刻换任意设备，零配置零重启 |
+| 注册时 env | `-e PILOTDROID_SERIAL=ba0d072d` | 仅决定初始设备 |
 | 单机自动 | 不配 serial：恰好一台设备 ready 时自动选 | 只插一台机 |
-| 项目覆盖 | 项目 `.devin/mcp_config.json` 同名 server 覆盖 user 级 | 某项目要调另一台机 |
+| 项目覆盖 | 项目 `.devin/mcp_config.json` 同名 server 覆盖 user 级 | 某项目固定用另一台初始机 |
 
 多设备同时连着又没指定 serial 时 `serve` 会报
 `multiple devices ready — pick one with -s <serial>`。

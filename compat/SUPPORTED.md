@@ -204,7 +204,11 @@ benchmark/suite 跑旧 targetSdk app 前需先放行（openatx u2 官方
   原子消费同一 layout，无 TOCTOU 窗；stale-guard 仍护观测→动作
   间漂移并以快照来源名报错）。`id` 仅供中心点
   坐标路径与截图标注对照；`ocr_only` 合成元素无 `i`（无 a11y
-  节点，仅 center 可点、先天无 stale-guard）。
+  节点，仅 center 可点、先天无 stale-guard）。快照携带
+  **设备 serial 标签**——`select_device` 切换后作废旧快照/armed
+  watcher/缓冲事件（响应如实报 `cleared` 清单），消费错设备快照
+  报显式 device-mismatch 错而非静默（防御纵深；正常路径切换即清空，
+  需重新观测）。
 - **元素状态面（M32）**：`list_elements`/`describe_screen`/compat
   `som.py` 元素统一透出 widget 状态——`checked`/`selected`/`focused`
   仅 true 时输出、`enabled` 仅 false 时输出（省 token）；`class`

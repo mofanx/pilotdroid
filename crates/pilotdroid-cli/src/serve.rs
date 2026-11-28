@@ -84,9 +84,15 @@ fn negotiate_version(offered: Option<&str>) -> &'static str {
 pub fn run<T: AdbTransport, R: std::io::BufRead + Send + 'static, W: Write>(
     inp: R,
     out: &mut W,
-    mut connect: impl FnMut() -> Result<Session<T>>,
+    initial_serial: String,
+    mut connect: impl FnMut(&str) -> Result<Session<T>>,
+    mut list_devs: impl FnMut() -> Result<Vec<(String, String)>>,
 ) -> Result<()> {
     let mut session: Option<Session<T>> = None;
+    // Current target device — `select_device` rebinds it mid-session
+    // (process-lifetime binding to the spawn-time serial was the M32
+    // pain: switching phones meant editing MCP config + a restart).
+    let mut cur_serial = initial_serial;
     // Element snapshot backing tap_index/set_text_index — refreshed by
     // list_elements AND the describe_screen/screenshot_annotated
     // perception ops (they fill it from the SAME dump their output
@@ -286,7 +292,7 @@ pub fn run<T: AdbTransport, R: std::io::BufRead + Send + 'static, W: Write>(
                 // reachable; null keeps the handshake device-free.
                 let agent_ver = match session.as_ref() {
                     Some(s) => s.agent_ver().map(str::to_string),
-                    None => match connect() {
+                    None => match connect(&cur_serial) {
                         Ok(s) => {
                             let v = s.agent_ver().map(str::to_string);
                             session = Some(s);
@@ -322,9 +328,44 @@ pub fn run<T: AdbTransport, R: std::io::BufRead + Send + 'static, W: Write>(
                     .pointer("/params/arguments")
                     .cloned()
                     .unwrap_or_else(|| json!({}));
+                // Device-scope tools are intercepted BEFORE the session
+                // ensure: list_devices works device-free, and
+                // select_device must drop/rebind the session itself.
+                if name == "list_devices" {
+                    let resp = match list_devs() {
+                        Ok(devs) => ok(
+                            id,
+                            json!({
+                                "content": [{"type": "text", "text": json!({
+                                    "current": cur_serial,
+                                    "devices": devs.iter().map(|(se, st)| json!({"serial": se, "state": st})).collect::<Vec<_>>(),
+                                }).to_string()}],
+                            }),
+                        ),
+                        Err(e) => tool_err(id, e),
+                    };
+                    write_resp(out, &resp)?;
+                    continue;
+                }
+                if name == "select_device" {
+                    let resp = select_device(
+                        id,
+                        &args,
+                        &mut cur_serial,
+                        &mut session,
+                        &mut snapshot,
+                        &mut armed,
+                        &mut pending,
+                        &mut demux_dead,
+                        &mut epoch,
+                        &mut connect,
+                    );
+                    write_resp(out, &resp)?;
+                    continue;
+                }
                 let s = match session.as_mut() {
                     Some(s) => s,
-                    None => match connect() {
+                    None => match connect(&cur_serial) {
                         Ok(s) => session.insert(s),
                         Err(e) => {
                             write_resp(out, &tool_err(id, e))?;
@@ -638,6 +679,10 @@ type Snap = (
     u64,
     Option<String>,
     &'static str,
+    // Device serial the snapshot was taken on — element indexes are
+    // per-device state; consuming them after select_device without a
+    // fresh observe must fail loudly, not tap the wrong phone.
+    String,
 );
 
 /// Snapshot staleness guard for index ops: the focused package and the
@@ -650,6 +695,12 @@ fn check_snapshot<T: AdbTransport>(
     want_i: Option<usize>,
 ) -> Result<()> {
     let src = snap.3;
+    anyhow::ensure!(
+        snap.4 == s.serial(),
+        "snapshot belongs to device {} but the session is on {} —          re-observe (list_elements/describe_screen) after select_device",
+        snap.4,
+        s.serial()
+    );
     let cur_pkg = s.app_current().ok().flatten().map(|(p, _)| p);
     anyhow::ensure!(
         cur_pkg == snap.2,
@@ -697,7 +748,97 @@ fn fill_snap<T: AdbTransport>(
 ) {
     let sn = Session::<T>::list_elements_from(xml, true);
     let pkg = s.app_current().ok().flatten().map(|(p, _)| p);
-    *snap = Some((sn.elements, sn.layout_sig, pkg, src));
+    *snap = Some((sn.elements, sn.layout_sig, pkg, src, s.serial().to_string()));
+}
+
+/// `select_device` — rebind the session to another device mid-process.
+/// Full state invalidation is the correctness core: snapshot element
+/// indexes, armed watcher ids, buffered media events and the recovery
+/// epoch are all per-device/per-agent state, so every piece is dropped
+/// (and reported) instead of leaking across the switch. On connect
+/// failure the target serial reverts — the next op lazily reconnects
+/// the previous device instead of stranding the session on a dead one.
+#[allow(clippy::too_many_arguments)]
+fn select_device<T: AdbTransport>(
+    id: Value,
+    args: &Value,
+    cur_serial: &mut String,
+    session: &mut Option<Session<T>>,
+    snapshot: &mut Option<Snap>,
+    armed: &mut HashMap<u32, ArmedRule>,
+    pending: &mut VecDeque<MediaEvent>,
+    demux_dead: &mut bool,
+    epoch: &mut u64,
+    connect: &mut impl FnMut(&str) -> Result<Session<T>>,
+) -> Value {
+    let target = match args.get("serial").and_then(Value::as_str) {
+        Some(se) if !se.is_empty() => se.to_string(),
+        _ => {
+            return tool_err(
+                id,
+                anyhow::anyhow!("select_device: missing 'serial' — see list_devices"),
+            )
+        }
+    };
+    if target == *cur_serial {
+        let ver = session
+            .as_ref()
+            .and_then(|s| s.agent_ver().map(str::to_string));
+        return ok(
+            id,
+            json!({
+                "content": [{"type": "text", "text": json!({
+                    "serial": target, "switched": false, "agentVer": ver,
+                    "note": "already on this device",
+                }).to_string()}],
+            }),
+        );
+    }
+    let prev = cur_serial.clone();
+    let had_snap = snapshot.is_some();
+    let n_watchers = armed.len();
+    let n_pending = pending.len();
+    // RAII: dropping the session tears down forwards/media for the old
+    // device (mid-stream switch kills the stream — documented).
+    drop(session.take());
+    *snapshot = None;
+    armed.clear();
+    pending.clear();
+    *demux_dead = false;
+    *epoch = 0;
+    *cur_serial = target.clone();
+    match connect(&target) {
+        Ok(s) => {
+            let ver = s.agent_ver().map(str::to_string);
+            *session = Some(s);
+            ok(
+                id,
+                json!({
+                    "content": [{"type": "text", "text": json!({
+                        "serial": target,
+                        "switched": true,
+                        "switched_from": prev,
+                        "agentVer": ver,
+                        "cleared": {
+                            "snapshot": had_snap,
+                            "watchers": n_watchers,
+                            "buffered_events": n_pending,
+                        },
+                        "note": "indexes/watchers re-observe required — prior per-device state was invalidated",
+                    }).to_string()}],
+                }),
+            )
+        }
+        Err(e) => {
+            *cur_serial = prev.clone();
+            tool_err(
+                id,
+                anyhow::anyhow!(
+                    "select_device: connect to {target} failed ({e}) — still on {prev}"
+                ),
+            )
+        }
+    }
 }
 
 /// Returns the JSON-RPC response plus a "dead conn" flag — set when the
@@ -776,12 +917,18 @@ fn call_tool<T: AdbTransport>(
                         "interactive_only": interactive,
                         "elements": sn.elements,
                     });
-                    *snap = Some((sn.elements, sn.layout_sig, pkg, "list_elements"));
+                    *snap = Some((
+                        sn.elements,
+                        sn.layout_sig,
+                        pkg,
+                        "list_elements",
+                        s.serial().to_string(),
+                    ));
                     Ok(out)
                 }
                 "tap_index" => {
                     let i = num_arg(&args, "i").context("tap_index needs i")? as usize;
-                    let (els, _, _, src) = snap.as_ref().context(
+                    let (els, _, _, src, _) = snap.as_ref().context(
                         "no element snapshot — call list_elements or describe_screen first",
                     )?;
                     check_snapshot(s, snap.as_ref().unwrap(), Some(i))?;
@@ -797,7 +944,7 @@ fn call_tool<T: AdbTransport>(
                 }
                 "set_text_index" => {
                     let i = num_arg(&args, "i").context("set_text_index needs i")? as usize;
-                    let (els, _, _, src) = snap.as_ref().context(
+                    let (els, _, _, src, _) = snap.as_ref().context(
                         "no element snapshot — call list_elements or describe_screen first",
                     )?;
                     check_snapshot(s, snap.as_ref().unwrap(), Some(i))?;
@@ -1262,6 +1409,11 @@ fn tools() -> Value {
         "packageName": prop("string","owning package, exact"),
     }});
     json!([
+        {"name":"list_devices","description":"list adb devices [{serial,state}] + the session's current target — device-free (no connection needed). Pair with select_device to switch phones mid-session","inputSchema":schema(&[], &[])},
+        {"name":"select_device","description":"rebind this session to another device {serial} mid-process — tears down the current connection and INVALIDATES all per-device state (element snapshots/indexes, armed watchers, buffered events); re-observe with describe_screen/list_elements before any tap_index. On connect failure the session stays on the previous device. A mid-stream switch kills the stream","inputSchema":schema(
+            &[("serial",prop("string","adb serial from list_devices"))],
+            &["serial"],
+        )},
         {"name":"tap","description":"tap (x,y) — INJECT MotionEvent down/up","inputSchema":xy},
         {"name":"long_click","description":"long press (x,y,duration_ms)","inputSchema":schema(
             &[("x",prop("number","x")),("y",prop("number","y")),("duration_ms",prop("integer","hold ms, default 500"))],
@@ -1789,11 +1941,13 @@ mod tests {
         run(
             std::io::Cursor::new(lines.as_bytes().to_vec()),
             &mut out,
-            move || {
+            "fake0".to_string(),
+            move |_se: &str| {
                 Device::with_transport(adb.take().unwrap(), "fake0")
                     .session_opts(Some(addr.port()), "pilotdroid_agent")
                     .map_err(Into::into)
             },
+            || Ok(vec![("fake0".to_string(), "device".to_string())]),
         )
         .unwrap();
         String::from_utf8(out)
@@ -2697,6 +2851,130 @@ mod tests {
     }
 
     #[test]
+    fn select_device_rebinds_and_invalidates_snapshot() {
+        // describe fills the snapshot on fake0; select_device(fake1)
+        // must report the switch + cleared state, and a tap_index before
+        // any re-observe must fail loudly (no silent cross-device tap).
+        let addr = spawn_fake();
+        let mut out = Vec::new();
+        run(
+            std::io::Cursor::new(
+                [
+                    r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"describe_screen","arguments":{}}}"#,
+                    r#"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"select_device","arguments":{"serial":"fake1"}}}"#,
+                    r#"{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"tap_index","arguments":{"i":0}}}"#,
+                ]
+                .join("\n")
+                .into_bytes(),
+            ),
+            &mut out,
+            "fake0".to_string(),
+            move |_se: &str| {
+                Device::with_transport(TestAdb::default(), "fake1")
+                    .session_opts(Some(addr.port()), "pilotdroid_agent")
+                    .map_err(Into::into)
+            },
+            || Ok(vec![
+                ("fake0".to_string(), "device".to_string()),
+                ("fake1".to_string(), "device".to_string()),
+            ]),
+        )
+        .unwrap();
+        let resps: Vec<Value> = String::from_utf8(out)
+            .unwrap()
+            .lines()
+            .map(|l| serde_json::from_str(l).unwrap())
+            .collect();
+        // switch response: switched, provenance, invalidation report
+        let sw = resps[1]["result"]["content"][0]["text"].as_str().unwrap();
+        let swj: Value = serde_json::from_str(sw).unwrap();
+        assert_eq!(swj["switched"], true, "got {sw}");
+        assert_eq!(swj["switched_from"], "fake0", "got {sw}");
+        assert_eq!(swj["serial"], "fake1", "got {sw}");
+        assert_eq!(swj["cleared"]["snapshot"], true, "got {sw}");
+        assert_eq!(swj["agentVer"], "9.9.9-fake", "got {sw}");
+        // consuming pre-switch indexes without re-observing: loud error
+        assert_eq!(resps[2]["result"]["isError"], true);
+        let text = resps[2]["result"]["content"][0]["text"].as_str().unwrap();
+        assert!(
+            text.contains("no element snapshot"),
+            "expected re-observe error after switch, got {text}"
+        );
+    }
+
+    #[test]
+    fn select_device_reverts_on_connect_failure() {
+        let addr = spawn_fake();
+        let mut out = Vec::new();
+        run(
+            std::io::Cursor::new(
+                [
+                    r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"tap","arguments":{"x":1,"y":2}}}"#,
+                    r#"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"select_device","arguments":{"serial":"bad0"}}}"#,
+                ]
+                .join("\n")
+                .into_bytes(),
+            ),
+            &mut out,
+            "fake0".to_string(),
+            move |se: &str| {
+                if se == "bad0" {
+                    anyhow::bail!("device offline");
+                }
+                Device::with_transport(TestAdb::default(), se.to_string())
+                    .session_opts(Some(addr.port()), "pilotdroid_agent")
+                    .map_err(Into::into)
+            },
+            || Ok(vec![("fake0".to_string(), "device".to_string())]),
+        )
+        .unwrap();
+        let resps: Vec<Value> = String::from_utf8(out)
+            .unwrap()
+            .lines()
+            .map(|l| serde_json::from_str(l).unwrap())
+            .collect();
+        assert_eq!(resps[1]["result"]["isError"], true);
+        let text = resps[1]["result"]["content"][0]["text"].as_str().unwrap();
+        assert!(text.contains("still on fake0"), "got {text}");
+        assert!(text.contains("device offline"), "got {text}");
+    }
+
+    #[test]
+    fn list_devices_is_device_free() {
+        // First call, no session yet — must answer from adb directly.
+        let resps = serve_once(
+            r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"list_devices","arguments":{}}}"#,
+        );
+        let text = resps[0]["result"]["content"][0]["text"].as_str().unwrap();
+        let j: Value = serde_json::from_str(text).unwrap();
+        assert_eq!(j["current"], "fake0", "got {text}");
+        assert_eq!(j["devices"][0]["serial"], "fake0", "got {text}");
+    }
+
+    #[test]
+    fn snapshot_serial_mismatch_errors_loudly() {
+        // Defense-in-depth below the select_device clearing: a snapshot
+        // tuple carrying another device's serial must never validate,
+        // even if some future path forgets to clear on switch.
+        let addr = spawn_fake();
+        let mut s = Device::with_transport(TestAdb::default(), "fake0")
+            .session_opts(Some(addr.port()), "pilotdroid_agent")
+            .unwrap();
+        let snap: Snap = (
+            vec![],
+            0,
+            None,
+            "list_elements",
+            "some-other-device".to_string(),
+        );
+        let err = check_snapshot(&mut s, &snap, None).unwrap_err();
+        assert!(
+            format!("{err}").contains("belongs to device"),
+            "expected device-mismatch error, got {err}"
+        );
+    }
+
+    #[test]
     fn dead_conn_self_heals_next_call() {
         // The fake kills conn 1 right after HELLO (a newer conn took over
         // — ADR-007). Call 1 hits EOF mid-op → Session::with_client runs
@@ -2715,12 +2993,14 @@ mod tests {
                 .into_bytes(),
             ),
             &mut out,
+            "fake0".to_string(),
             // fresh transport per connect — exercises the reconnect path
-            move || {
+            move |_se: &str| {
                 Device::with_transport(TestAdb::default(), "fake0")
                     .session_opts(Some(addr.port()), "pilotdroid_agent")
                     .map_err(Into::into)
             },
+            || Ok(vec![("fake0".to_string(), "device".to_string())]),
         )
         .unwrap();
         let lines: Vec<Value> = String::from_utf8(out)
@@ -2776,11 +3056,13 @@ mod tests {
         run(
             BufReader::new(r#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#.as_bytes()),
             &mut out,
-            move || {
+            "fake0".to_string(),
+            move |_se: &str| {
                 Device::with_transport(adb.take().unwrap(), "fake0")
                     .session_opts(Some(addr.port()), "pilotdroid_agent")
                     .map_err(Into::into)
             },
+            || Ok(vec![("fake0".to_string(), "device".to_string())]),
         )
         .unwrap();
         for line in String::from_utf8(out).unwrap().lines() {
