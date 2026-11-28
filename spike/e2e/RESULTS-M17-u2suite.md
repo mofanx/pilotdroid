@@ -2020,3 +2020,37 @@ cargo test **111/0**、fmt/clippy 净、doc-drift 0 fail（含 changelog 闸 fol
 
 - `watch`（阻塞式）与 `watch_arm`（异步）是两个工具——复核首轮误用 `watch` 试探 arm 语义，工具描述准确无误，属复核员学习成本非文档缺陷；
 - serial 深防路径当前不可达（主防已清空）——保留合理，如未来引入「保留快照的热切换」优化时它会变成主防线。
+
+## 附50 t3 —— v0.9.1 unbound serve 修复+四面发件+配置零绑定落地（2026-11-28）
+
+### 起因（复核级发现）
+
+t3 列车随行件「摘 mcp_config serial 绑定」前置核验时发现 **0.9.0 缺失另一半**：serve 启动 `resolve_serial` 硬 bail——当前用户机双机在线，摘绑定后 serve 开局即死，select_device 根本进不了场，**摘配置=搞坏环境**。判为发件级缺陷，按 patch 窗口惯例直接修复随行。
+
+### 修复（9d25dae）
+
+- serve 不带 `-s`：单机自动绑（不变）；零/多机/adb枚举失败 → **unbound 存活**，list/select 立即可用，其余工具 `no device selected` 引导式拒；stderr 一行提示；
+- select_device 支持 unbound 首绑（`switched_from:null`），首绑失败 `still unbound`；initialize agentVer null 合规；
+- 单测+2（unbound 拒用+绑定链 / unbound 绑定失败保持），全 workspace **113/0**、fmt/clippy 净、doc-drift 0 fail。
+
+### 真机实证（双 USB 在线，serve 无 -s）
+
+unbound 存活（stderr 提示 2 ready）→ tap 引导式拒 → list_devices 三行 `current:null` → select 小米 `switched:true from:null` → describe 5 元素 → 切华为 → 10 元素。全链零配置。
+
+### 四面发件证据
+
+| 面 | 证据 |
+|---|---|
+| GitHub | release run success；draft 7 assets；notes-file 灌入+发布；linux asset sha256sum -c OK |
+| PyPI | pypi run success 24s；`pip index` 0.9.1 居首（传播约 5min，非缺陷） |
+| install-smoke | `install-smoke.sh ba0d072d` **9 pass/0 fail** |
+| registry | JWT 过期重登录后 publish 成功；curl limit=30 复核 **0.9.1 active True** 居尾 |
+| tap | 588dce7：双 sha 逐字对拍 SHA256SUMS（linux 8238653…/macos 278813d…），live 下载复核一致 |
+
+### 随行落地（用户核心诉求终点）
+
+- `~/.local/bin/pilotdroid-cli` → 0.9.1，sha `8238653b…` 与 release asset **逐字一致**；
+- **`~/.config/devin/mcp_config.json` 摘除 `PILOTDROID_SERIAL` 绑定**——配置变为纯 `{command, args:[serve], transport}`；
+- **端到端实证**：/tmp/pd-verify-091 独立目录 `devin -p` 无绑定配置下 AI 自主完成 list_devices→select_device(ba0d072d)→describe_screen 5 元素——**插任何一台手机即插即用、多台会话内任选**的用户目标达成；
+- restart 提示：已在运行的 Devin 会话持有旧 serve 进程（仍带 serial 环境），新会话起即生效——重启交给用户。
+- CI/CodeQL 双绿（46140169342/46140169411）。
