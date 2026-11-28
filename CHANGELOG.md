@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.9.0] — 2026-11-28
+
 ### Added
 - `select_device`/`list_devices` tools: mid-session device switching —
     rebinds the MCP session to any adb device in one call, tearing down
